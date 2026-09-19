@@ -412,11 +412,15 @@ def _make_key_bindings(session: cfgmod.CliSession) -> KeyBindings:
     @kb.add("?")
     def _(event) -> None:
         buffer = event.current_buffer
-        text = buffer.document.text_before_cursor
-        result = grammar.help(session.mode, text, build_context(session))
+        text_before = buffer.document.text_before_cursor
+        text_after = buffer.document.text_after_cursor
+        result = grammar.help(session.mode, text_before, build_context(session))
 
         def _show() -> None:
-            print()
+            # Echo the "prompt + buffer + ?" line into scrollback first, the
+            # same way a real terminal/IOS XR leaves a transcript of what was
+            # actually pressed, before the help lines that answer it.
+            print(f"{prompt_text(session)}{text_before}?{text_after}")
             print_help_result(result)
 
         if result.lines or result.show_cr:

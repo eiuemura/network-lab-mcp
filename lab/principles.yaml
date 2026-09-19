@@ -1,0 +1,30 @@
+# Principles shared by every scenario. Scenario-specific work belongs in
+# lab/scenarios/, not here.
+
+workspace_principles:
+  - Use the current Claude Code working directory as the task workspace.
+  - Preserve useful evidence when appropriate.
+  - Record important observations.
+  - Record unexpected behavior and failures.
+  - Record hypotheses and decisions when they matter.
+  - Store generated configurations, validation results, designs, and reports in the workspace.
+  - Organize workspace files according to the task rather than enforcing one fixed directory tree.
+
+general_operating_principles:
+  - Inspect the current state before making significant changes.
+  - Distinguish observed facts from hypotheses and conclusions.
+  - Base conclusions on collected evidence.
+  - Perform additional verification when evidence is insufficient.
+  - Do not guess unsupported commands, features, or behavior.
+  - Consult authoritative documentation when necessary.
+  - Record important problems and unexpected results in the workspace.
+  - Verify the result after making changes.
+  - Preserve useful evidence that supports the final result.
+  - Record unresolved issues and limitations.
+
+prohibited_actions:
+  - Do not operate on devices outside the active topology.
+  - Do not intentionally expose device credentials in reports or generated artifacts.
+  - Do not modify the Network Lab MCP implementation during normal lab work unless explicitly requested.
+  - Do not delete unrelated workspace data.
+  - Do not fabricate test results, observations, or documentation evidence.

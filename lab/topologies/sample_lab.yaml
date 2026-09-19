@@ -1,0 +1,35 @@
+# Sample topology used to validate Network Lab MCP.
+#
+# IMPORTANT: the addresses below use the RFC 5737 documentation-only range
+# (192.0.2.0/24, "TEST-NET-1"). They are not reachable and must not be treated
+# as connectivity targets. This file exists to validate YAML loading, MCP
+# structured output, device-name/session-name mapping, and documentation
+# behavior only -- not real terminal connectivity.
+#
+# Real topology files (any other file under lab/topologies/) are gitignored
+# by default; see the "Git Safety Design" section of README.md.
+
+name: sample_lab
+
+description: >
+  Sample topology used to validate Network Lab MCP. Addresses are
+  documentation-only (RFC 5737) example values, not reachable lab devices.
+
+devices:
+  R1:
+    type: iosxr
+    address: 192.0.2.11
+    transport: ssh
+    port: 22
+    username: example-user
+    password: example-password
+
+  R2:
+    type: iosxr
+    address: 192.0.2.12
+    transport: ssh
+    port: 22
+    username: example-user
+    password: example-password
+
+links: []

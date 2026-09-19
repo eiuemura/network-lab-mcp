@@ -1,0 +1,16 @@
+# Scenario: what must be accomplished for the current task.
+#
+# The scenario format is intentionally minimal and experimental in Step 1;
+# see docs/scenario_format.md.
+
+name: sample
+
+description: >
+  Inspect the selected lab topology and summarize the current
+  state of the available devices.
+
+objectives:
+  - obtain the active topology
+  - access available devices when appropriate
+  - inspect their current state
+  - summarize the findings

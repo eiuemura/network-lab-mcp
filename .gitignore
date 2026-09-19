@@ -1,0 +1,15 @@
+# Python / packaging
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/
+
+# Local runtime lab selection (private, machine-specific).
+lab/settings.yaml
+
+# Real topology data is private lab information by default.
+# Only the fictional sample topology is tracked.
+lab/topologies/*.yaml
+!lab/topologies/sample_lab.yaml

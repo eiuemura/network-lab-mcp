@@ -1,0 +1,12 @@
+# References hold reusable, validated knowledge that is independent of any
+# one scenario. See docs/architecture.md for the intended future contents
+# (e.g. traffic_generator.yaml, iosxr_operational.yaml, sr_mpls.yaml).
+
+name: sample
+
+description: >
+  Example reusable reference information used to validate
+  Network Lab MCP reference loading.
+
+guidance:
+  - This reference is intentionally simple for Step 1 validation.

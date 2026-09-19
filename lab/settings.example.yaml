@@ -1,0 +1,13 @@
+# Local runtime selection template for Network Lab MCP.
+#
+# Copy this file to settings.yaml (which is gitignored) before first use:
+#   cp lab/settings.example.yaml lab/settings.yaml
+#
+# Edit settings.yaml directly to switch the active topology, scenario, or
+# references. Step 1 has no CLI for changing this selection.
+
+active_topology: sample_lab
+active_scenario: sample
+
+active_references:
+  - sample

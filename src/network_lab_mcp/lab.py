@@ -7,6 +7,7 @@ the next tool call without restarting the MCP server.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -116,14 +117,25 @@ def validate_topology_device_names(topology_name: str, devices: dict) -> None:
         seen_sessions[session_name] = device_name
 
 
+def validate_topology_data(name: str, data: Any) -> None:
+    """Validate an in-memory topology mapping using the same rules `load_topology()`
+    applies to a freshly loaded file.
+
+    This is the single validation primitive shared by the MCP load path, the
+    Step 2 CLI commit path, and tests -- neither of the other callers
+    duplicates these rules.
+    """
+    if not isinstance(data, dict):
+        raise LabConfigError(f"Topology '{name}' data must be a YAML mapping.")
+    devices = data.get("devices") or {}
+    validate_topology_device_names(name, devices)
+
+
 def load_topology(name: str, lab_root: Path | None = None) -> dict:
     lab_root = lab_root or find_lab_root()
     path = lab_root / "topologies" / f"{name}.yaml"
     topology = _load_yaml(path, f"Topology '{name}'")
-    if not isinstance(topology, dict):
-        raise LabConfigError(f"Topology '{name}' at '{path}' must be a YAML mapping.")
-    devices = topology.get("devices") or {}
-    validate_topology_device_names(name, devices)
+    validate_topology_data(name, topology)
     return topology
 
 
@@ -167,6 +179,77 @@ def get_execution_instructions() -> dict:
             {"name": name, "content": content} for name, content in zip(reference_names, references)
         ],
     }
+
+
+def _list_yaml_stems(directory: Path) -> list[str]:
+    if not directory.is_dir():
+        return []
+    return sorted(p.stem for p in directory.glob("*.yaml"))
+
+
+def list_topology_names(lab_root: Path | None = None) -> list[str]:
+    """List the topology names available on disk (exact stored/file case)."""
+    lab_root = lab_root or find_lab_root()
+    return _list_yaml_stems(lab_root / "topologies")
+
+
+def list_scenario_names(lab_root: Path | None = None) -> list[str]:
+    lab_root = lab_root or find_lab_root()
+    return _list_yaml_stems(lab_root / "scenarios")
+
+
+def list_reference_names(lab_root: Path | None = None) -> list[str]:
+    lab_root = lab_root or find_lab_root()
+    return _list_yaml_stems(lab_root / "references")
+
+
+def topology_exists(name: str, lab_root: Path | None = None) -> bool:
+    lab_root = lab_root or find_lab_root()
+    return (lab_root / "topologies" / f"{name}.yaml").is_file()
+
+
+def scenario_exists(name: str, lab_root: Path | None = None) -> bool:
+    lab_root = lab_root or find_lab_root()
+    return (lab_root / "scenarios" / f"{name}.yaml").is_file()
+
+
+def reference_exists(name: str, lab_root: Path | None = None) -> bool:
+    lab_root = lab_root or find_lab_root()
+    return (lab_root / "references" / f"{name}.yaml").is_file()
+
+
+def _atomic_write_yaml(path: Path, data: Any) -> None:
+    """Write YAML atomically: write to a sibling temp file, flush, then replace.
+
+    This avoids ever leaving a partially written committed YAML file behind,
+    and avoids touching the target file at all when the caller decides not to
+    write (see write_topology()/write_settings() callers in cli/config.py,
+    which only call this when a scope is actually dirty).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(data, handle, sort_keys=False, default_flow_style=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp_path, path)
+
+
+def write_settings(settings: dict, lab_root: Path | None = None) -> None:
+    """Persist a settings mapping to lab/settings.yaml atomically."""
+    lab_root = lab_root or find_lab_root()
+    _atomic_write_yaml(lab_root / "settings.yaml", settings)
+
+
+def write_topology(name: str, data: dict, lab_root: Path | None = None) -> None:
+    """Persist a topology mapping to lab/topologies/<name>.yaml atomically.
+
+    Validates with the same `validate_topology_data()` primitive used to load
+    topologies, so an invalid candidate can never reach disk.
+    """
+    lab_root = lab_root or find_lab_root()
+    validate_topology_data(name, data)
+    _atomic_write_yaml(lab_root / "topologies" / f"{name}.yaml", data)
 
 
 def get_device(device_name: str) -> tuple[str, dict]:

@@ -11,7 +11,11 @@ requires-python = ">=3.10"
 dependencies = [
     "mcp>=2.2,<3",
     "pyyaml>=6,<7",
+    "prompt_toolkit>=3.0,<4",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=7,<9"]
 
 [project.scripts]
 network-lab-mcp = "network_lab_mcp.mcp_server:main"

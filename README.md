@@ -9,10 +9,13 @@ common operating principles, understand the current task, draw on reusable
 reference knowledge, and reach lab devices through a real terminal — while
 Claude Code itself does all of the network engineering reasoning.
 
-This repository is **Step 1** of the project: a minimal, working foundation.
-It intentionally does not yet include configuration mode, topology discovery,
-or a human-facing CLI. See [Current limitations](#current-limitations) and
-[Future steps](#future-steps).
+This repository now includes both **Step 1** (the MCP server and terminal
+foundation) and **Step 2** (an IOS XR-compatible human-facing CLI, launched
+via `./run_cli.sh`, for editing lab configuration through a candidate/commit
+model). Topology discovery (CDP/LLDP) and a `show topology`/`discover
+topology`/`write topology`/`delete topology` command family are still not
+implemented — that is Step 3. See [Current limitations](#current-limitations)
+and [Future steps](#future-steps).
 
 ## Responsibility model
 
@@ -28,7 +31,10 @@ or a human-facing CLI. See [Current limitations](#current-limitations) and
 
 Network Lab MCP deliberately keeps network-engineering judgment out of the MCP
 server itself. It exposes lab knowledge and terminal access; Claude Code
-decides what to do with them. See [docs/architecture.md](docs/architecture.md)
+decides what to do with them. The Step 2 human CLI adds a fourth role,
+**Human Configuration / Control Interface**: it edits lab configuration
+through a candidate/commit model, but it is not itself a network-engineering
+reasoning engine either. See [docs/architecture.md](docs/architecture.md)
 for more detail.
 
 ## Step 1 capabilities
@@ -46,24 +52,86 @@ for more detail.
   and `telnet` binaries, driven the way a human would: read the terminal,
   decide what to send, send it.
 
+## Step 2 capabilities: the Human Configuration CLI
+
+`./run_cli.sh` launches an interactive, IOS XR-compatible CLI for editing
+`lab/settings.yaml` and `lab/topologies/*.yaml` through a **candidate ->
+commit** model — the same responsibility split IOS XR uses for its own
+configuration mode, applied here to Network Lab MCP's own lab data instead
+of a network device. It is a human configuration/control plane, not a
+network-engineering reasoning engine, and it never talks the MCP stdio
+protocol.
+
+- **Modes**: EXEC (`network-lab#`), global configuration
+  (`network-lab(config)#`), topology configuration
+  (`network-lab(config-topology-<name>)#`), and device configuration
+  (`network-lab(config-device-<name>)#`).
+- **Candidate configuration**: entering `configure` snapshots committed
+  settings into a settings candidate; selecting a topology loads (or creates)
+  a topology candidate. Nothing is written to disk until `commit`.
+- **Scoped dirty state**: a settings-only change (scenario/reference
+  selection) does not block switching to a different topology; an in-progress
+  topology edit does. `exit`/`end`/Ctrl-D refuse to silently discard
+  uncommitted changes.
+- **IOS XR-style interaction**, all driven by one command grammar (the single
+  source of truth in `cli/grammar.py`, see
+  [docs/cli_reference.md](docs/cli_reference.md) for the full reference):
+  unique fixed-keyword abbreviation (`conf`, `top <name>`, `dev <name>`,
+  `tra ssh`), Tab/Ctrl-I completion, context-sensitive `?` (bare, partial-token,
+  and next-token forms, including a `<cr>` marker), ambiguous/incomplete/
+  invalid-input detection with an IOS XR-style caret, in-process command
+  history (never written to disk, and a password-setting command is never
+  retained in it even in memory), IOS XR-style line editing, and safe
+  Ctrl-C (cancels only the current input line) / Ctrl-D (EOF; blocked while
+  uncommitted changes exist) behavior.
+- **Fixed CLI keywords are case-insensitive** (`configure`/`CONFIGURE`/
+  `Configure` are equivalent); **object identifiers — topology, scenario,
+  reference, and device names — are case-sensitive** and are never silently
+  case-folded, including in dynamic completion.
+- **Case-only topology-name collision safeguard**: if `topology <name>` does
+  not exactly match an existing topology but differs from one only by
+  letter case (e.g. entering `SRv6_Lab` when `srv6_lab` already exists), the
+  CLI asks for explicit confirmation before creating a distinct topology,
+  rather than silently opening the existing one or silently creating a
+  look-alike. This is a narrow safety check, not fuzzy name matching.
+- **Step 1 validator reuse**: topology/device validation on commit reuses
+  `network_lab_mcp.lab.validate_topology_data()` (built on Step 1's own
+  `validate_topology_device_names()`) — the CLI does not maintain a
+  duplicate set of validation rules.
+- **Minimal, targeted writes**: commit only writes the YAML files that
+  actually changed semantically; an unchanged topology that was merely
+  selected is never rewritten, and a no-op commit writes nothing at all.
+- **Password safety**: passwords are stored in lab YAML in plain text (as in
+  Step 1 — this is a lab tool, not a secret manager) but are never shown by
+  `show configuration`/`show running-config`, never offered as a completion
+  candidate, and never retained in this process's in-memory history.
+- **Committed-state boundary**: the MCP server only ever reads committed
+  `lab/settings.yaml` and `lab/topologies/*.yaml`; candidate configuration is
+  memory-only and invisible to Claude Code until `commit` succeeds, at which
+  point it becomes visible on the very next MCP tool call — no MCP server
+  restart is needed.
+
 ## Architecture overview
 
 ```
-Claude Code
-    |
-Network Lab MCP (this repository)
-    |
-dedicated tmux environment (socket: network-lab-mcp)
-    |
-ssh / telnet
-    |
+Claude Code                          Human Operator
+    |                                     |
+Network Lab MCP (this repository)   ./run_cli.sh (this repository)
+    |                                     |
+dedicated tmux environment           Candidate configuration -> commit
+(socket: network-lab-mcp)                 |
+    |                                Committed lab YAML
+ssh / telnet                              |
+    |                              (read by Network Lab MCP above)
 Lab Devices
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the full picture,
 including how Topology, Principles, Scenario, References, Terminal, Claude
-Code, and Workspace relate to each other, and how the production and
-validation terminal session namespaces are kept structurally separate.
+Code, and Workspace relate to each other, how the production and validation
+terminal session namespaces are kept structurally separate, and how the
+Step 2 CLI's candidate/commit model relates to the committed-state boundary
+the MCP server reads from.
 
 ## Directory structure
 
@@ -72,7 +140,7 @@ network-lab-mcp/
 ├── pyproject.toml
 ├── README.md
 ├── .gitignore
-├── run_cli.sh
+├── run_cli.sh                 # Step 2 human CLI launcher
 │
 ├── src/
 │   └── network_lab_mcp/
@@ -81,8 +149,11 @@ network-lab-mcp/
 │       ├── lab.py             # settings/topology/principles/scenario/reference loading
 │       ├── terminal.py        # tmux session management, ssh/telnet launch
 │       │
-│       └── cli/
-│           └── __init__.py    # placeholder for the Step 2 human-facing CLI
+│       └── cli/                       # Step 2 human-facing CLI
+│           ├── __init__.py
+│           ├── main.py                # REPL, prompt rendering, key bindings, dispatch
+│           ├── config.py              # candidate configuration, dirty state, commit/abort
+│           └── grammar.py             # command grammar single source of truth
 │
 ├── lab/
 │   ├── settings.example.yaml  # tracked template
@@ -188,11 +259,30 @@ of `network-lab-mcp`.
   cp lab/settings.example.yaml lab/settings.yaml
   ```
 
-- In Step 1, switching the active topology, scenario, or references is done
-  by directly editing `lab/settings.yaml`. There is no CLI for this yet —
-  see [docs/cli_reference.md](docs/cli_reference.md). Changes take effect on
-  the next tool call; the MCP server does not need to be restarted, because
-  lab YAML is re-read from disk on every relevant call.
+- Switching the active topology, scenario, or references can be done either
+  by directly editing `lab/settings.yaml`, or through the Step 2 human CLI
+  (`./run_cli.sh`) described below and in
+  [docs/cli_reference.md](docs/cli_reference.md). Either way, changes take
+  effect on the next MCP tool call; the MCP server does not need to be
+  restarted, because lab YAML is re-read from disk on every relevant call.
+
+## Running the Human Configuration CLI
+
+```bash
+./run_cli.sh
+network-lab#
+```
+
+This launches the Step 2 IOS XR-compatible CLI in the same activated
+environment used for `pip install -e .` (there is no separate console
+script for it; it is run as a module by `run_cli.sh`). It edits
+`lab/settings.yaml` and `lab/topologies/*.yaml` directly through a
+candidate/commit model — see
+[Step 2 capabilities](#step-2-capabilities-the-human-configuration-cli) above
+and [docs/cli_reference.md](docs/cli_reference.md) for the full command
+reference. It is a separate process from `network-lab-mcp`; you can run the
+CLI to change lab configuration and the MCP server (if already running for
+Claude Code) will pick up a successful `commit` on its next tool call.
 
 ### Sample topology
 
@@ -268,6 +358,14 @@ are used only to drive interactive terminal login. Network Lab MCP:
 - never persists credentials into any separate runtime database (there isn't
   one — tmux is the only session state).
 
+The Step 2 human CLI applies the same principle to lab configuration
+editing: a device `password` is stored in plain text in topology YAML (as in
+Step 1 — this is a lab tool, not a secret manager), but is never shown by
+`show configuration`/`show running-config` (both render `********` in its
+place), never offered as a Tab/`?` completion candidate, and never retained
+in the CLI's own in-memory command history. See
+[docs/cli_reference.md](docs/cli_reference.md) for details.
+
 ## Dedicated tmux environment
 
 All Network Lab MCP terminal sessions run on a dedicated tmux server, reached
@@ -323,10 +421,8 @@ add a new public MCP tool.
 
 ## Current limitations
 
-- No CLI yet for switching active topology/scenario/references (edit
-  `lab/settings.yaml` directly).
-- No configuration mode, candidate configuration, or commit/abort workflow.
-- No topology discovery (CDP/LLDP) and no topology write/delete.
+- No topology discovery (CDP/LLDP) and no topology write/delete from the CLI
+  (`no topology <name>` is not implemented; topology deletion is Step 3).
 - Login to a device is interactive (via `terminal_read()`/`terminal_send()`),
   not automated.
 - Non-editable/wheel installation is not supported.
@@ -334,12 +430,16 @@ add a new public MCP tool.
   inside the managed tmux path, and output visibility) were validated against
   a local port with no listening Telnet service; a live Telnet device
   interaction was not validated in this environment.
+- The Step 2 CLI edits topology/settings selection and device connection
+  fields only; scenario, reference, and principles *content* remain
+  file-based and are not editable from the CLI (selection only).
+- The case-only collision safeguard (`topology <name>`) is mandatory and
+  implemented; the equivalent lightweight safeguard for `device <name>` is
+  not implemented in Step 2 (device identifiers remain fully case-sensitive
+  regardless).
 
 ## Future steps
 
-- **Step 2**: an IOS XR-style human-facing CLI (`run_cli.sh`) for topology
-  registration, active topology/scenario/reference selection, candidate
-  configuration, and commit/abort.
 - **Step 3**: topology discovery (CDP/LLDP), `show topology`, `discover
   topology`, `write topology`, `delete topology`.
 

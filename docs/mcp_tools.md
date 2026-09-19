@@ -5,6 +5,15 @@ reload their inputs from disk on every call (see
 [architecture.md](architecture.md#lab-yaml-reload-policy)). Tool results are
 returned as structured JSON.
 
+**Committed-state boundary (Step 2)**: these tools only ever read
+*committed* `lab/settings.yaml` and `lab/topologies/*.yaml` — the same files
+the Step 2 human CLI (`./run_cli.sh`) writes on a successful `commit`.
+Uncommitted candidate configuration in a CLI session is never visible here;
+a successful commit becomes visible on the very next call to any of these
+tools, with no MCP server restart required. See
+[architecture.md](architecture.md#committed-only-mcp-boundary) and
+[cli_reference.md](cli_reference.md).
+
 ## get_active_topology()
 
 **Purpose**: answer "where should I work?" — return the currently active lab

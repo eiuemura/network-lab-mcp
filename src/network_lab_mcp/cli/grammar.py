@@ -29,6 +29,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from network_lab_mcp import lab
+
 # --------------------------------------------------------------------------
 # Read-only runtime context for dynamic providers
 # --------------------------------------------------------------------------
@@ -77,6 +79,17 @@ def validate_freeform(value: str) -> ValidationOutcome:
     return _ok(value)
 
 
+def validate_device_type(value: str) -> ValidationOutcome:
+    """Reuses network_lab_mcp.lab.normalize_device_type() -- the single
+    validation primitive for the fixed device-type enum, also applied to
+    topology YAML on load/write, so this grammar never maintains its own
+    separate copy of the allowed values or matching rules."""
+    try:
+        return _ok(lab.normalize_device_type(value))
+    except lab.LabConfigError as exc:
+        return _fail(str(exc))
+
+
 def validate_transport(value: str) -> ValidationOutcome:
     lowered = value.lower()
     if lowered in ("ssh", "telnet"):
@@ -121,6 +134,11 @@ def provide_device_names(ctx: CliContext, prefix: str) -> list[str]:
 def provide_transport_values(ctx: CliContext, prefix: str) -> list[str]:
     lowered = prefix.lower()
     return [v for v in ("ssh", "telnet") if v.startswith(lowered)]
+
+
+def provide_device_types(ctx: CliContext, prefix: str) -> list[str]:
+    lowered = prefix.lower()
+    return [v for v in lab.DEVICE_TYPES if v.startswith(lowered)]
 
 
 # --------------------------------------------------------------------------
@@ -327,7 +345,16 @@ def _build_device_root() -> Node:
         next_node = node.add_argument(argument)
         next_node.set_command(action, description)
 
-    add_field("type", "Set the device type", "device.set_type")
+    add_field(
+        "type",
+        "Set the device type",
+        "device.set_type",
+        validate=validate_device_type,
+        provider=provide_device_types,
+        hint="<iosxr|iosxe|nxos>",
+        enumerate_when_empty=True,
+        value_help=dict(lab.DEVICE_TYPES),
+    )
     add_field("address", "Set the device management address", "device.set_address")
     add_field(
         "transport",

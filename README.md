@@ -308,6 +308,18 @@ device name) — see
 ["Structurally separate session namespaces"](#structurally-separate-session-namespaces)
 below for why that is safe.
 
+### Device type enum
+
+A device's optional `type` field, when present, must be one of `iosxr`
+(Cisco IOS XR), `iosxe` (Cisco IOS XE), or `nxos` (Cisco NX-OS) —
+`lab.normalize_device_type()` is the single validation primitive for this
+enum, applied both by `lab.py` at topology load/write time (so a manually
+edited YAML file with an unsupported `type` is rejected) and by the Step 2
+CLI's `type` argument (so `type ?`/Tab only ever offer these three values,
+and an unambiguous abbreviation like `type nx` normalizes to `nxos`). This
+enum exists because Step 3 topology discovery will dispatch
+platform-specific CDP/LLDP commands and parsers based on `device.type`.
+
 ### Sample scenario and references
 
 `lab/scenarios/sample.yaml` and `lab/references/sample.yaml` are minimal

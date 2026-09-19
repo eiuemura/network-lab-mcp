@@ -185,6 +185,30 @@ def test_topology_edit_commit_persists_and_preserves_links(lab_root):
     assert persisted["devices"]["R2"]["address"] == "192.0.2.12"
 
 
+def test_commit_accepts_supported_device_type(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.apply_topology_plan(session.plan_topology_selection("sample_lab"))
+    session.enter_device("R1")
+    session.set_device_field("type", "nxos")
+    session.commit()
+    assert lab.load_topology("sample_lab", lab_root)["devices"]["R1"]["type"] == "nxos"
+
+
+def test_commit_rejects_unsupported_device_type(lab_root):
+    # Reaches lab.validate_topology_data() at commit time even when a value
+    # bypasses the CLI grammar's own type validator, proving the check is
+    # not duplicated only on the interactive input path.
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.apply_topology_plan(session.plan_topology_selection("sample_lab"))
+    session.enter_device("R1")
+    session.set_device_field("type", "junos")
+    with pytest.raises(cfgmod.CommitValidationError, match="Invalid device type"):
+        session.commit()
+    assert lab.load_topology("sample_lab", lab_root)["devices"]["R1"]["type"] == "iosxr"
+
+
 def test_new_topology_commit_persists_settings_and_topology(lab_root):
     session = cfgmod.CliSession(lab_root)
     session.enter_configure()

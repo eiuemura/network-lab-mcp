@@ -91,6 +91,52 @@ def get_active_reference_names(settings: dict) -> list[str]:
     return names
 
 
+DEVICE_TYPES: dict[str, str] = {
+    "iosxr": "Cisco IOS XR",
+    "iosxe": "Cisco IOS XE",
+    "nxos": "Cisco NX-OS",
+}
+
+
+def normalize_device_type(value: str) -> str:
+    """Resolve `value` against the fixed DEVICE_TYPES enum and return the
+    canonical lowercase keyword.
+
+    Accepts an exact case-insensitive match or an unambiguous prefix
+    abbreviation (mirroring fixed-keyword abbreviation elsewhere in the
+    grammar); raises LabConfigError for an unknown or ambiguous value. This
+    is the single validation primitive for `device.type`, shared by the
+    Step 2 CLI's grammar-level `type` argument and topology YAML loading
+    below -- neither duplicates this logic independently. Step 3 topology
+    discovery will dispatch platform-specific CDP/LLDP commands and parsers
+    based on this field, so an unrecognized value must never reach either a
+    CLI candidate or committed topology YAML."""
+    lowered = value.lower()
+    if lowered in DEVICE_TYPES:
+        return lowered
+    matches = [key for key in DEVICE_TYPES if key.startswith(lowered)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise LabConfigError(f"Ambiguous device type '{value}'. Matches: {', '.join(sorted(matches))}.")
+    raise LabConfigError(f"Invalid device type '{value}'. Expected one of: {', '.join(sorted(DEVICE_TYPES))}.")
+
+
+def validate_topology_device_types(topology_name: str, devices: dict) -> None:
+    """Ensure each device's optional 'type' field, when present, is one of
+    DEVICE_TYPES. A missing/empty 'type' is not itself an error here."""
+    for device_name, device in devices.items():
+        raw_type = (device or {}).get("type")
+        if raw_type in (None, ""):
+            continue
+        if not isinstance(raw_type, str):
+            raise LabConfigError(f"Topology '{topology_name}' device '{device_name}' has an invalid 'type' value.")
+        try:
+            normalize_device_type(raw_type)
+        except LabConfigError as exc:
+            raise LabConfigError(f"Topology '{topology_name}' device '{device_name}': {exc}") from exc
+
+
 def validate_topology_device_names(topology_name: str, devices: dict) -> None:
     """Ensure every device name maps to a safe and unambiguous terminal session name."""
     if not isinstance(devices, dict):
@@ -129,6 +175,7 @@ def validate_topology_data(name: str, data: Any) -> None:
         raise LabConfigError(f"Topology '{name}' data must be a YAML mapping.")
     devices = data.get("devices") or {}
     validate_topology_device_names(name, devices)
+    validate_topology_device_types(name, devices)
 
 
 def load_topology(name: str, lab_root: Path | None = None) -> dict:

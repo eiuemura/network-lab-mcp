@@ -71,6 +71,34 @@ def test_invalid_transport_value_has_caret_span():
     assert "ssh" in result.error.detail
 
 
+def test_device_type_accepts_exact_and_case_insensitive_values():
+    for line, expected in (("type iosxr", "iosxr"), ("type IOSXE", "iosxe"), ("type NxOs", "nxos")):
+        result = grammar.parse("device", line)
+        assert result.ok, line
+        assert result.args == {"value": expected}
+
+
+def test_device_type_accepts_unambiguous_abbreviation():
+    result = grammar.parse("device", "type nx")
+    assert result.ok
+    assert result.args == {"value": "nxos"}
+
+
+def test_device_type_rejects_ambiguous_abbreviation():
+    result = grammar.parse("device", "type ios")
+    assert not result.ok
+    assert result.error.kind == "invalid"
+    assert "Ambiguous" in result.error.detail
+    assert "iosxr" in result.error.detail and "iosxe" in result.error.detail
+
+
+def test_device_type_rejects_unknown_value():
+    result = grammar.parse("device", "type junos")
+    assert not result.ok
+    assert result.error.kind == "invalid"
+    assert "Invalid device type" in result.error.detail
+
+
 def test_invalid_port_value():
     result = grammar.parse("device", "port 99999")
     assert not result.ok
@@ -176,6 +204,15 @@ def test_no_reference_completion_uses_candidate_references():
     assert set(result.candidates) == {"srv6", "iosxr_basics"}
 
 
+def test_device_type_tab_completion_exposes_only_fixed_enum():
+    ctx = make_ctx()
+    result = grammar.complete("device", "type ", ctx)
+    assert set(result.candidates) == {"iosxr", "iosxe", "nxos"}
+
+    result_prefix = grammar.complete("device", "type n", ctx)
+    assert result_prefix.candidates == ["nxos"]
+
+
 # ---- context-sensitive help ----
 
 
@@ -199,6 +236,27 @@ def test_next_token_help_for_enum_argument():
     result = grammar.help("device", "transport ", ctx)
     values = {line.token: line.description for line in result.lines}
     assert values == {"ssh": "Use SSH transport", "telnet": "Use Telnet transport"}
+
+
+def test_device_type_help_lists_fixed_enum_not_a_placeholder():
+    ctx = make_ctx()
+    result = grammar.help("device", "type ", ctx)
+    values = {line.token: line.description for line in result.lines}
+    assert values == {
+        "iosxr": "Cisco IOS XR",
+        "iosxe": "Cisco IOS XE",
+        "nxos": "Cisco NX-OS",
+    }
+    assert result.show_cr is False
+    # Never falls back to a generic "<value>" placeholder for this enum.
+    assert "<value>" not in [line.token for line in result.lines]
+
+
+def test_device_type_cr_marker_when_value_already_supplied():
+    ctx = make_ctx()
+    result = grammar.help("device", "type iosxr ", ctx)
+    assert result.lines == []
+    assert result.show_cr is True
 
 
 def test_next_token_help_for_identifier_argument_shows_generic_hint():

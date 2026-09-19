@@ -24,6 +24,58 @@ def test_load_topology_rejects_invalid_device_name(lab_root):
         lab.load_topology("broken", lab_root)
 
 
+# ---- device.type enum ----
+
+
+def test_normalize_device_type_accepts_exact_and_case_insensitive():
+    assert lab.normalize_device_type("iosxr") == "iosxr"
+    assert lab.normalize_device_type("IOSXE") == "iosxe"
+    assert lab.normalize_device_type("NxOs") == "nxos"
+
+
+def test_normalize_device_type_accepts_unambiguous_abbreviation():
+    assert lab.normalize_device_type("nx") == "nxos"
+
+
+def test_normalize_device_type_rejects_ambiguous_abbreviation():
+    with pytest.raises(lab.LabConfigError, match="Ambiguous"):
+        lab.normalize_device_type("ios")
+
+
+def test_normalize_device_type_rejects_unknown_value():
+    with pytest.raises(lab.LabConfigError, match="Invalid device type"):
+        lab.normalize_device_type("junos")
+
+
+def test_load_topology_accepts_all_supported_device_types(lab_root):
+    for device_type in ("iosxr", "iosxe", "nxos"):
+        path = lab_root / "topologies" / f"types_{device_type}.yaml"
+        path.write_text(
+            f"name: types_{device_type}\ndevices:\n  R1:\n    type: {device_type}\nlinks: []\n",
+            encoding="utf-8",
+        )
+        topology = lab.load_topology(f"types_{device_type}", lab_root)
+        assert topology["devices"]["R1"]["type"] == device_type
+
+
+def test_load_topology_allows_missing_device_type(lab_root):
+    (lab_root / "topologies" / "no_type.yaml").write_text(
+        "name: no_type\ndevices:\n  R1:\n    address: 192.0.2.1\nlinks: []\n",
+        encoding="utf-8",
+    )
+    topology = lab.load_topology("no_type", lab_root)
+    assert "type" not in topology["devices"]["R1"]
+
+
+def test_load_topology_rejects_unsupported_device_type(lab_root):
+    (lab_root / "topologies" / "bad_type.yaml").write_text(
+        "name: bad_type\ndevices:\n  R1:\n    type: junos\nlinks: []\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(lab.LabConfigError, match="Invalid device type"):
+        lab.load_topology("bad_type", lab_root)
+
+
 def test_get_active_topology_and_execution_instructions(lab_root, monkeypatch):
     monkeypatch.setattr(lab, "find_lab_root", lambda: lab_root)
     active = lab.get_active_topology()

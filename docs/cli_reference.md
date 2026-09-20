@@ -40,13 +40,87 @@ selector semantics no longer exists anywhere in this CLI.
 
 `<name>` is the exact, case-preserved identifier currently open for editing.
 
+## `?` vs. `help`: syntax help vs. Quick Start/usage help
+
+These two are deliberately different, and neither one replaced the other:
+
+- **`?`** — IOS XR-style **context-sensitive command syntax help**: "what
+  can I type here?" Unaffected by anything in this section; see
+  "Context-sensitive `?`" below.
+- **`help`** — Network Lab MCP's own **Quick Start/usage help**: "how do I
+  use Network Lab MCP?" Bare `help` shows an overview (purpose, the typical
+  workflow, the five configuration areas, editor resolution order, and a
+  pointer to `?` and to the topics below); it does **not** repeat the
+  command list bare `?` already shows.
+- **`help <topic>`** goes deeper on one subject. Topics are a fixed set,
+  the same "select from an enum" pattern as `device.type`/`transport`, so
+  `help ?` lists them and `<cr>`:
+
+  ```
+  network-lab# help ?
+    claude               Show Claude Code integration help
+    workflow             Show the recommended Network Lab workflow
+    editor               Show external YAML editor usage
+    cli                  Show CLI usage information
+    <cr>
+  ```
+
+  | Topic | Covers |
+  |-------|--------|
+  | `help claude` | How Claude Code uses Network Lab MCP: the seven MCP tools, what Claude does/doesn't receive, device addressing by logical ID, and how to register/start Claude Code. |
+  | `help workflow` | The recommended end-to-end sequence: access-info -> topology -> scenario -> reference -> running-config -> review -> commit -> use Claude Code. |
+  | `help editor` | External YAML editor usage: resolution order, candidate-only editing, when `commit`/`clear` apply. |
+  | `help cli` | A short cheat sheet for `?`, Tab, `configure`, `show running-config`/`show configuration`, `commit`, `clear`, `exit`, `end`, Ctrl-C — not a substitute for this document. |
+
+`help` and `help <topic>` are available in every mode (EXEC and every
+configuration mode) with identical content — they answer a question about
+Network Lab MCP itself, not about the current grammar position, so they do
+not vary by mode the way `?` does. Both are read-only: neither touches
+candidate state, dirty state, or any file.
+
+## `show version`
+
+`show version` is a read-only software-information command, available in
+every mode, that never touches candidate/dirty state, never reads
+access-info, and does not depend on the active topology/scenario/reference:
+
+```
+network-lab# show version
+Network Lab MCP
+
+  Version:       0.1.0
+  Release date:  2026-09-20
+  Git commit:    abc1234
+  Author:        Eitaro Uemura
+  License:       GNU General Public License v3.0
+  Python:        3.12.3
+network-lab#
+```
+
+- **Version**, **Author**, and **License** are read from installed package
+  metadata (`pyproject.toml` is their single source of truth, via
+  `importlib.metadata`) — never a second hard-coded copy.
+- **Release date** is a small constant in `network_lab_mcp/__init__.py`
+  (`__release_date__`), since standard packaging metadata has no field for
+  it; it is a separate concept from **Version** (a release date is not a
+  version identifier).
+- **Git commit** is resolved dynamically (`git rev-parse --short HEAD`
+  against the repository checkout) every time the command runs — it is
+  never hard-coded to whatever revision happened to be current when a
+  feature was written. If `git` is unavailable, the checkout is not a git
+  repository, or resolution fails for any other reason, this prints
+  `unavailable` instead of failing the command or leaking a raw git error.
+- **Python** is `platform.python_version()` of the interpreter actually
+  running the CLI — never a hard-coded version string.
+
 ## EXEC mode commands
 
 | Command | Effect |
 |---------|--------|
 | `configure` (alias: `configure terminal`) | Enter global configuration mode; initializes a running-config candidate (see "Candidate model" below). |
 | `show running-config` | Show the committed MCP definition selection (topology/scenario/reference names) — never a definition's own content. Identical in every mode; see "`show running-config` vs. `show configuration`". |
-| `help` | Display the commands valid at the current position (same content as bare `?`). |
+| `show version` | Show Network Lab MCP's own version/license/runtime information — see "`show version`" above. |
+| `help` / `help <topic>` | Network Lab MCP Quick Start/usage help — see "`?` vs. `help`" above. Not the same as bare `?`. |
 | `exit` / `quit` | Terminate the CLI process. Only reachable in EXEC mode, where by construction no candidate configuration exists. |
 
 ## Global configuration mode commands
@@ -64,11 +138,15 @@ selector semantics no longer exists anywhere in this CLI.
 | `commit` | Validate and persist the candidate; return to EXEC. |
 | `end` | Return to EXEC. Blocked (with a warning) if any candidate scope is dirty. Never implicitly commits or clears. |
 | `exit` | Same as `end` at this mode: return to EXEC, blocked while dirty. |
-| `help` / `?` | Display the commands valid here. |
+| `show version` / `help` / `help <topic>` / `?` | As in EXEC mode — see above. |
 
 Opening a *different* definition (of any kind) while the current one is
 dirty is blocked, the same way switching topologies was guarded in the
 original Step 2 model — see "Definition switching guard" below.
+
+`show version`, `help`, and `help <topic>` behave identically in every
+mode (see above); the per-mode tables below omit them for brevity and list
+only what differs from EXEC/global.
 
 ## Running-config selection mode commands
 
@@ -93,7 +171,7 @@ original Step 2 model — see "Definition switching guard" below.
 | `clear` / `commit` | As above (topology-scoped edits are part of the same overall candidate). |
 | `end` | Return directly to EXEC; blocked while dirty. |
 | `exit` | Return one level up, to global configuration mode. No dirty check (still the same configuration session). |
-| `help` / `?` | Display the commands valid here. |
+| `show version` / `help` / `help <topic>` / `?` | As in EXEC mode. |
 
 ## Topology device mode commands (safe fields only)
 
@@ -378,7 +456,7 @@ network-lab# show running-config
 network-lab# ?
   configure          Enter configuration mode
   show               Show information
-  help               Display help
+  help               Display Network Lab MCP quick start help
   exit               Exit the CLI
   quit               Exit the CLI
 

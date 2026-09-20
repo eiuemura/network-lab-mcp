@@ -1,5 +1,8 @@
 # MCP Tools
 
+For a shorter, CLI-native summary of this same integration (from the
+operator's side), run `help claude` in `./run_cli.sh`.
+
 Network Lab MCP exposes exactly seven tools over stdio. All lab-data tools
 reload their inputs from disk on every call (see
 [architecture.md](architecture.md#lab-yaml-reload-policy)). Tool results are

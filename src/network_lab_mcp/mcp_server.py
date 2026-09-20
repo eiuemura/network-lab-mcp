@@ -23,12 +23,12 @@ import sys
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from network_lab_mcp import lab, terminal
+from network_lab_mcp import __version__, lab, terminal
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s network-lab-mcp: %(message)s")
 logger = logging.getLogger("network_lab_mcp")
 
-mcp = MCPServer("network-lab-mcp", version="0.1.0")
+mcp = MCPServer("network-lab-mcp", version=__version__)
 
 
 @mcp.tool()

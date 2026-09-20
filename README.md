@@ -676,3 +676,19 @@ Network Lab MCP uses the official
 It uses the SDK's `MCPServer` class (the mcp 2.x name for what was `FastMCP`
 in mcp 1.x) over the `stdio` transport. See
 [docs/mcp_tools.md](docs/mcp_tools.md) for the tool reference.
+
+## Version, license, and quick start
+
+Run `help` in the CLI (`./run_cli.sh`) for a Quick Start covering the
+typical configuration workflow, and `show version` for the exact version,
+release date, source revision, and license currently running — see
+[docs/cli_reference.md](docs/cli_reference.md) for the full `help`/`show
+version` reference (`?` remains the separate, IOS XR-style
+context-sensitive syntax help). `help claude` explains how Claude Code
+uses Network Lab MCP.
+
+Network Lab MCP is licensed under the **GNU General Public License v3.0**
+(see [LICENSE](LICENSE)). Version (`0.1.0`), author, and license metadata
+are declared once in `pyproject.toml` and read at runtime via
+`importlib.metadata` — `show version`'s output and this README are the
+same source, never two independently maintained copies.

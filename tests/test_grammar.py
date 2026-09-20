@@ -427,3 +427,111 @@ def test_running_config_show_cr():
     result = grammar.help("global", "show running-config ", ctx)
     assert result.lines == []
     assert result.show_cr is True
+
+
+# ---- show version ----
+
+
+def test_show_version_is_parseable_in_every_mode():
+    for mode in ("exec", "global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
+        result = grammar.parse(mode, "show version")
+        assert result.ok, mode
+        assert result.action == f"{mode}.show_version"
+
+
+def test_show_help_lists_version_alongside_running_config():
+    ctx = make_ctx()
+    result = grammar.help("exec", "show ", ctx)
+    assert [line.token for line in result.lines] == ["running-config", "version"]
+
+
+def test_show_version_cr_marker():
+    ctx = make_ctx()
+    result = grammar.help("exec", "show version ", ctx)
+    assert result.lines == []
+    assert result.show_cr is True
+
+
+# ---- help vs. ? distinction, and help topics ----
+
+
+def test_bare_question_mark_still_shows_command_syntax_not_quick_start():
+    # `?` (grammar.help with empty text) must remain the IOS XR-style
+    # command-syntax listing -- Quick Start is a separate concern rendered
+    # by cli/main.py only for the executed `help` command, never by `?`.
+    ctx = make_ctx()
+    result = grammar.help("exec", "", ctx)
+    tokens = [line.token for line in result.lines]
+    assert tokens == ["configure", "show", "help", "exit", "quit"]
+
+
+def test_bare_help_parses_as_its_own_complete_command():
+    result = grammar.parse("exec", "help")
+    assert result.ok
+    assert result.action == "exec.help"
+    assert result.args == {}
+
+
+def test_help_topic_help_lists_topics_and_cr():
+    ctx = make_ctx()
+    result = grammar.help("exec", "help ", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [
+        ("claude", "Show Claude Code integration help"),
+        ("workflow", "Show the recommended Network Lab workflow"),
+        ("editor", "Show external YAML editor usage"),
+        ("cli", "Show CLI usage information"),
+    ]
+    assert result.show_cr is True
+
+
+def test_help_topic_parses_for_each_topic():
+    for topic in ("claude", "workflow", "editor", "cli"):
+        result = grammar.parse("exec", f"help {topic}")
+        assert result.ok, topic
+        assert result.action == "exec.help_topic"
+        assert result.args == {"topic": topic}
+
+
+def test_help_topic_cr_marker():
+    ctx = make_ctx()
+    result = grammar.help("exec", "help claude ", ctx)
+    assert result.lines == []
+    assert result.show_cr is True
+
+
+def test_help_topic_case_insensitive_and_unambiguous_abbreviation():
+    assert grammar.parse("exec", "help CLAUDE").args == {"topic": "claude"}
+    assert grammar.parse("exec", "help workflow").args == {"topic": "workflow"}
+    assert grammar.parse("exec", "help w").args == {"topic": "workflow"}  # "w" is unique
+    assert grammar.parse("exec", "help e").args == {"topic": "editor"}  # "e" is unique
+
+
+def test_help_topic_ambiguous_abbreviation_rejected():
+    result = grammar.parse("exec", "help c")
+    assert not result.ok
+    assert result.error.kind == "invalid"
+    assert "Ambiguous" in result.error.detail
+    assert "claude" in result.error.detail and "cli" in result.error.detail
+
+
+def test_help_topic_unknown_value_rejected():
+    result = grammar.parse("exec", "help bogus")
+    assert not result.ok
+    assert result.error.kind == "invalid"
+    assert "Invalid help topic" in result.error.detail
+
+
+def test_help_topic_tab_completion():
+    ctx = make_ctx()
+    assert set(grammar.complete("exec", "help ", ctx).candidates) == {"claude", "workflow", "editor", "cli"}
+    assert grammar.complete("exec", "help w", ctx).candidates == ["workflow"]
+
+
+def test_help_available_in_every_mode():
+    for mode in ("global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
+        result = grammar.parse(mode, "help")
+        assert result.ok, mode
+        assert result.action == f"{mode}.help"
+        topic_result = grammar.parse(mode, "help cli")
+        assert topic_result.ok, mode
+        assert topic_result.action == f"{mode}.help_topic"

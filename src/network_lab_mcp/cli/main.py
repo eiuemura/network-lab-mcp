@@ -20,7 +20,10 @@ and help all live in cli/grammar.py.
 
 from __future__ import annotations
 
+import platform
+import subprocess
 import sys
+from pathlib import Path
 from typing import Callable
 
 import yaml
@@ -29,12 +32,18 @@ from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.history import History
 from prompt_toolkit.key_binding import KeyBindings
 
+import network_lab_mcp
 from network_lab_mcp import lab
 from network_lab_mcp.cli import config as cfgmod
 from network_lab_mcp.cli import editor
 from network_lab_mcp.cli import grammar
 
 PASSWORD_MASK = "********"
+
+# Repo checkout root, for a best-effort `git rev-parse` in `show version`.
+# Mirrors lab.find_lab_root()'s own repo-root computation; independent of it
+# so `show version` never depends on lab/ existing or being valid.
+_REPO_ROOT = Path(network_lab_mcp.__file__).resolve().parent.parent.parent
 
 
 class _ExitCli(Exception):
@@ -291,8 +300,217 @@ def h_show_configuration(session: cfgmod.CliSession, args: dict) -> None:
     print(render_configuration_candidate(session))
 
 
+def _resolve_git_commit() -> str:
+    """Best-effort short commit hash for the checkout `show version` is
+    running from. Never raises and never surfaces a raw git error: missing
+    `git`, a non-repository checkout, or any other failure all collapse to
+    "unavailable"."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    if result.returncode != 0:
+        return "unavailable"
+    return result.stdout.strip() or "unavailable"
+
+
+def render_version_info() -> str:
+    """Read-only software information: no candidate/dirty-state change, no
+    access-info, no dependency on the active topology/scenario/reference."""
+    return "\n".join(
+        [
+            "Network Lab MCP",
+            "",
+            f"  Version:       {network_lab_mcp.__version__}",
+            f"  Release date:  {network_lab_mcp.__release_date__}",
+            f"  Git commit:    {_resolve_git_commit()}",
+            f"  Author:        {network_lab_mcp.__author__}",
+            f"  License:       {network_lab_mcp.__license__}",
+            f"  Python:        {platform.python_version()}",
+        ]
+    )
+
+
+def render_quick_start() -> str:
+    """Network Lab MCP's own Quick Start/usage help -- distinct from the
+    IOS XR-style `?` context-sensitive syntax help, which is unaffected by
+    this and lives entirely in the "?" key binding below."""
+    return "\n".join(
+        [
+            "Network Lab MCP CLI",
+            "",
+            "Purpose:",
+            "  Configure the lab definitions and settings used by Network Lab MCP.",
+            "",
+            "Typical workflow:",
+            "  1. Configure private device access information.",
+            "  2. Create or edit a topology.",
+            "  3. Create or edit a scenario.",
+            "  4. Create or edit references.",
+            "  5. Select the definitions used by MCP in running-config.",
+            "  6. Commit the configuration.",
+            "  7. Use Claude Code with Network Lab MCP.",
+            "",
+            "Configuration areas:",
+            "  running-config   Select topology, scenario, and references used by MCP",
+            "  access-info      Configure private device access information",
+            "  topology         Create or edit the logical topology",
+            "  scenario         Create or edit the task scenario",
+            "  reference        Create or edit reusable knowledge",
+            "",
+            "Editing:",
+            "  Topology, scenario, and reference definitions support external YAML editing.",
+            "  Editor selection: $VISUAL -> $EDITOR -> vim",
+            "",
+            "CLI help:",
+            "  Press '?' at any prompt for context-sensitive command help.",
+            "",
+            "Additional help:",
+            "  help claude",
+            "  help workflow",
+            "  help editor",
+            "  help cli",
+        ]
+    )
+
+
+def render_help_claude() -> str:
+    return "\n".join(
+        [
+            "Claude Code Integration",
+            "",
+            "Network Lab MCP exposes exactly seven MCP tools to Claude Code:",
+            "  get_active_topology, get_execution_instructions, terminal_open,",
+            "  terminal_send, terminal_read, terminal_list, terminal_close.",
+            "",
+            "Claude receives:",
+            "  - the committed active topology (safe logical data only)",
+            "  - the committed active scenario",
+            "  - the committed active references",
+            "",
+            "Claude never receives:",
+            "  - device passwords, usernames, or addresses",
+            "  - any access-info definition",
+            "  - uncommitted candidate configuration",
+            "",
+            "Claude addresses a device by its logical device ID only (e.g. \"R1\").",
+            "Network Lab MCP resolves the private connection details internally",
+            "and opens the terminal session -- Claude never sees them.",
+            "",
+            "Use running-config (see 'help workflow') to select which committed",
+            "topology/scenario/references MCP exposes to Claude.",
+            "",
+            "Getting started with Claude Code:",
+            "  1. Install Network Lab MCP into an activated Python environment",
+            "     (see README.md, \"Installation model\").",
+            "  2. Register it once:",
+            "       claude mcp add --scope user --transport stdio network-lab -- network-lab-mcp",
+            "  3. Start Claude Code from your own task workspace (not this",
+            "     repository) once Network Lab MCP has been configured and",
+            "     committed.",
+        ]
+    )
+
+
+def render_help_workflow() -> str:
+    return "\n".join(
+        [
+            "Typical Workflow",
+            "",
+            "1. Configure access-info.",
+            "2. Create or edit topology.",
+            "3. Create or edit scenario.",
+            "4. Create or edit references.",
+            "5. Configure running-config.",
+            "6. Review candidate configuration (show configuration).",
+            "7. Commit.",
+            "8. Use Claude Code.",
+            "",
+            "Definitions:",
+            "  access-info     Private device connection information",
+            "  topology        Safe logical network model",
+            "  scenario        Task intent",
+            "  reference       Reusable knowledge",
+            "  running-config  Definitions currently used by MCP",
+            "",
+            "Topology can be created/edited with structured CLI commands or an",
+            "external YAML editor ('edit'). A future Step 3 will add topology",
+            "discovery as a third way to produce a topology candidate -- that",
+            "discovery step is not implemented yet.",
+        ]
+    )
+
+
+def render_help_editor() -> str:
+    return "\n".join(
+        [
+            "External YAML Editor",
+            "",
+            "Available for topology, scenario, and reference definitions (not",
+            "access-info, which stays on the structured CLI to keep password",
+            "masking on one path).",
+            "",
+            "Editor resolution order:",
+            "  1. $VISUAL",
+            "  2. $EDITOR",
+            "  3. vim (fallback; no .vimrc required -- Network Lab MCP enables",
+            "     basic YAML syntax highlighting itself only for this fallback,",
+            "     never when you set $VISUAL/$EDITOR yourself)",
+            "",
+            "'edit' opens the current candidate in a secure, uniquely named",
+            "temporary .yaml file. Saving and quitting the editor only updates",
+            "the in-memory candidate; the real committed file is not changed",
+            "until 'commit'. 'clear' discards the edit (and any other",
+            "uncommitted change in the current configure session) without",
+            "touching disk.",
+        ]
+    )
+
+
+def render_help_cli() -> str:
+    return "\n".join(
+        [
+            "CLI Usage",
+            "",
+            "  ?                     Context-sensitive help for the current position",
+            "  Tab / Ctrl-I          Complete the current token",
+            "  configure             Enter configuration mode",
+            "  show running-config   Committed MCP definition selection",
+            "  show configuration    Candidate configuration (inside configure)",
+            "  commit                Save the candidate configuration",
+            "  clear                 Discard uncommitted configure-session changes",
+            "  exit                  Move one configuration level up",
+            "  end                   Return to EXEC",
+            "  Ctrl-C                Cancel the current input line only",
+            "",
+            "See docs/cli_reference.md for the full command reference.",
+        ]
+    )
+
+
+_HELP_TOPIC_RENDERERS: dict[str, Callable[[], str]] = {
+    "claude": render_help_claude,
+    "workflow": render_help_workflow,
+    "editor": render_help_editor,
+    "cli": render_help_cli,
+}
+
+
 def h_help(session: cfgmod.CliSession, args: dict) -> None:
-    print_help_result(grammar.help(session.mode, "", build_context(session)))
+    print(render_quick_start())
+
+
+def h_help_topic(session: cfgmod.CliSession, args: dict) -> None:
+    print(_HELP_TOPIC_RENDERERS[args["topic"]]())
+
+
+def h_show_version(session: cfgmod.CliSession, args: dict) -> None:
+    print(render_version_info())
 
 
 def h_commit(session: cfgmod.CliSession, args: dict) -> None:
@@ -468,7 +686,9 @@ def h_access_device_clear_port(session: cfgmod.CliSession, args: dict) -> None:
 HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "exec.configure": h_exec_configure,
     "exec.show_running_config": h_show_running_config,
+    "exec.show_version": h_show_version,
     "exec.help": h_help,
+    "exec.help_topic": h_help_topic,
     "exec.exit": h_exec_exit,
     "exec.quit": h_exec_exit,
     "global.running_config": h_global_running_config,
@@ -511,10 +731,12 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
 for _mode in ("global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
     HANDLERS[f"{_mode}.show_running_config"] = h_show_running_config
     HANDLERS[f"{_mode}.show_configuration"] = h_show_configuration
+    HANDLERS[f"{_mode}.show_version"] = h_show_version
     HANDLERS[f"{_mode}.commit"] = h_commit
     HANDLERS[f"{_mode}.clear"] = h_clear
     HANDLERS[f"{_mode}.end"] = h_end
     HANDLERS[f"{_mode}.help"] = h_help
+    HANDLERS[f"{_mode}.help_topic"] = h_help_topic
 
 
 # --------------------------------------------------------------------------

@@ -157,6 +157,36 @@ def provide_device_types(ctx: CliContext, prefix: str) -> list[str]:
     return [v for v in lab.DEVICE_TYPES if v.startswith(lowered)]
 
 
+# `help <topic>` is Network Lab MCP's own Quick Start/usage help, distinct
+# from the IOS XR-style `?` context-sensitive syntax help -- see cli/main.py
+# render_quick_start()/render_help_*() for the actual topic content. This
+# closed enum is grammar-only (no other module needs to share it, unlike
+# device.type), so it is not sourced from network_lab_mcp.lab.
+HELP_TOPICS: dict[str, str] = {
+    "claude": "Show Claude Code integration help",
+    "workflow": "Show the recommended Network Lab workflow",
+    "editor": "Show external YAML editor usage",
+    "cli": "Show CLI usage information",
+}
+
+
+def validate_help_topic(value: str) -> ValidationOutcome:
+    lowered = value.lower()
+    if lowered in HELP_TOPICS:
+        return _ok(lowered)
+    matches = [key for key in HELP_TOPICS if key.startswith(lowered)]
+    if len(matches) == 1:
+        return _ok(matches[0])
+    if len(matches) > 1:
+        return _fail(f"Ambiguous help topic '{value}'. Matches: {', '.join(sorted(matches))}.")
+    return _fail(f"Invalid help topic '{value}'. Expected one of: {', '.join(sorted(HELP_TOPICS))}.")
+
+
+def provide_help_topics(ctx: CliContext, prefix: str) -> list[str]:
+    lowered = prefix.lower()
+    return [t for t in HELP_TOPICS if t.startswith(lowered)]
+
+
 # --------------------------------------------------------------------------
 # Grammar tree
 # --------------------------------------------------------------------------
@@ -222,9 +252,32 @@ def _add_show_subtree(root: Node, mode: str, include_configuration: bool) -> Non
     show = root.add_literal("show", "Show information")
     running = show.add_literal("running-config", "Show committed MCP definition selection")
     running.set_command(f"{mode}.show_running_config", "Show committed MCP definition selection")
+    version = show.add_literal("version", "Show Network Lab MCP version information")
+    version.set_command(f"{mode}.show_version", "Show Network Lab MCP version information")
     if include_configuration:
         candidate = show.add_literal("configuration", "Show candidate configuration")
         candidate.set_command(f"{mode}.show_configuration", "Show candidate configuration")
+
+
+def _add_help_subtree(root: Node, mode: str) -> None:
+    """`help` (bare) is Network Lab MCP's own Quick Start; `help <topic>`
+    drills into one of HELP_TOPICS. Both are ordinary grammar nodes -- one
+    node carries its own command (the bare case) and also an argument (the
+    topic case), which parse()/help() already support without any change:
+    a node can be a complete command *and* accept a further token."""
+    help_node = root.add_literal("help", "Display Network Lab MCP quick start help")
+    help_node.set_command(f"{mode}.help", "Display Network Lab MCP quick start help")
+    topic_arg = Argument(
+        "topic",
+        "Help topic",
+        validate=validate_help_topic,
+        provider=provide_help_topics,
+        hint="<topic>",
+        enumerate_when_empty=True,
+        value_help=dict(HELP_TOPICS),
+    )
+    topic_next = help_node.add_argument(topic_arg)
+    topic_next.set_command(f"{mode}.help_topic", "Display help for a specific topic")
 
 
 def _add_common_subtree(root: Node, mode: str) -> None:
@@ -236,8 +289,7 @@ def _add_common_subtree(root: Node, mode: str) -> None:
     end.set_command(f"{mode}.end", "Return to EXEC mode")
     exit_node = root.add_literal("exit", "Exit one configuration level")
     exit_node.set_command(f"{mode}.exit", "Exit one configuration level")
-    help_node = root.add_literal("help", "Display help")
-    help_node.set_command(f"{mode}.help", "Display help")
+    _add_help_subtree(root, mode)
 
 
 def _build_exec_root() -> Node:
@@ -248,9 +300,7 @@ def _build_exec_root() -> Node:
     terminal_alias.set_command("exec.configure", "Enter configuration mode")
 
     _add_show_subtree(root, "exec", include_configuration=False)
-
-    help_node = root.add_literal("help", "Display help")
-    help_node.set_command("exec.help", "Display help")
+    _add_help_subtree(root, "exec")
 
     exit_node = root.add_literal("exit", "Exit the CLI")
     exit_node.set_command("exec.exit", "Exit the CLI")
@@ -774,7 +824,13 @@ def help(mode: str, text_before_cursor: str, ctx: CliContext) -> HelpResult:
                 lines.append(HelpLine(value, label))
         else:
             lines.append(HelpLine(argument.display_hint(), argument.description))
-        return HelpResult(lines, False, partial)
+        # True only for a node that is itself a complete command *and* takes
+        # a further argument (currently just "help", e.g. `help ?` shows the
+        # topic list plus <cr> since bare `help` is already valid); every
+        # pre-existing argument (type/transport/topology name/...) has no
+        # command of its own on this node, so this stays False for them.
+        show_cr = partial == "" and node.command is not None
+        return HelpResult(lines, show_cr, partial)
 
     lines = []
     lowered = partial.lower()

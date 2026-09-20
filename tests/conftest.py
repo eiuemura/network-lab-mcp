@@ -73,3 +73,28 @@ def lab_root(tmp_path: Path) -> Path:
         {"name": "iosxr_basics", "description": "IOS XR basics."},
     )
     return root
+
+
+@pytest.fixture()
+def fake_editor(tmp_path: Path):
+    """Build a small, deterministic stand-in for an interactive editor, so
+    automated tests never depend on a real interactive vim session.
+
+    Returns a factory `make(body) -> path`: `body` is a Python snippet with
+    `path` bound to the temp YAML file's location (as a string); the
+    factory writes it into a standalone executable script and returns its
+    path, suitable for $VISUAL/$EDITOR."""
+
+    def make(body: str) -> Path:
+        script = tmp_path / f"fake_editor_{len(list(tmp_path.glob('fake_editor_*')))}.py"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "path = sys.argv[-1]\n"
+            f"{body}\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o700)
+        return script
+
+    return make

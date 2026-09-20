@@ -1,8 +1,22 @@
-"""Loading of Network Lab MCP lab data: settings, topology, principles, scenarios, and references.
+"""Loading of Network Lab MCP lab data: running-config selection, topology,
+access-info, principles, scenarios, and references.
 
 Lab YAML is intentionally re-read from disk on every call instead of being
-cached at process startup, so that editing lab/settings.yaml takes effect on
-the next tool call without restarting the MCP server.
+cached at process startup, so that editing lab/settings.yaml (or any
+committed definition file) takes effect on the next tool call without
+restarting the MCP server.
+
+Five kinds of data are deliberately kept separate (see README.md and
+docs/architecture.md for the full model):
+
+- running-config (lab/settings.yaml): which topology/scenario/references MCP
+  currently uses. A *selection*, not a definition.
+- access-info (lab/access-info/*.yaml): private device connection data
+  (address/transport/port/username/password). Never exposed to Claude.
+- topology (lab/topologies/*.yaml): safe logical topology (devices, device
+  type, links). Exposed to Claude via get_active_topology().
+- scenario (lab/scenarios/*.yaml): what Claude should do.
+- reference (lab/references/*.yaml): reusable knowledge for Claude.
 """
 
 from __future__ import annotations
@@ -54,8 +68,13 @@ def _load_yaml(path: Path, what: str) -> Any:
     return data
 
 
+# --------------------------------------------------------------------------
+# running-config (lab/settings.yaml): definition selection used by MCP
+# --------------------------------------------------------------------------
+
+
 def read_settings(lab_root: Path | None = None) -> dict:
-    """Load lab/settings.yaml from disk, with a clear error if it is missing."""
+    """Load the committed running-config (lab/settings.yaml) from disk."""
     lab_root = lab_root or find_lab_root()
     settings_path = lab_root / "settings.yaml"
     example_path = lab_root / "settings.example.yaml"
@@ -91,6 +110,11 @@ def get_active_reference_names(settings: dict) -> list[str]:
     return names
 
 
+# --------------------------------------------------------------------------
+# device.type: the fixed enum shared by topology and access-info
+# --------------------------------------------------------------------------
+
+
 DEVICE_TYPES: dict[str, str] = {
     "iosxr": "Cisco IOS XR",
     "iosxe": "Cisco IOS XE",
@@ -110,11 +134,11 @@ def normalize_device_type(value: str) -> str:
     abbreviation (mirroring fixed-keyword abbreviation elsewhere in the
     grammar); raises LabConfigError for an unknown or ambiguous value. This
     is the single validation primitive for `device.type`, shared by the
-    Step 2 CLI's grammar-level `type` argument and topology YAML loading
-    below -- neither duplicates this logic independently. Step 3 topology
-    discovery will dispatch platform-specific CDP/LLDP commands and parsers
-    based on this field, so an unrecognized value must never reach either a
-    CLI candidate or committed topology YAML."""
+    Step 2 CLI's grammar-level `type` argument, topology YAML validation, and
+    access-info YAML validation -- none of them duplicates this logic. Step 3
+    topology discovery will dispatch platform-specific CDP/LLDP commands and
+    parsers based on this field, so an unrecognized value must never reach a
+    CLI candidate or committed YAML."""
     lowered = value.lower()
     if lowered in DEVICE_TYPES:
         return lowered
@@ -126,19 +150,33 @@ def normalize_device_type(value: str) -> str:
     raise LabConfigError(f"Invalid device type '{value}'. Expected one of: {', '.join(sorted(DEVICE_TYPES))}.")
 
 
-def validate_topology_device_types(topology_name: str, devices: dict) -> None:
+def validate_device_types(context_label: str, devices: dict) -> None:
     """Ensure each device's optional 'type' field, when present, is one of
-    DEVICE_TYPES. A missing/empty 'type' is not itself an error here."""
+    DEVICE_TYPES. A missing/empty 'type' is not itself an error here.
+
+    Shared by topology and access-info validation (`context_label` is only
+    used in error messages), so the enum's matching rules are never
+    duplicated between the two."""
     for device_name, device in devices.items():
         raw_type = (device or {}).get("type")
         if raw_type in (None, ""):
             continue
         if not isinstance(raw_type, str):
-            raise LabConfigError(f"Topology '{topology_name}' device '{device_name}' has an invalid 'type' value.")
+            raise LabConfigError(f"{context_label} device '{device_name}' has an invalid 'type' value.")
         try:
             normalize_device_type(raw_type)
         except LabConfigError as exc:
-            raise LabConfigError(f"Topology '{topology_name}' device '{device_name}': {exc}") from exc
+            raise LabConfigError(f"{context_label} device '{device_name}': {exc}") from exc
+
+
+# --------------------------------------------------------------------------
+# topology (lab/topologies/*.yaml): safe logical topology, exposed to Claude
+# --------------------------------------------------------------------------
+
+
+# Private device-access fields that must live in access-info, never in
+# topology, since topology is exposed to Claude via get_active_topology().
+TOPOLOGY_ACCESS_FIELDS = ("address", "transport", "port", "username", "password")
 
 
 def validate_topology_device_names(topology_name: str, devices: dict) -> None:
@@ -167,6 +205,21 @@ def validate_topology_device_names(topology_name: str, devices: dict) -> None:
         seen_sessions[session_name] = device_name
 
 
+def validate_topology_no_access_fields(topology_name: str, devices: dict) -> None:
+    """Reject private device-access fields in topology data.
+
+    Topology is safe logical data exposed to Claude via
+    get_active_topology(); address/transport/port/username/password belong
+    in access-info instead, which MCP never exposes."""
+    for device_name, device in devices.items():
+        present = sorted(field for field in TOPOLOGY_ACCESS_FIELDS if (device or {}).get(field) not in (None, ""))
+        if present:
+            raise LabConfigError(
+                f"Topology '{topology_name}' device '{device_name}' contains private access field(s) "
+                f"{', '.join(present)}; these belong in an access-info definition, not topology."
+            )
+
+
 def validate_topology_data(name: str, data: Any) -> None:
     """Validate an in-memory topology mapping using the same rules `load_topology()`
     applies to a freshly loaded file.
@@ -179,7 +232,8 @@ def validate_topology_data(name: str, data: Any) -> None:
         raise LabConfigError(f"Topology '{name}' data must be a YAML mapping.")
     devices = data.get("devices") or {}
     validate_topology_device_names(name, devices)
-    validate_topology_device_types(name, devices)
+    validate_topology_no_access_fields(name, devices)
+    validate_device_types(f"Topology '{name}'", devices)
 
 
 def load_topology(name: str, lab_root: Path | None = None) -> dict:
@@ -190,6 +244,120 @@ def load_topology(name: str, lab_root: Path | None = None) -> dict:
     return topology
 
 
+def write_topology(name: str, data: dict, lab_root: Path | None = None) -> None:
+    """Persist a topology mapping to lab/topologies/<name>.yaml atomically.
+
+    Validates with the same `validate_topology_data()` primitive used to load
+    topologies, so an invalid candidate (including one still carrying
+    private access fields) can never reach disk.
+    """
+    lab_root = lab_root or find_lab_root()
+    validate_topology_data(name, data)
+    _atomic_write_yaml(lab_root / "topologies" / f"{name}.yaml", data)
+
+
+def list_topology_names(lab_root: Path | None = None) -> list[str]:
+    """List the topology names available on disk (exact stored/file case)."""
+    lab_root = lab_root or find_lab_root()
+    return _list_yaml_stems(lab_root / "topologies")
+
+
+def topology_exists(name: str, lab_root: Path | None = None) -> bool:
+    lab_root = lab_root or find_lab_root()
+    return (lab_root / "topologies" / f"{name}.yaml").is_file()
+
+
+# --------------------------------------------------------------------------
+# access-info (lab/access-info/*.yaml): private device access, never exposed
+# --------------------------------------------------------------------------
+
+
+def validate_access_info_data(name: str, data: Any) -> None:
+    """Validate an in-memory access-info mapping. Device names only need
+    basic sanity here (non-empty strings) -- unlike topology, access-info
+    device keys do not by themselves create terminal sessions, so they are
+    not required to pass the topology session-name-collision check. The
+    device.type enum is still validated through the same SSOT as topology."""
+    if not isinstance(data, dict):
+        raise LabConfigError(f"Access information '{name}' data must be a YAML mapping.")
+    devices = data.get("devices") or {}
+    if not isinstance(devices, dict):
+        raise LabConfigError(f"Access information '{name}' has an invalid 'devices' section; expected a mapping.")
+    for device_name in devices:
+        if not isinstance(device_name, str) or not device_name.strip():
+            raise LabConfigError(f"Access information '{name}' has a device with an empty or invalid name.")
+    validate_device_types(f"Access information '{name}'", devices)
+
+
+def load_access_info(name: str, lab_root: Path | None = None) -> dict:
+    lab_root = lab_root or find_lab_root()
+    path = lab_root / "access-info" / f"{name}.yaml"
+    data = _load_yaml(path, f"Access information '{name}'")
+    validate_access_info_data(name, data)
+    return data
+
+
+def write_access_info(name: str, data: dict, lab_root: Path | None = None) -> None:
+    """Persist an access-info mapping to lab/access-info/<name>.yaml atomically."""
+    lab_root = lab_root or find_lab_root()
+    validate_access_info_data(name, data)
+    _atomic_write_yaml(lab_root / "access-info" / f"{name}.yaml", data)
+
+
+def list_access_info_names(lab_root: Path | None = None) -> list[str]:
+    lab_root = lab_root or find_lab_root()
+    return _list_yaml_stems(lab_root / "access-info")
+
+
+def access_info_exists(name: str, lab_root: Path | None = None) -> bool:
+    lab_root = lab_root or find_lab_root()
+    return (lab_root / "access-info" / f"{name}.yaml").is_file()
+
+
+def resolve_device_access(device_name: str, lab_root: Path | None = None) -> dict:
+    """Search every committed access-info definition for `device_name` and
+    return its private access data.
+
+    This is a deliberately temporary, unscoped lookup (see
+    "Known limitations" in README.md): access-info is not yet associated
+    with a specific topology, so it is searched globally by exact device ID.
+    Fails closed (LabConfigError) if the device ID is absent from every
+    access-info definition, or present in more than one -- silently picking
+    one would risk connecting to the wrong device. Credential values are
+    never included in the raised error."""
+    lab_root = lab_root or find_lab_root()
+    matches: list[tuple[str, dict]] = []
+    for access_info_name in list_access_info_names(lab_root):
+        data = load_access_info(access_info_name, lab_root)
+        devices = data.get("devices") or {}
+        if device_name in devices:
+            matches.append((access_info_name, devices[device_name] or {}))
+    if not matches:
+        raise LabConfigError(f"Access information for device '{device_name}' was not found.")
+    if len(matches) > 1:
+        raise LabConfigError(f"Access information for device '{device_name}' is ambiguous.")
+    return matches[0][1]
+
+
+# --------------------------------------------------------------------------
+# scenario / reference: schema intentionally not fixed yet (see
+# docs/scenario_format.md) -- minimal "valid YAML mapping" validation only
+# --------------------------------------------------------------------------
+
+
+def _validate_mapping(kind: str, name: str, data: Any) -> None:
+    if not isinstance(data, dict):
+        raise LabConfigError(f"{kind} '{name}' data must be a YAML mapping.")
+
+
+def validate_scenario_data(name: str, data: Any) -> None:
+    _validate_mapping("Scenario", name, data)
+
+
+def validate_reference_data(name: str, data: Any) -> None:
+    _validate_mapping("Reference", name, data)
+
+
 def load_principles(lab_root: Path | None = None) -> Any:
     lab_root = lab_root or find_lab_root()
     return _load_yaml(lab_root / "principles.yaml", "Principles")
@@ -197,16 +365,65 @@ def load_principles(lab_root: Path | None = None) -> Any:
 
 def load_scenario(name: str, lab_root: Path | None = None) -> Any:
     lab_root = lab_root or find_lab_root()
-    return _load_yaml(lab_root / "scenarios" / f"{name}.yaml", f"Scenario '{name}'")
+    data = _load_yaml(lab_root / "scenarios" / f"{name}.yaml", f"Scenario '{name}'")
+    _validate_mapping("Scenario", name, data)
+    return data
+
+
+def write_scenario(name: str, data: dict, lab_root: Path | None = None) -> None:
+    lab_root = lab_root or find_lab_root()
+    validate_scenario_data(name, data)
+    _atomic_write_yaml(lab_root / "scenarios" / f"{name}.yaml", data)
+
+
+def list_scenario_names(lab_root: Path | None = None) -> list[str]:
+    lab_root = lab_root or find_lab_root()
+    return _list_yaml_stems(lab_root / "scenarios")
+
+
+def scenario_exists(name: str, lab_root: Path | None = None) -> bool:
+    lab_root = lab_root or find_lab_root()
+    return (lab_root / "scenarios" / f"{name}.yaml").is_file()
+
+
+def load_reference(name: str, lab_root: Path | None = None) -> Any:
+    lab_root = lab_root or find_lab_root()
+    data = _load_yaml(lab_root / "references" / f"{name}.yaml", f"Reference '{name}'")
+    _validate_mapping("Reference", name, data)
+    return data
 
 
 def load_references(names: list[str], lab_root: Path | None = None) -> list[Any]:
     lab_root = lab_root or find_lab_root()
-    return [_load_yaml(lab_root / "references" / f"{name}.yaml", f"Reference '{name}'") for name in names]
+    return [load_reference(name, lab_root) for name in names]
+
+
+def write_reference(name: str, data: dict, lab_root: Path | None = None) -> None:
+    lab_root = lab_root or find_lab_root()
+    validate_reference_data(name, data)
+    _atomic_write_yaml(lab_root / "references" / f"{name}.yaml", data)
+
+
+def list_reference_names(lab_root: Path | None = None) -> list[str]:
+    lab_root = lab_root or find_lab_root()
+    return _list_yaml_stems(lab_root / "references")
+
+
+def reference_exists(name: str, lab_root: Path | None = None) -> bool:
+    lab_root = lab_root or find_lab_root()
+    return (lab_root / "references" / f"{name}.yaml").is_file()
+
+
+# --------------------------------------------------------------------------
+# MCP-facing reads: committed running-config selection only, never candidate
+# state, never access-info
+# --------------------------------------------------------------------------
 
 
 def get_active_topology() -> dict:
-    """Reload settings and the active topology from disk and return them together."""
+    """Reload the running-config selection and the active topology from disk
+    and return them together. Never includes access-info: this is the safe
+    logical topology Claude is allowed to see."""
     lab_root = find_lab_root()
     settings = read_settings(lab_root)
     topology_name = get_active_topology_name(settings)
@@ -232,41 +449,47 @@ def get_execution_instructions() -> dict:
     }
 
 
+def get_device(device_name: str) -> tuple[str, dict]:
+    """Verify `device_name` exists in the active topology, then resolve its
+    private access information from committed access-info definitions.
+
+    Returns (topology_name, access_info_dict) -- never topology data itself,
+    since terminal connectivity needs address/transport/username/password,
+    which topology no longer carries. Raises LabConfigError (fail closed)
+    when the device is not present in the active topology, when access
+    information for it is missing or ambiguous (see
+    resolve_device_access()), or when the topology's and access-info's
+    device.type disagree once both are normalized through the shared
+    DEVICE_TYPES SSOT."""
+    active = get_active_topology()
+    topology_devices = active["topology"].get("devices") or {}
+    topology_device = topology_devices.get(device_name)
+    if topology_device is None:
+        raise LabConfigError(
+            f"Device '{device_name}' is not present in active topology '{active['active_topology']}'."
+        )
+    access = resolve_device_access(device_name)
+
+    topology_type = (topology_device or {}).get("type")
+    access_type = (access or {}).get("type")
+    if topology_type and access_type:
+        if normalize_device_type(str(topology_type)) != normalize_device_type(str(access_type)):
+            raise LabConfigError(
+                f"Device type mismatch for '{device_name}' between topology and access information."
+            )
+
+    return active["active_topology"], access
+
+
+# --------------------------------------------------------------------------
+# Generic listing / atomic write helpers
+# --------------------------------------------------------------------------
+
+
 def _list_yaml_stems(directory: Path) -> list[str]:
     if not directory.is_dir():
         return []
     return sorted(p.stem for p in directory.glob("*.yaml"))
-
-
-def list_topology_names(lab_root: Path | None = None) -> list[str]:
-    """List the topology names available on disk (exact stored/file case)."""
-    lab_root = lab_root or find_lab_root()
-    return _list_yaml_stems(lab_root / "topologies")
-
-
-def list_scenario_names(lab_root: Path | None = None) -> list[str]:
-    lab_root = lab_root or find_lab_root()
-    return _list_yaml_stems(lab_root / "scenarios")
-
-
-def list_reference_names(lab_root: Path | None = None) -> list[str]:
-    lab_root = lab_root or find_lab_root()
-    return _list_yaml_stems(lab_root / "references")
-
-
-def topology_exists(name: str, lab_root: Path | None = None) -> bool:
-    lab_root = lab_root or find_lab_root()
-    return (lab_root / "topologies" / f"{name}.yaml").is_file()
-
-
-def scenario_exists(name: str, lab_root: Path | None = None) -> bool:
-    lab_root = lab_root or find_lab_root()
-    return (lab_root / "scenarios" / f"{name}.yaml").is_file()
-
-
-def reference_exists(name: str, lab_root: Path | None = None) -> bool:
-    lab_root = lab_root or find_lab_root()
-    return (lab_root / "references" / f"{name}.yaml").is_file()
 
 
 def _atomic_write_yaml(path: Path, data: Any) -> None:
@@ -274,8 +497,8 @@ def _atomic_write_yaml(path: Path, data: Any) -> None:
 
     This avoids ever leaving a partially written committed YAML file behind,
     and avoids touching the target file at all when the caller decides not to
-    write (see write_topology()/write_settings() callers in cli/config.py,
-    which only call this when a scope is actually dirty).
+    write (see the write_*() callers in cli/config.py, which only call this
+    when a scope is actually dirty).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(path.name + ".tmp")
@@ -287,33 +510,6 @@ def _atomic_write_yaml(path: Path, data: Any) -> None:
 
 
 def write_settings(settings: dict, lab_root: Path | None = None) -> None:
-    """Persist a settings mapping to lab/settings.yaml atomically."""
+    """Persist a running-config selection mapping to lab/settings.yaml atomically."""
     lab_root = lab_root or find_lab_root()
     _atomic_write_yaml(lab_root / "settings.yaml", settings)
-
-
-def write_topology(name: str, data: dict, lab_root: Path | None = None) -> None:
-    """Persist a topology mapping to lab/topologies/<name>.yaml atomically.
-
-    Validates with the same `validate_topology_data()` primitive used to load
-    topologies, so an invalid candidate can never reach disk.
-    """
-    lab_root = lab_root or find_lab_root()
-    validate_topology_data(name, data)
-    _atomic_write_yaml(lab_root / "topologies" / f"{name}.yaml", data)
-
-
-def get_device(device_name: str) -> tuple[str, dict]:
-    """Reload settings and the active topology, then return one device's configuration.
-
-    Returns a (topology_name, device_config) tuple. Raises LabConfigError when
-    the device is not present in the active topology.
-    """
-    active = get_active_topology()
-    devices = active["topology"].get("devices") or {}
-    device = devices.get(device_name)
-    if device is None:
-        raise LabConfigError(
-            f"Device '{device_name}' is not present in active topology '{active['active_topology']}'."
-        )
-    return active["active_topology"], device

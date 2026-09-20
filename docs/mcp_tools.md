@@ -5,14 +5,22 @@ reload their inputs from disk on every call (see
 [architecture.md](architecture.md#lab-yaml-reload-policy)). Tool results are
 returned as structured JSON.
 
-**Committed-state boundary (Step 2)**: these tools only ever read
-*committed* `lab/settings.yaml` and `lab/topologies/*.yaml` — the same files
-the Step 2 human CLI (`./run_cli.sh`) writes on a successful `commit`.
-Uncommitted candidate configuration in a CLI session is never visible here;
-a successful commit becomes visible on the very next call to any of these
+**Committed-state boundary (Step 2 / 2.5)**: these tools only ever read
+*committed* `lab/settings.yaml`, `lab/topologies/*.yaml`, and (for
+`terminal_open()` only) `lab/access-info/*.yaml` — the same files the Step 2
+human CLI (`./run_cli.sh`) writes on a successful `commit`. Uncommitted
+candidate configuration in a CLI session is never visible here; a
+successful commit becomes visible on the very next call to any of these
 tools, with no MCP server restart required. See
 [architecture.md](architecture.md#committed-only-mcp-boundary) and
 [cli_reference.md](cli_reference.md).
+
+**Private access-info boundary**: `lab/access-info/*.yaml` (device
+address/transport/port/username/password) is never returned by any tool
+below. `get_active_topology()` returns only the safe logical topology;
+`terminal_open()` resolves access-info internally to open a session, but
+returns only the device name, session name, reuse flag, and transport —
+never the address, username, or password.
 
 ## get_active_topology()
 
@@ -29,18 +37,26 @@ topology.
   "topology": {
     "name": "sample_lab",
     "description": "...",
-    "devices": { "R1": { "type": "iosxr", "address": "192.0.2.11", "...": "..." } },
+    "devices": { "R1": { "type": "iosxr" } },
     "links": []
   }
 }
 ```
 
+Note that a device entry here never includes `address`, `transport`,
+`port`, `username`, or `password` — topology only ever holds safe logical
+data (`type` plus whatever future safe fields it grows). Private connection
+data lives in a separate access-info definition that this tool never reads
+or returns; see `terminal_open()` below for how that gets resolved when a
+session is actually opened.
+
 **Usage example**: call this first, before touching any device, to learn
 which devices and links exist in the active topology.
 
 **Important behavior**: `lab/settings.yaml` and the active topology YAML are
-both re-read from disk on every call. If you edit `lab/settings.yaml` to
-point at a different topology, the next call reflects that immediately.
+both re-read from disk on every call. If you edit `lab/settings.yaml` (or
+commit a running-config change from the CLI) to point at a different
+topology, the next call reflects that immediately.
 
 **Error behavior**: raises a tool error (visible to the caller, not a crash)
 when `lab/settings.yaml` is missing, the active topology name is invalid, the
@@ -104,14 +120,35 @@ to see the login prompt.
 **Important behavior**: the active topology is reloaded from disk before
 opening the session, so a device added to `lab/topologies/<active>.yaml` (or
 a topology switch in `lab/settings.yaml`) is picked up without restarting the
-server. This tool does not parse or automate login: password prompts, host
-key confirmations, and any other interactive prompt are left for the caller
-to observe via `terminal_read()` and respond to via `terminal_send()`.
+server. `device` only needs to name a device that exists in the active
+topology — Claude never supplies (or sees) an address, username, or
+password. Internally, Network Lab MCP resolves the device's private
+connection data by searching every committed `lab/access-info/*.yaml`
+definition for an exact match on `device` (see
+[architecture.md](architecture.md#device-access-resolution)); this search
+is not yet scoped by the active topology (see "Error behavior" below and
+[README.md](../README.md#temporary-limitation-global-device-id-uniqueness)).
+This tool does not parse or automate login: password prompts, host key
+confirmations, and any other interactive prompt are left for the caller to
+observe via `terminal_read()` and respond to via `terminal_send()`.
 
-**Error behavior**: raises a tool error when the device is not present in
-the active topology, the device's transport is unsupported, the required
-`ssh`/`telnet` binary is unavailable, or the device name cannot be mapped to
-a valid session name.
+**Error behavior**: raises a tool error (fail closed, never a silent guess)
+when:
+
+- the device is not present in the active topology;
+- no committed access-info definition contains that device ID (`% Access
+  information for device '<device>' was not found.`);
+- more than one committed access-info definition contains that device ID —
+  a deliberate, temporary limitation since this lookup is not yet scoped by
+  topology (`% Access information for device '<device>' is ambiguous.`);
+- the topology and resolved access-info both specify `type` and, once
+  normalized, they disagree (`% Device type mismatch for '<device>' between
+  topology and access information.`);
+- the device's transport is unsupported, the required `ssh`/`telnet` binary
+  is unavailable, or the device name cannot be mapped to a valid session
+  name.
+
+No error message from this tool ever includes a credential value.
 
 ## terminal_send()
 

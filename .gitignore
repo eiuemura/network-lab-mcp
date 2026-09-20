@@ -13,3 +13,11 @@ lab/settings.yaml
 # Only the fictional sample topology is tracked.
 lab/topologies/*.yaml
 !lab/topologies/sample_lab.yaml
+
+# access-info holds private device connection data (address/username/
+# password) and is never exposed by MCP. Only the fictional sample is
+# tracked. Its basename matching lab/topologies/sample_lab.yaml is
+# coincidental -- the two are independent samples, never associated by
+# filename.
+lab/access-info/*.yaml
+!lab/access-info/sample_lab.yaml

@@ -20,17 +20,28 @@ one.
 principles and references. It is not a template to copy literally for every
 future use case.
 
-## The Step 2 CLI is selection-only
+## The Step 2 / 2.5 CLI: definitions vs. selection
 
-The Step 2 human CLI (`./run_cli.sh`) can select which scenario and which
-references are active (`scenario <name>`, `reference <name>`, `no reference
-<name>`), and validates that the selected name exists as an exact,
-case-sensitive match against a file under `lab/scenarios/` or
-`lab/references/`. It does not edit scenario or reference *content* — there
-is no `network-lab(config-scenario)#` or `network-lab(config-reference)#`
-submode. Authoring scenario/reference YAML content remains a manual,
-file-based activity, consistent with the format not being finalized yet
-(see below). `lab/principles.yaml` is not edited by the CLI at all.
+The Step 2 / 2.5 human CLI (`./run_cli.sh`) separates *authoring* a
+scenario/reference from *selecting* which one MCP currently uses:
+
+- **Authoring**: global mode's `scenario <name>` / `reference <name>`
+  create or edit a scenario/reference *definition* — an existing name loads
+  it as a candidate, a new name starts a fresh minimal one. This enters
+  `network-lab(config-scenario-<name>)#` / `network-lab(config-reference-<name>)#`,
+  where `edit` opens the candidate in an external YAML editor
+  ($VISUAL/$EDITOR/vim); there is no structured field-by-field editor,
+  consistent with the format not being finalized yet (see below).
+- **Selection**: `running-config` mode's `scenario <name>` / `reference
+  <name>` / `no reference <name>` change which scenario/references MCP
+  uses, validating that the name exists as an exact, case-sensitive match
+  against a file under `lab/scenarios/`/`lab/references/` *or* is the
+  definition currently being authored in the same configure session.
+
+`lab/principles.yaml` is not edited by the CLI at all, and only "valid
+YAML, root is a mapping" is enforced for scenario/reference content — no
+detailed business schema is checked, consistent with the format not being
+finalized yet.
 
 ## Why the schema is not fixed yet
 

@@ -39,3 +39,27 @@ def test_write_topology_creates_new_file(lab_root):
     data = {"name": "new_lab", "description": "", "devices": {}, "links": []}
     lab.write_topology("new_lab", data, lab_root)
     assert lab.load_topology("new_lab", lab_root) == data
+
+
+def test_write_scenario_and_reference_roundtrip(lab_root):
+    scenario_data = {"name": "new_scenario", "description": "", "objectives": []}
+    lab.write_scenario("new_scenario", scenario_data, lab_root)
+    assert lab.load_scenario("new_scenario", lab_root) == scenario_data
+
+    reference_data = {"name": "new_reference", "description": "", "guidance": []}
+    lab.write_reference("new_reference", reference_data, lab_root)
+    assert lab.load_reference("new_reference", lab_root) == reference_data
+
+
+def test_write_scenario_rejects_non_mapping(lab_root):
+    import pytest
+
+    with pytest.raises(lab.LabConfigError):
+        lab.write_scenario("bad", ["not", "a", "mapping"], lab_root)
+    assert not (lab_root / "scenarios" / "bad.yaml").exists()
+
+
+def test_write_access_info_creates_new_file(lab_root):
+    data = {"name": "lab_devices", "devices": {"R1": {"type": "iosxr", "address": "192.0.2.1"}}}
+    lab.write_access_info("lab_devices", data, lab_root)
+    assert lab.load_access_info("lab_devices", lab_root) == data

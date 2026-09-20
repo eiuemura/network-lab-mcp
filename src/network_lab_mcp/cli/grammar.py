@@ -1,18 +1,20 @@
 """Command grammar single source of truth for the Network Lab CLI.
 
-For each CLI mode (EXEC, global configuration, topology configuration, device
-configuration) this module builds one trie of fixed keywords and argument
-slots. The same trie is used for parsing, unique fixed-keyword abbreviation
-resolution, Tab/Ctrl-I completion, context-sensitive `?` help, dynamic
-candidate lookup, `<cr>` eligibility, and invalid/incomplete/ambiguous
-command reporting. There is no separate parser table, completion table, or
-help table that could drift out of sync with this one.
+For each CLI mode (EXEC, global configuration, running-config selection,
+topology/access-info/scenario/reference definition editing, and the nested
+topology-device / access-info-device submodes) this module builds one trie
+of fixed keywords and argument slots. The same trie is used for parsing,
+unique fixed-keyword abbreviation resolution, Tab/Ctrl-I completion,
+context-sensitive `?` help, dynamic candidate lookup, `<cr>` eligibility, and
+invalid/incomplete/ambiguous command reporting. There is no separate parser
+table, completion table, or help table that could drift out of sync with
+this one.
 
 Fixed CLI keywords (e.g. "configure", "topology", "transport") are matched
 case-insensitively and support unique-prefix abbreviation, like IOS XR.
-Object identifiers (topology/scenario/reference/device names) are matched
-case-sensitively and are never abbreviated; that is enforced by never
-attempting keyword-style matching against them at all -- an identifier
+Object identifiers (topology/scenario/reference/access-info/device names)
+are matched case-sensitively and are never abbreviated; that is enforced by
+never attempting keyword-style matching against them at all -- an identifier
 argument accepts whatever token the operator typed and defers existence
 checks to the caller (see cli/config.py).
 
@@ -20,7 +22,10 @@ This module owns no mutable candidate/session state. Dynamic completion
 providers are pure functions of an explicit, read-only CliContext supplied
 by the caller (cli/main.py) on every call, so this module never imports
 cli/config.py and cli/config.py never needs to import this module's runtime
-state -- there is no grammar/config circular dependency.
+state -- there is no grammar/config circular dependency. It does import
+network_lab_mcp.lab for the device.type enum (DEVICE_TYPES /
+normalize_device_type()), which is the single validation primitive for that
+enum -- this grammar never maintains its own separate copy of it.
 """
 
 from __future__ import annotations
@@ -47,8 +52,10 @@ class CliContext:
     topology_names: tuple[str, ...] = ()
     scenario_names: tuple[str, ...] = ()
     reference_names: tuple[str, ...] = ()
+    access_info_names: tuple[str, ...] = ()
     candidate_reference_names: tuple[str, ...] = ()
     topology_candidate_device_names: tuple[str, ...] = ()
+    access_info_candidate_device_names: tuple[str, ...] = ()
 
 
 Provider = Callable[[CliContext, str], list[str]]
@@ -74,16 +81,17 @@ def _fail(message: str) -> ValidationOutcome:
 
 def validate_freeform(value: str) -> ValidationOutcome:
     """Accept any token as-is. Used for object identifiers and free-form
-    device fields (address/username/type/description); existence and
-    semantic checks are the caller's responsibility, not the grammar's."""
+    device fields (address/username/description); existence and semantic
+    checks are the caller's responsibility, not the grammar's."""
     return _ok(value)
 
 
 def validate_device_type(value: str) -> ValidationOutcome:
     """Reuses network_lab_mcp.lab.normalize_device_type() -- the single
     validation primitive for the fixed device-type enum, also applied to
-    topology YAML on load/write, so this grammar never maintains its own
-    separate copy of the allowed values or matching rules."""
+    topology and access-info YAML on load/write, so this grammar never
+    maintains its own separate copy of the allowed values or matching
+    rules."""
     try:
         return _ok(lab.normalize_device_type(value))
     except lab.LabConfigError as exc:
@@ -123,12 +131,20 @@ def provide_reference_names(ctx: CliContext, prefix: str) -> list[str]:
     return [n for n in ctx.reference_names if n.startswith(prefix)]
 
 
+def provide_access_info_names(ctx: CliContext, prefix: str) -> list[str]:
+    return [n for n in ctx.access_info_names if n.startswith(prefix)]
+
+
 def provide_candidate_reference_names(ctx: CliContext, prefix: str) -> list[str]:
     return [n for n in ctx.candidate_reference_names if n.startswith(prefix)]
 
 
-def provide_device_names(ctx: CliContext, prefix: str) -> list[str]:
+def provide_topology_device_names(ctx: CliContext, prefix: str) -> list[str]:
     return [n for n in ctx.topology_candidate_device_names if n.startswith(prefix)]
+
+
+def provide_access_info_device_names(ctx: CliContext, prefix: str) -> list[str]:
+    return [n for n in ctx.access_info_candidate_device_names if n.startswith(prefix)]
 
 
 def provide_transport_values(ctx: CliContext, prefix: str) -> list[str]:
@@ -157,6 +173,12 @@ class Argument:
     sensitive: bool = False
     enumerate_when_empty: bool = False
     value_help: dict[str, str] = field(default_factory=dict)
+    # A "select or create" identifier (topology/access-info/scenario/
+    # reference/device names): bare `?` lists existing candidates *and* a
+    # creation hint, instead of just a generic <name> placeholder.
+    creatable: bool = False
+    existing_label: str = ""
+    create_label: str = ""
 
     def display_hint(self) -> str:
         return self.hint or f"<{self.name}>"
@@ -198,18 +220,18 @@ class Node:
 
 def _add_show_subtree(root: Node, mode: str, include_configuration: bool) -> None:
     show = root.add_literal("show", "Show information")
-    running = show.add_literal("running-config", "Show committed lab configuration")
-    running.set_command(f"{mode}.show_running_config", "Show committed lab configuration")
+    running = show.add_literal("running-config", "Show committed MCP definition selection")
+    running.set_command(f"{mode}.show_running_config", "Show committed MCP definition selection")
     if include_configuration:
         candidate = show.add_literal("configuration", "Show candidate configuration")
         candidate.set_command(f"{mode}.show_configuration", "Show candidate configuration")
 
 
 def _add_common_subtree(root: Node, mode: str) -> None:
+    clear = root.add_literal("clear", "Clear the uncommitted configuration")
+    clear.set_command(f"{mode}.clear", "Clear the uncommitted configuration")
     commit = root.add_literal("commit", "Commit candidate configuration")
     commit.set_command(f"{mode}.commit", "Commit candidate configuration")
-    abort = root.add_literal("abort", "Discard candidate configuration and return to EXEC")
-    abort.set_command(f"{mode}.abort", "Discard candidate configuration and return to EXEC")
     end = root.add_literal("end", "Return to EXEC mode")
     end.set_command(f"{mode}.end", "Return to EXEC mode")
     exit_node = root.add_literal("exit", "Exit one configuration level")
@@ -242,15 +264,78 @@ def _build_exec_root() -> Node:
 def _build_global_root() -> Node:
     root = Node()
 
+    running_config_node = root.add_literal("running-config", "Configure definitions used by MCP")
+    running_config_node.set_command("global.running_config", "Configure definitions used by MCP")
+
+    access_info_arg = Argument(
+        "name",
+        "Access information name",
+        provider=provide_access_info_names,
+        hint="<name>",
+        creatable=True,
+        existing_label="Existing access information",
+        create_label="Create or edit access information",
+    )
+    access_info_node = root.add_literal("access-info", "Create or edit device access information")
+    access_info_next = access_info_node.add_argument(access_info_arg)
+    access_info_next.set_command("global.access_info", "Create or edit device access information")
+
+    topology_arg = Argument(
+        "name",
+        "Topology name",
+        provider=provide_topology_names,
+        hint="<name>",
+        creatable=True,
+        existing_label="Existing topology",
+        create_label="Create or edit topology",
+    )
+    topology_node = root.add_literal("topology", "Create or edit a topology")
+    topology_next = topology_node.add_argument(topology_arg)
+    topology_next.set_command("global.topology", "Create or edit a topology")
+
+    scenario_arg = Argument(
+        "name",
+        "Scenario name",
+        provider=provide_scenario_names,
+        hint="<name>",
+        creatable=True,
+        existing_label="Existing scenario",
+        create_label="Create or edit scenario",
+    )
+    scenario_node = root.add_literal("scenario", "Create or edit a scenario")
+    scenario_next = scenario_node.add_argument(scenario_arg)
+    scenario_next.set_command("global.scenario", "Create or edit a scenario")
+
+    reference_arg = Argument(
+        "name",
+        "Reference name",
+        provider=provide_reference_names,
+        hint="<name>",
+        creatable=True,
+        existing_label="Existing reference",
+        create_label="Create or edit reference",
+    )
+    reference_node = root.add_literal("reference", "Create or edit a reference")
+    reference_next = reference_node.add_argument(reference_arg)
+    reference_next.set_command("global.reference", "Create or edit a reference")
+
+    _add_show_subtree(root, "global", include_configuration=True)
+    _add_common_subtree(root, "global")
+    return root
+
+
+def _build_running_root() -> Node:
+    root = Node()
+
     topology_arg = Argument(
         "name",
         "Topology name",
         provider=provide_topology_names,
         hint="<name>",
     )
-    topology_node = root.add_literal("topology", "Select or create a topology")
+    topology_node = root.add_literal("topology", "Select topology used by MCP")
     topology_next = topology_node.add_argument(topology_arg)
-    topology_next.set_command("global.topology", "Select or create a topology")
+    topology_next.set_command("running.topology", "Select topology used by MCP")
 
     scenario_arg = Argument(
         "name",
@@ -258,9 +343,9 @@ def _build_global_root() -> Node:
         provider=provide_scenario_names,
         hint="<name>",
     )
-    scenario_node = root.add_literal("scenario", "Select the active scenario")
+    scenario_node = root.add_literal("scenario", "Select scenario used by MCP")
     scenario_next = scenario_node.add_argument(scenario_arg)
-    scenario_next.set_command("global.scenario", "Select the active scenario")
+    scenario_next.set_command("running.scenario", "Select scenario used by MCP")
 
     reference_arg = Argument(
         "name",
@@ -268,23 +353,23 @@ def _build_global_root() -> Node:
         provider=provide_reference_names,
         hint="<name>",
     )
-    reference_node = root.add_literal("reference", "Add an active reference")
+    reference_node = root.add_literal("reference", "Add reference used by MCP")
     reference_next = reference_node.add_argument(reference_arg)
-    reference_next.set_command("global.reference_add", "Add an active reference")
+    reference_next.set_command("running.reference_add", "Add reference used by MCP")
 
-    no_node = root.add_literal("no", "Negate a configuration item")
-    no_reference_node = no_node.add_literal("reference", "Remove an active reference")
+    no_node = root.add_literal("no", "Negate a running configuration item")
+    no_reference_node = no_node.add_literal("reference", "Remove a reference used by MCP")
     no_reference_arg = Argument(
         "name",
-        "Currently active reference name",
+        "Currently selected reference name",
         provider=provide_candidate_reference_names,
         hint="<name>",
     )
     no_reference_next = no_reference_node.add_argument(no_reference_arg)
-    no_reference_next.set_command("global.reference_remove", "Remove an active reference")
+    no_reference_next.set_command("running.reference_remove", "Remove a reference used by MCP")
 
-    _add_show_subtree(root, "global", include_configuration=True)
-    _add_common_subtree(root, "global")
+    _add_show_subtree(root, "running", include_configuration=True)
+    _add_common_subtree(root, "running")
     return root
 
 
@@ -304,12 +389,18 @@ def _build_topology_root() -> Node:
     device_arg = Argument(
         "name",
         "Device name",
-        provider=provide_device_names,
+        provider=provide_topology_device_names,
         hint="<name>",
+        creatable=True,
+        existing_label="Existing device",
+        create_label="Create or edit device",
     )
-    device_node = root.add_literal("device", "Select or create a device")
+    device_node = root.add_literal("device", "Create or edit a device")
     device_next = device_node.add_argument(device_arg)
-    device_next.set_command("topology.device", "Select or create a device")
+    device_next.set_command("topology.device", "Create or edit a device")
+
+    edit_node = root.add_literal("edit", "Edit this topology in an external editor")
+    edit_node.set_command("topology.edit", "Edit this topology in an external editor")
 
     _add_show_subtree(root, "topology", include_configuration=True)
     _add_common_subtree(root, "topology")
@@ -317,6 +408,52 @@ def _build_topology_root() -> Node:
 
 
 def _build_device_root() -> Node:
+    """Topology's nested device submode: safe logical metadata only. Private
+    access fields (address/transport/port/username/password) live in
+    access-info's own device submode (_build_access_device_root) instead."""
+    root = Node()
+
+    type_arg = Argument(
+        "value",
+        "Set the device type",
+        validate=validate_device_type,
+        provider=provide_device_types,
+        hint="<iosxr|iosxe|nxos|host>",
+        enumerate_when_empty=True,
+        value_help=dict(lab.DEVICE_TYPES),
+    )
+    type_node = root.add_literal("type", "Set the device type")
+    type_next = type_node.add_argument(type_arg)
+    type_next.set_command("device.set_type", "Set the device type")
+
+    _add_show_subtree(root, "device", include_configuration=True)
+    _add_common_subtree(root, "device")
+    return root
+
+
+def _build_access_info_root() -> Node:
+    root = Node()
+
+    device_arg = Argument(
+        "name",
+        "Device name",
+        provider=provide_access_info_device_names,
+        hint="<name>",
+        creatable=True,
+        existing_label="Existing device",
+        create_label="Create or edit device",
+    )
+    device_node = root.add_literal("device", "Create or edit a device")
+    device_next = device_node.add_argument(device_arg)
+    device_next.set_command("access_info.device", "Create or edit a device")
+
+    _add_show_subtree(root, "access_info", include_configuration=True)
+    _add_common_subtree(root, "access_info")
+    return root
+
+
+def _build_access_device_root() -> Node:
+    """access-info's nested device submode: private connection fields."""
     root = Node()
 
     def add_field(
@@ -348,18 +485,18 @@ def _build_device_root() -> Node:
     add_field(
         "type",
         "Set the device type",
-        "device.set_type",
+        "access_device.set_type",
         validate=validate_device_type,
         provider=provide_device_types,
-        hint="<iosxr|iosxe|nxos>",
+        hint="<iosxr|iosxe|nxos|host>",
         enumerate_when_empty=True,
         value_help=dict(lab.DEVICE_TYPES),
     )
-    add_field("address", "Set the device management address", "device.set_address")
+    add_field("address", "Set the device management address", "access_device.set_address")
     add_field(
         "transport",
         "Set the device transport",
-        "device.set_transport",
+        "access_device.set_transport",
         validate=validate_transport,
         provider=provide_transport_values,
         hint="<ssh|telnet>",
@@ -369,38 +506,61 @@ def _build_device_root() -> Node:
     add_field(
         "port",
         "Set the device port",
-        "device.set_port",
+        "access_device.set_port",
         validate=validate_port,
         hint="<1-65535>",
     )
-    add_field("username", "Set the device username", "device.set_username")
+    add_field("username", "Set the device username", "access_device.set_username")
     add_field(
         "password",
         "Set the device password",
-        "device.set_password",
+        "access_device.set_password",
         sensitive=True,
         hint="<password>",
     )
 
     no_node = root.add_literal("no", "Negate a device field")
     for keyword, action, description in (
-        ("username", "device.clear_username", "Clear the device username"),
-        ("password", "device.clear_password", "Clear the device password"),
-        ("port", "device.clear_port", "Clear the device port"),
+        ("username", "access_device.clear_username", "Clear the device username"),
+        ("password", "access_device.clear_password", "Clear the device password"),
+        ("port", "access_device.clear_port", "Clear the device port"),
     ):
         field_node = no_node.add_literal(keyword, description)
         field_node.set_command(action, description)
 
-    _add_show_subtree(root, "device", include_configuration=True)
-    _add_common_subtree(root, "device")
+    _add_show_subtree(root, "access_device", include_configuration=True)
+    _add_common_subtree(root, "access_device")
+    return root
+
+
+def _build_scenario_root() -> Node:
+    root = Node()
+    edit_node = root.add_literal("edit", "Edit this scenario in an external editor")
+    edit_node.set_command("scenario.edit", "Edit this scenario in an external editor")
+    _add_show_subtree(root, "scenario", include_configuration=True)
+    _add_common_subtree(root, "scenario")
+    return root
+
+
+def _build_reference_root() -> Node:
+    root = Node()
+    edit_node = root.add_literal("edit", "Edit this reference in an external editor")
+    edit_node.set_command("reference.edit", "Edit this reference in an external editor")
+    _add_show_subtree(root, "reference", include_configuration=True)
+    _add_common_subtree(root, "reference")
     return root
 
 
 MODE_ROOTS: dict[str, Node] = {
     "exec": _build_exec_root(),
     "global": _build_global_root(),
+    "running": _build_running_root(),
     "topology": _build_topology_root(),
     "device": _build_device_root(),
+    "access_info": _build_access_info_root(),
+    "access_device": _build_access_device_root(),
+    "scenario": _build_scenario_root(),
+    "reference": _build_reference_root(),
 }
 
 
@@ -604,9 +764,14 @@ def help(mode: str, text_before_cursor: str, ctx: CliContext) -> HelpResult:
         elif argument.enumerate_when_empty and partial == "":
             for value, description in argument.value_help.items():
                 lines.append(HelpLine(value, description))
+        elif argument.creatable and partial == "" and argument.provider is not None:
+            for value in sorted(argument.provider(ctx, "")):
+                lines.append(HelpLine(value, argument.existing_label or argument.description))
+            lines.append(HelpLine(argument.display_hint(), argument.create_label or argument.description))
         elif partial != "" and argument.provider is not None:
+            label = argument.existing_label if argument.creatable else argument.description
             for value in sorted(argument.provider(ctx, partial)):
-                lines.append(HelpLine(value, argument.description))
+                lines.append(HelpLine(value, label))
         else:
             lines.append(HelpLine(argument.display_hint(), argument.description))
         return HelpResult(lines, False, partial)

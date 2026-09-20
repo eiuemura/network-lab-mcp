@@ -38,6 +38,17 @@ def lab_root(tmp_path: Path) -> Path:
             "name": "sample_lab",
             "description": "Sample lab used for tests.",
             "devices": {
+                "R1": {"type": "iosxr"},
+                "R2": {"type": "iosxr"},
+            },
+            "links": [{"a": "R1", "b": "R2"}],
+        },
+    )
+    _write_yaml(
+        root / "access-info" / "sample_lab.yaml",
+        {
+            "name": "sample_lab",
+            "devices": {
                 "R1": {
                     "type": "iosxr",
                     "address": "192.0.2.11",
@@ -53,7 +64,6 @@ def lab_root(tmp_path: Path) -> Path:
                     "port": 22,
                 },
             },
-            "links": [{"a": "R1", "b": "R2"}],
         },
     )
     _write_yaml(

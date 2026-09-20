@@ -1,7 +1,9 @@
 """Tests for the command grammar single source of truth: parsing, unique
 abbreviation, ambiguity/incomplete/invalid-input detection, fixed-keyword
-case-insensitivity, object-identifier case-sensitivity, and context-sensitive
-completion/help (including exact-case dynamic candidates)."""
+case-insensitivity, object-identifier case-sensitivity, "select or create"
+identifier help, and context-sensitive completion/help across every CLI
+mode (EXEC, global, running-config, topology/device, access-info/
+access-device, scenario, reference)."""
 
 from __future__ import annotations
 
@@ -27,18 +29,18 @@ def test_abbreviation_is_context_sensitive():
     assert result.action == "global.topology"
     assert result.args == {"name": "srv6_lab"}
 
-    result = grammar.parse("device", "tra ssh")
+    result = grammar.parse("access_device", "tra ssh")
     assert result.ok
-    assert result.action == "device.set_transport"
+    assert result.action == "access_device.set_transport"
     assert result.args == {"value": "ssh"}
 
 
 def test_ambiguous_abbreviation_rejected():
-    # global root has both "scenario" and "show" -> "s" is ambiguous.
-    result = grammar.parse("global", "s")
+    # global root has both "running-config" and "reference" -> "r" is ambiguous.
+    result = grammar.parse("global", "r")
     assert not result.ok
     assert result.error.kind == "ambiguous"
-    assert result.error.token == "s"
+    assert result.error.token == "r"
 
 
 def test_ambiguous_end_exit():
@@ -49,7 +51,7 @@ def test_ambiguous_end_exit():
 
 
 def test_incomplete_command():
-    result = grammar.parse("device", "transport")
+    result = grammar.parse("access_device", "transport")
     assert not result.ok
     assert result.error.kind == "incomplete"
     assert result.error.span is None
@@ -63,7 +65,7 @@ def test_unknown_command_at_first_token():
 
 
 def test_invalid_transport_value_has_caret_span():
-    result = grammar.parse("device", "transport invalid")
+    result = grammar.parse("access_device", "transport invalid")
     assert not result.ok
     assert result.error.kind == "invalid"
     assert result.error.token == "invalid"
@@ -71,51 +73,13 @@ def test_invalid_transport_value_has_caret_span():
     assert "ssh" in result.error.detail
 
 
-def test_device_type_accepts_exact_and_case_insensitive_values():
-    for line, expected in (
-        ("type iosxr", "iosxr"),
-        ("type IOSXE", "iosxe"),
-        ("type NxOs", "nxos"),
-        ("type HOST", "host"),
-        ("type Host", "host"),
-    ):
-        result = grammar.parse("device", line)
-        assert result.ok, line
-        assert result.args == {"value": expected}
-
-
-def test_device_type_accepts_unambiguous_abbreviation():
-    result = grammar.parse("device", "type nx")
-    assert result.ok
-    assert result.args == {"value": "nxos"}
-
-    result_host = grammar.parse("device", "type h")
-    assert result_host.ok
-    assert result_host.args == {"value": "host"}
-
-
-def test_device_type_rejects_ambiguous_abbreviation():
-    result = grammar.parse("device", "type ios")
-    assert not result.ok
-    assert result.error.kind == "invalid"
-    assert "Ambiguous" in result.error.detail
-    assert "iosxr" in result.error.detail and "iosxe" in result.error.detail
-
-
-def test_device_type_rejects_unknown_value():
-    result = grammar.parse("device", "type junos")
-    assert not result.ok
-    assert result.error.kind == "invalid"
-    assert "Invalid device type" in result.error.detail
-
-
 def test_invalid_port_value():
-    result = grammar.parse("device", "port 99999")
+    result = grammar.parse("access_device", "port 99999")
     assert not result.ok
     assert result.error.kind == "invalid"
     assert "65535" in result.error.detail
 
-    ok_result = grammar.parse("device", "port 22")
+    ok_result = grammar.parse("access_device", "port 22")
     assert ok_result.ok
     assert ok_result.args == {"value": "22"}
 
@@ -127,16 +91,58 @@ def test_configure_terminal_alias():
 
 
 def test_no_reference_command():
-    result = grammar.parse("global", "no reference srv6")
+    result = grammar.parse("running", "no reference srv6")
     assert result.ok
-    assert result.action == "global.reference_remove"
+    assert result.action == "running.reference_remove"
     assert result.args == {"name": "srv6"}
+
+
+def test_running_topology_scenario_reference_are_selectors():
+    assert grammar.parse("running", "topology srv6_lab").action == "running.topology"
+    assert grammar.parse("running", "scenario troubleshoot").action == "running.scenario"
+    assert grammar.parse("running", "reference srv6").action == "running.reference_add"
 
 
 def test_description_is_rest_of_line():
     result = grammar.parse("topology", "description SRv6 lab with two PEs")
     assert result.ok
     assert result.args == {"text": "SRv6 lab with two PEs"}
+
+
+def test_topology_device_mode_has_no_access_fields():
+    # Safe topology device mode only knows about "type" -- address/transport/
+    # port/username/password moved to access-info's device submode.
+    for keyword in ("address", "transport", "port", "username", "password"):
+        result = grammar.parse("device", f"{keyword} something")
+        assert not result.ok, keyword
+
+
+def test_access_device_mode_has_full_field_set():
+    assert grammar.parse("access_device", "address 192.0.2.11").ok
+    assert grammar.parse("access_device", "username example-user").ok
+    assert grammar.parse("access_device", "no username").ok
+    assert grammar.parse("access_device", "no password").ok
+    assert grammar.parse("access_device", "no port").ok
+
+
+def test_topology_and_scenario_and_reference_have_edit_command():
+    assert grammar.parse("topology", "edit").action == "topology.edit"
+    assert grammar.parse("scenario", "edit").action == "scenario.edit"
+    assert grammar.parse("reference", "edit").action == "reference.edit"
+
+
+def test_abort_is_no_longer_recognized():
+    for mode in ("global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
+        result = grammar.parse(mode, "abort")
+        assert not result.ok, mode
+        assert result.error.kind == "unknown"
+
+
+def test_clear_replaces_abort_everywhere():
+    for mode in ("global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
+        result = grammar.parse(mode, "clear")
+        assert result.ok, mode
+        assert result.action == f"{mode}.clear"
 
 
 # ---- fixed-keyword case-insensitivity ----
@@ -150,7 +156,7 @@ def test_fixed_keywords_case_insensitive():
 
 
 def test_nested_fixed_keyword_case_insensitive():
-    result = grammar.parse("device", "TRANSPORT SSH")
+    result = grammar.parse("access_device", "TRANSPORT SSH")
     assert result.ok
     assert result.args == {"value": "ssh"}
 
@@ -166,6 +172,48 @@ def test_object_identifier_case_preserved_by_parser():
     assert result.args == {"name": "SRv6_Lab"}
 
 
+# ---- device.type enum (shared by topology device mode and access-info device mode) ----
+
+
+def test_device_type_accepts_exact_and_case_insensitive_values():
+    for mode in ("device", "access_device"):
+        for line, expected in (
+            ("type iosxr", "iosxr"),
+            ("type IOSXE", "iosxe"),
+            ("type NxOs", "nxos"),
+            ("type HOST", "host"),
+            ("type Host", "host"),
+        ):
+            result = grammar.parse(mode, line)
+            assert result.ok, (mode, line)
+            assert result.args == {"value": expected}
+
+
+def test_device_type_accepts_unambiguous_abbreviation():
+    result = grammar.parse("device", "type nx")
+    assert result.ok
+    assert result.args == {"value": "nxos"}
+
+    result_host = grammar.parse("access_device", "type h")
+    assert result_host.ok
+    assert result_host.args == {"value": "host"}
+
+
+def test_device_type_rejects_ambiguous_abbreviation():
+    result = grammar.parse("device", "type ios")
+    assert not result.ok
+    assert result.error.kind == "invalid"
+    assert "Ambiguous" in result.error.detail
+    assert "iosxr" in result.error.detail and "iosxe" in result.error.detail
+
+
+def test_device_type_rejects_unknown_value():
+    result = grammar.parse("access_device", "type junos")
+    assert not result.ok
+    assert result.error.kind == "invalid"
+    assert "Invalid device type" in result.error.detail
+
+
 # ---- completion ----
 
 
@@ -177,8 +225,8 @@ def test_unique_literal_completion():
 
 def test_ambiguous_literal_completion_lists_candidates():
     ctx = make_ctx()
-    result = grammar.complete("global", "s", ctx)
-    assert set(result.candidates) == {"scenario", "show"}
+    result = grammar.complete("global", "r", ctx)
+    assert set(result.candidates) == {"running-config", "reference"}
 
 
 def test_zero_candidate_completion():
@@ -196,21 +244,38 @@ def test_dynamic_completion_is_case_sensitive_and_preserves_case():
     assert result_lower.candidates == []  # must not case-fold to match R1/R2
 
 
+def test_access_info_device_completion_uses_its_own_candidate_names():
+    ctx = make_ctx(access_info_candidate_device_names=("R1", "PC1"))
+    result = grammar.complete("access_info", "device P", ctx)
+    assert result.candidates == ["PC1"]
+
+
 def test_topology_name_completion_case_sensitive():
     ctx = make_ctx(topology_names=("srv6_lab",))
     assert grammar.complete("global", "topology s", ctx).candidates == ["srv6_lab"]
     assert grammar.complete("global", "topology S", ctx).candidates == []
 
 
+def test_running_topology_completion_uses_existing_topology_names():
+    ctx = make_ctx(topology_names=("srv6_lab", "sample_lab"))
+    result = grammar.complete("running", "topology s", ctx)
+    assert set(result.candidates) == {"srv6_lab", "sample_lab"}
+
+
+def test_access_info_name_completion():
+    ctx = make_ctx(access_info_names=("lab_devices",))
+    assert grammar.complete("global", "access-info l", ctx).candidates == ["lab_devices"]
+
+
 def test_password_never_completes():
     ctx = make_ctx()
-    assert grammar.complete("device", "password ", ctx).candidates == []
-    assert grammar.complete("device", "password some-text", ctx).candidates == []
+    assert grammar.complete("access_device", "password ", ctx).candidates == []
+    assert grammar.complete("access_device", "password some-text", ctx).candidates == []
 
 
 def test_no_reference_completion_uses_candidate_references():
     ctx = make_ctx(candidate_reference_names=("srv6", "iosxr_basics"))
-    result = grammar.complete("global", "no reference ", ctx)
+    result = grammar.complete("running", "no reference ", ctx)
     assert set(result.candidates) == {"srv6", "iosxr_basics"}
 
 
@@ -219,7 +284,7 @@ def test_device_type_tab_completion_exposes_only_fixed_enum():
     result = grammar.complete("device", "type ", ctx)
     assert set(result.candidates) == {"iosxr", "iosxe", "nxos", "host"}
 
-    result_prefix = grammar.complete("device", "type n", ctx)
+    result_prefix = grammar.complete("access_device", "type n", ctx)
     assert result_prefix.candidates == ["nxos"]
 
     result_host = grammar.complete("device", "type h", ctx)
@@ -229,12 +294,31 @@ def test_device_type_tab_completion_exposes_only_fixed_enum():
 # ---- context-sensitive help ----
 
 
-def test_bare_help_lists_all_root_commands():
+def test_bare_help_lists_all_global_root_commands():
     ctx = make_ctx()
-    result = grammar.help("exec", "", ctx)
+    result = grammar.help("global", "", ctx)
     tokens = [line.token for line in result.lines]
-    assert tokens == ["configure", "show", "help", "exit", "quit"]
+    assert tokens == [
+        "running-config",
+        "access-info",
+        "topology",
+        "scenario",
+        "reference",
+        "show",
+        "clear",
+        "commit",
+        "end",
+        "exit",
+        "help",
+    ]
     assert result.show_cr is False
+
+
+def test_bare_help_lists_all_running_root_commands():
+    ctx = make_ctx()
+    result = grammar.help("running", "", ctx)
+    tokens = [line.token for line in result.lines]
+    assert tokens == ["topology", "scenario", "reference", "no", "show", "clear", "commit", "end", "exit", "help"]
 
 
 def test_partial_token_help():
@@ -246,24 +330,82 @@ def test_partial_token_help():
 
 def test_next_token_help_for_enum_argument():
     ctx = make_ctx()
-    result = grammar.help("device", "transport ", ctx)
+    result = grammar.help("access_device", "transport ", ctx)
     values = {line.token: line.description for line in result.lines}
     assert values == {"ssh": "Use SSH transport", "telnet": "Use Telnet transport"}
 
 
+def test_next_token_help_for_plain_selector_shows_generic_hint():
+    # running-config's selectors are plain (non-creatable) identifiers:
+    # bare `?` shows the generic <name> hint, not the existing-names list.
+    ctx = make_ctx(topology_names=("srv6_lab",))
+    result = grammar.help("running", "topology ", ctx)
+    assert [line.token for line in result.lines] == ["<name>"]
+
+
+def test_creatable_identifier_help_lists_existing_and_create_hint():
+    ctx = make_ctx(topology_names=("sample_lab", "test"))
+    result = grammar.help("global", "topology ", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [
+        ("sample_lab", "Existing topology"),
+        ("test", "Existing topology"),
+        ("<name>", "Create or edit topology"),
+    ]
+
+
+def test_creatable_identifier_help_for_access_info_scenario_reference():
+    ctx = make_ctx(access_info_names=("lab_a",), scenario_names=("failover_test",), reference_names=("sr_mpls",))
+    access_info_result = grammar.help("global", "access-info ", ctx)
+    assert [line.token for line in access_info_result.lines] == ["lab_a", "<name>"]
+
+    scenario_result = grammar.help("global", "scenario ", ctx)
+    assert [line.token for line in scenario_result.lines] == ["failover_test", "<name>"]
+
+    reference_result = grammar.help("global", "reference ", ctx)
+    assert [line.token for line in reference_result.lines] == ["sr_mpls", "<name>"]
+
+
+def test_creatable_identifier_partial_help_only_shows_matches():
+    ctx = make_ctx(topology_names=("sample_lab", "test"))
+    result = grammar.help("global", "topology s", ctx)
+    assert [line.token for line in result.lines] == ["sample_lab"]
+
+
+def test_device_creatable_help_under_topology_and_access_info():
+    ctx = make_ctx(topology_candidate_device_names=("R1",), access_info_candidate_device_names=("R1",))
+    topology_device_help = grammar.help("topology", "device ", ctx)
+    assert [(line.token, line.description) for line in topology_device_help.lines] == [
+        ("R1", "Existing device"),
+        ("<name>", "Create or edit device"),
+    ]
+    access_info_device_help = grammar.help("access_info", "device ", ctx)
+    assert [(line.token, line.description) for line in access_info_device_help.lines] == [
+        ("R1", "Existing device"),
+        ("<name>", "Create or edit device"),
+    ]
+
+
+def test_password_help_shows_hint_never_value():
+    ctx = make_ctx()
+    result = grammar.help("access_device", "password ", ctx)
+    assert [line.token for line in result.lines] == ["<password>"]
+    result_partial = grammar.help("access_device", "password secret", ctx)
+    assert [line.token for line in result_partial.lines] == ["<password>"]
+
+
 def test_device_type_help_lists_fixed_enum_not_a_placeholder():
     ctx = make_ctx()
-    result = grammar.help("device", "type ", ctx)
-    values = {line.token: line.description for line in result.lines}
-    assert values == {
-        "iosxr": "Cisco IOS XR",
-        "iosxe": "Cisco IOS XE",
-        "nxos": "Cisco NX-OS",
-        "host": "Generic host / endpoint",
-    }
-    assert result.show_cr is False
-    # Never falls back to a generic "<value>" placeholder for this enum.
-    assert "<value>" not in [line.token for line in result.lines]
+    for mode in ("device", "access_device"):
+        result = grammar.help(mode, "type ", ctx)
+        values = {line.token: line.description for line in result.lines}
+        assert values == {
+            "iosxr": "Cisco IOS XR",
+            "iosxe": "Cisco IOS XE",
+            "nxos": "Cisco NX-OS",
+            "host": "Generic host / endpoint",
+        }
+        assert result.show_cr is False
+        assert "<value>" not in [line.token for line in result.lines]
 
 
 def test_device_type_cr_marker_when_value_already_supplied():
@@ -273,31 +415,15 @@ def test_device_type_cr_marker_when_value_already_supplied():
     assert result.show_cr is True
 
 
-def test_next_token_help_for_identifier_argument_shows_generic_hint():
-    ctx = make_ctx(topology_names=("srv6_lab",))
-    result = grammar.help("global", "topology ", ctx)
-    assert [line.token for line in result.lines] == ["<name>"]
-
-
-def test_partial_identifier_help_shows_case_sensitive_candidates():
-    ctx = make_ctx(topology_names=("srv6_lab",))
-    result = grammar.help("global", "topology s", ctx)
-    assert [line.token for line in result.lines] == ["srv6_lab"]
-
-    result_upper = grammar.help("global", "topology S", ctx)
-    assert result_upper.lines == []
-
-
-def test_password_help_shows_hint_never_value():
-    ctx = make_ctx()
-    result = grammar.help("device", "password ", ctx)
-    assert [line.token for line in result.lines] == ["<password>"]
-    result_partial = grammar.help("device", "password secret", ctx)
-    assert [line.token for line in result_partial.lines] == ["<password>"]
-
-
 def test_cr_marker_when_command_complete():
     ctx = make_ctx()
     result = grammar.help("global", "commit ", ctx)
+    assert result.lines == []
+    assert result.show_cr is True
+
+
+def test_running_config_show_cr():
+    ctx = make_ctx()
+    result = grammar.help("global", "show running-config ", ctx)
     assert result.lines == []
     assert result.show_cr is True

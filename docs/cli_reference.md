@@ -64,7 +64,7 @@ selected.
 
 | Command | Effect |
 |---------|--------|
-| `type <iosxr\|iosxe\|nxos>` | Device type. A fixed, closed enum (Cisco IOS XR / IOS XE / NX-OS) rather than a free-form value; unique-prefix abbreviation is accepted (e.g. `nx` -> `nxos`) and the committed value is always normalized to lowercase. Rejected outright if not one of the three. Validated immediately, like `transport`. Not yet interpreted by the MCP terminal layer -- reserved for Step 3 topology discovery to dispatch platform-specific CDP/LLDP commands and parsers. |
+| `type <iosxr\|iosxe\|nxos\|host>` | Device type. A fixed, closed enum (Cisco IOS XR / IOS XE / NX-OS, or `host` for a generic host/endpoint) rather than a free-form value; unique-prefix abbreviation is accepted (e.g. `nx` -> `nxos`, `h` -> `host`) and the committed value is always normalized to lowercase. Rejected outright if not one of the four. Validated immediately, like `transport`. Reserved for Step 3 topology discovery to dispatch platform-specific CDP/LLDP commands and parsers -- `host` marks a registered topology node that discovery will intentionally skip, not an unsupported type. |
 | `address <value>` | Device management address. |
 | `transport <ssh\|telnet>` | Device transport. Validated immediately (invalid input is rejected with a caret, not accepted into the candidate). |
 | `port <1-65535>` | Device port. Validated immediately. |
@@ -206,7 +206,7 @@ Dynamic completion is available for:
 | `no reference <name>` | The candidate's *currently active* reference names |
 | `device <name>` | Devices already in the selected topology candidate |
 | `transport <value>` | `ssh`, `telnet` |
-| `type <value>` | `iosxr`, `iosxe`, `nxos` |
+| `type <value>` | `iosxr`, `iosxe`, `nxos`, `host` |
 
 Object-identifier completion is case-sensitive and always displays the
 exact stored case:

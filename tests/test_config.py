@@ -195,6 +195,16 @@ def test_commit_accepts_supported_device_type(lab_root):
     assert lab.load_topology("sample_lab", lab_root)["devices"]["R1"]["type"] == "nxos"
 
 
+def test_commit_persists_host_device_type(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.apply_topology_plan(session.plan_topology_selection("sample_lab"))
+    session.enter_device("PC1")
+    session.set_device_field("type", "host")
+    session.commit()
+    assert lab.load_topology("sample_lab", lab_root)["devices"]["PC1"]["type"] == "host"
+
+
 def test_commit_rejects_unsupported_device_type(lab_root):
     # Reaches lab.validate_topology_data() at commit time even when a value
     # bypasses the CLI grammar's own type validator, proving the check is

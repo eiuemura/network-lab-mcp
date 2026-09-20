@@ -310,15 +310,26 @@ below for why that is safe.
 
 ### Device type enum
 
-A device's optional `type` field, when present, must be one of `iosxr`
-(Cisco IOS XR), `iosxe` (Cisco IOS XE), or `nxos` (Cisco NX-OS) —
+A device's optional `type` field, when present, must be one of:
+
+- `iosxr` — Cisco IOS XR
+- `iosxe` — Cisco IOS XE
+- `nxos` — Cisco NX-OS
+- `host` — Generic host / endpoint
+
 `lab.normalize_device_type()` is the single validation primitive for this
 enum, applied both by `lab.py` at topology load/write time (so a manually
 edited YAML file with an unsupported `type` is rejected) and by the Step 2
-CLI's `type` argument (so `type ?`/Tab only ever offer these three values,
-and an unambiguous abbreviation like `type nx` normalizes to `nxos`). This
-enum exists because Step 3 topology discovery will dispatch
-platform-specific CDP/LLDP commands and parsers based on `device.type`.
+CLI's `type` argument (so `type ?`/Tab only ever offer these four values,
+and an unambiguous abbreviation like `type nx` normalizes to `nxos`, or
+`type h` to `host`).
+
+This enum exists because Step 3 topology discovery will dispatch
+platform-specific CDP/LLDP commands and parsers based on `device.type`:
+`iosxr`/`iosxe`/`nxos` are discovery-capable, while `host` is a normal
+registered topology node for which CDP/LLDP discovery is intentionally
+skipped — it is not an "unsupported type" error, just a node that Step 3's
+discovery pass will pass over.
 
 ### Sample scenario and references
 

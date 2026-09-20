@@ -31,10 +31,14 @@ def test_normalize_device_type_accepts_exact_and_case_insensitive():
     assert lab.normalize_device_type("iosxr") == "iosxr"
     assert lab.normalize_device_type("IOSXE") == "iosxe"
     assert lab.normalize_device_type("NxOs") == "nxos"
+    assert lab.normalize_device_type("host") == "host"
+    assert lab.normalize_device_type("HOST") == "host"
+    assert lab.normalize_device_type("Host") == "host"
 
 
 def test_normalize_device_type_accepts_unambiguous_abbreviation():
     assert lab.normalize_device_type("nx") == "nxos"
+    assert lab.normalize_device_type("h") == "host"
 
 
 def test_normalize_device_type_rejects_ambiguous_abbreviation():
@@ -48,7 +52,7 @@ def test_normalize_device_type_rejects_unknown_value():
 
 
 def test_load_topology_accepts_all_supported_device_types(lab_root):
-    for device_type in ("iosxr", "iosxe", "nxos"):
+    for device_type in ("iosxr", "iosxe", "nxos", "host"):
         path = lab_root / "topologies" / f"types_{device_type}.yaml"
         path.write_text(
             f"name: types_{device_type}\ndevices:\n  R1:\n    type: {device_type}\nlinks: []\n",
@@ -68,12 +72,14 @@ def test_load_topology_allows_missing_device_type(lab_root):
 
 
 def test_load_topology_rejects_unsupported_device_type(lab_root):
-    (lab_root / "topologies" / "bad_type.yaml").write_text(
-        "name: bad_type\ndevices:\n  R1:\n    type: junos\nlinks: []\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(lab.LabConfigError, match="Invalid device type"):
-        lab.load_topology("bad_type", lab_root)
+    for index, bad_type in enumerate(("junos", "linux", "router", "switch", "generic", "none")):
+        name = f"bad_type_{index}"
+        (lab_root / "topologies" / f"{name}.yaml").write_text(
+            f"name: {name}\ndevices:\n  R1:\n    type: {bad_type}\nlinks: []\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(lab.LabConfigError, match="Invalid device type"):
+            lab.load_topology(name, lab_root)
 
 
 def test_get_active_topology_and_execution_instructions(lab_root, monkeypatch):

@@ -72,7 +72,13 @@ def test_invalid_transport_value_has_caret_span():
 
 
 def test_device_type_accepts_exact_and_case_insensitive_values():
-    for line, expected in (("type iosxr", "iosxr"), ("type IOSXE", "iosxe"), ("type NxOs", "nxos")):
+    for line, expected in (
+        ("type iosxr", "iosxr"),
+        ("type IOSXE", "iosxe"),
+        ("type NxOs", "nxos"),
+        ("type HOST", "host"),
+        ("type Host", "host"),
+    ):
         result = grammar.parse("device", line)
         assert result.ok, line
         assert result.args == {"value": expected}
@@ -82,6 +88,10 @@ def test_device_type_accepts_unambiguous_abbreviation():
     result = grammar.parse("device", "type nx")
     assert result.ok
     assert result.args == {"value": "nxos"}
+
+    result_host = grammar.parse("device", "type h")
+    assert result_host.ok
+    assert result_host.args == {"value": "host"}
 
 
 def test_device_type_rejects_ambiguous_abbreviation():
@@ -207,10 +217,13 @@ def test_no_reference_completion_uses_candidate_references():
 def test_device_type_tab_completion_exposes_only_fixed_enum():
     ctx = make_ctx()
     result = grammar.complete("device", "type ", ctx)
-    assert set(result.candidates) == {"iosxr", "iosxe", "nxos"}
+    assert set(result.candidates) == {"iosxr", "iosxe", "nxos", "host"}
 
     result_prefix = grammar.complete("device", "type n", ctx)
     assert result_prefix.candidates == ["nxos"]
+
+    result_host = grammar.complete("device", "type h", ctx)
+    assert result_host.candidates == ["host"]
 
 
 # ---- context-sensitive help ----
@@ -246,6 +259,7 @@ def test_device_type_help_lists_fixed_enum_not_a_placeholder():
         "iosxr": "Cisco IOS XR",
         "iosxe": "Cisco IOS XE",
         "nxos": "Cisco NX-OS",
+        "host": "Generic host / endpoint",
     }
     assert result.show_cr is False
     # Never falls back to a generic "<value>" placeholder for this enum.

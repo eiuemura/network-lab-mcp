@@ -95,6 +95,10 @@ DEVICE_TYPES: dict[str, str] = {
     "iosxr": "Cisco IOS XR",
     "iosxe": "Cisco IOS XE",
     "nxos": "Cisco NX-OS",
+    # Not a network device Step 3 will run CDP/LLDP discovery against. `host`
+    # is a normal registered topology node -- discovery is intentionally
+    # skipped for it, not an error/"unsupported type" case.
+    "host": "Generic host / endpoint",
 }
 
 

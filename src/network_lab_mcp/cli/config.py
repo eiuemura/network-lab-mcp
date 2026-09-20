@@ -118,6 +118,20 @@ _DEFINITION_WRITERS: dict[str, Callable] = {
 }
 
 
+def load_committed_definition(kind: str, name: str, lab_root: Path) -> Optional[dict]:
+    """Return the current committed-on-disk data for a definition of the
+    given kind/name, or None if it does not exist yet.
+
+    Always re-reads disk fresh -- never the in-memory candidate -- so a
+    definition-scoped `show running-config` (see cli/main.py) reflects the
+    real committed state, including one committed moments ago by this same
+    session's own commit()."""
+    exists_fn, load_fn, _ = _DEFINITION_LOADERS[kind]
+    if not exists_fn(name, lab_root):
+        return None
+    return load_fn(name, lab_root)
+
+
 class CliSession:
     """Mutable candidate-configuration state for one CLI process lifetime.
 

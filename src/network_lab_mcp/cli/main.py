@@ -24,7 +24,7 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 import yaml
 from prompt_toolkit import PromptSession
@@ -209,25 +209,69 @@ def _running_config_lines(settings: dict) -> str:
 
 
 def render_committed_running_config(session: cfgmod.CliSession) -> str:
-    """`show running-config`: the committed MCP definition selection --
-    never a definition's own content, and identical in every mode."""
+    """`show running-config` in EXEC/global/running mode: the committed MCP
+    running-config selection -- never a definition's own content. Not used
+    once a topology/access-info/scenario/reference (or its device submode)
+    is the current context; see render_committed_definition() for that."""
     return _running_config_lines(lab.read_settings(session.lab_root))
+
+
+# Device submodes ("device" under topology, "access_device" under
+# access-info) show only the device being edited, not every device in the
+# parent definition -- context-local, like the definition-level modes.
+_DEVICE_SUBMODES = ("device", "access_device")
+
+
+def _scoped_to_current_device(data: Optional[dict], device_name: Optional[str]) -> Optional[dict]:
+    """Limit whole-definition `data` to just `device_name`'s entry, or None
+    if that device isn't present (e.g. a brand-new, never-committed
+    device) -- the caller renders None as "no output"."""
+    if data is None or device_name is None:
+        return None
+    devices = data.get("devices") or {}
+    if device_name not in devices:
+        return None
+    scoped = dict(data)
+    scoped["devices"] = {device_name: devices[device_name]}
+    return scoped
+
+
+def _render_definition_block(kind: Optional[str], data: Optional[dict]) -> str:
+    if kind is None or data is None:
+        return ""
+    if kind == "topology":
+        return "\n".join(render_topology_block(data))
+    if kind == "access_info":
+        return "\n".join(render_access_info_block(data))
+    return render_generic_definition(data)  # scenario / reference
+
+
+def render_committed_definition(session: cfgmod.CliSession) -> str:
+    """`show running-config` while a topology/access-info/scenario/
+    reference definition (or its device submode) is the current context:
+    that same object's committed-on-disk state, re-read fresh -- never the
+    in-memory candidate -- so it is empty for a definition (or device)
+    that has never been committed, and reflects a commit made moments ago
+    in this same session."""
+    data = cfgmod.load_committed_definition(session.definition_kind, session.definition_name, session.lab_root)
+    if session.mode in _DEVICE_SUBMODES:
+        data = _scoped_to_current_device(data, session.current_device_name)
+    return _render_definition_block(session.definition_kind, data)
 
 
 def render_configuration_candidate(session: cfgmod.CliSession) -> str:
     """`show configuration`: the running-config candidate while in
-    `running` mode, otherwise whichever definition candidate (if any) is
-    currently being created/edited."""
+    `running` mode; the note below while in `global` mode with nothing
+    open; otherwise the open definition's candidate (scoped to the current
+    device, if a device submode is the context)."""
     if session.mode == "running":
         return _running_config_lines(session.settings_candidate or {})
-    kind = session.definition_kind
-    if kind is None:
+    if session.definition_kind is None:
         return "! No definition is currently selected for editing."
-    if kind == "topology":
-        return "\n".join(render_topology_block(session.definition_candidate))
-    if kind == "access_info":
-        return "\n".join(render_access_info_block(session.definition_candidate))
-    return render_generic_definition(session.definition_candidate)  # scenario / reference
+    data = session.definition_candidate
+    if session.mode in _DEVICE_SUBMODES:
+        data = _scoped_to_current_device(data, session.current_device_name)
+    return _render_definition_block(session.definition_kind, data)
 
 
 def print_help_result(result: grammar.HelpResult) -> None:
@@ -292,12 +336,26 @@ def h_exec_exit(session: cfgmod.CliSession, args: dict) -> None:
     raise _ExitCli()
 
 
+# `show running-config` means the committed MCP running-config selection
+# only in these three modes; everywhere else it means the current
+# topology/access-info/scenario/reference (or device submode) definition's
+# own committed state instead (render_committed_definition()).
+_MCP_SELECTION_MODES = ("exec", "global", "running")
+
+
 def h_show_running_config(session: cfgmod.CliSession, args: dict) -> None:
-    print(render_committed_running_config(session))
+    if session.mode in _MCP_SELECTION_MODES:
+        print(render_committed_running_config(session))
+        return
+    text = render_committed_definition(session)
+    if text:
+        print(text)
 
 
 def h_show_configuration(session: cfgmod.CliSession, args: dict) -> None:
-    print(render_configuration_candidate(session))
+    text = render_configuration_candidate(session)
+    if text:
+        print(text)
 
 
 def _resolve_git_commit() -> str:
@@ -727,11 +785,12 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
 }
 
 # Commands shared verbatim by every configuration mode (show/clear/commit/end/help
-# -- "exit" is handled above since its target differs per mode).
+# -- "exit" is handled above since its target differs per mode). `show
+# version` is deliberately EXEC-only (see grammar.py's _add_show_subtree),
+# so it is not part of this shared registration.
 for _mode in ("global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
     HANDLERS[f"{_mode}.show_running_config"] = h_show_running_config
     HANDLERS[f"{_mode}.show_configuration"] = h_show_configuration
-    HANDLERS[f"{_mode}.show_version"] = h_show_version
     HANDLERS[f"{_mode}.commit"] = h_commit
     HANDLERS[f"{_mode}.clear"] = h_clear
     HANDLERS[f"{_mode}.end"] = h_end

@@ -432,17 +432,32 @@ def test_running_config_show_cr():
 # ---- show version ----
 
 
-def test_show_version_is_parseable_in_every_mode():
-    for mode in ("exec", "global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
+def test_show_version_is_exec_only():
+    result = grammar.parse("exec", "show version")
+    assert result.ok
+    assert result.action == "exec.show_version"
+
+    for mode in ("global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
         result = grammar.parse(mode, "show version")
-        assert result.ok, mode
-        assert result.action == f"{mode}.show_version"
+        assert not result.ok, mode
+        assert result.error.kind == "invalid"
 
 
-def test_show_help_lists_version_alongside_running_config():
+def test_show_help_lists_version_only_in_exec():
     ctx = make_ctx()
-    result = grammar.help("exec", "show ", ctx)
-    assert [line.token for line in result.lines] == ["running-config", "version"]
+    assert [line.token for line in grammar.help("exec", "show ", ctx).lines] == ["running-config", "version"]
+
+    for mode in ("global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
+        tokens = [line.token for line in grammar.help(mode, "show ", ctx).lines]
+        assert "version" not in tokens, mode
+
+
+def test_show_version_tab_completion_exec_only():
+    ctx = make_ctx()
+    assert "version" in grammar.complete("exec", "show ver", ctx).candidates
+
+    for mode in ("global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
+        assert grammar.complete(mode, "show ver", ctx).candidates == [], mode
 
 
 def test_show_version_cr_marker():

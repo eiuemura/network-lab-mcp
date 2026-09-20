@@ -248,15 +248,31 @@ class Node:
         self.command = CommandSpec(action, summary)
 
 
-def _add_show_subtree(root: Node, mode: str, include_configuration: bool) -> None:
+def _add_show_subtree(
+    root: Node,
+    mode: str,
+    *,
+    running_config_description: str,
+    include_configuration: bool,
+    configuration_description: str = "Show candidate configuration",
+    include_version: bool = False,
+) -> None:
+    """`show running-config` and `show configuration` are scoped to the
+    *current CLI context*: EXEC/global/running-config mode show the MCP
+    running-config selection; a topology/access-info/scenario/reference
+    (or its nested device submode) shows that same object's own committed/
+    candidate state instead (see cli/main.py's context-aware renderers).
+    Only EXEC gets `show version` -- it is software-level information, not
+    part of any configuration context."""
     show = root.add_literal("show", "Show information")
-    running = show.add_literal("running-config", "Show committed MCP definition selection")
-    running.set_command(f"{mode}.show_running_config", "Show committed MCP definition selection")
-    version = show.add_literal("version", "Show Network Lab MCP version information")
-    version.set_command(f"{mode}.show_version", "Show Network Lab MCP version information")
+    running = show.add_literal("running-config", running_config_description)
+    running.set_command(f"{mode}.show_running_config", running_config_description)
+    if include_version:
+        version = show.add_literal("version", "Show Network Lab MCP version information")
+        version.set_command(f"{mode}.show_version", "Show Network Lab MCP version information")
     if include_configuration:
-        candidate = show.add_literal("configuration", "Show candidate configuration")
-        candidate.set_command(f"{mode}.show_configuration", "Show candidate configuration")
+        candidate = show.add_literal("configuration", configuration_description)
+        candidate.set_command(f"{mode}.show_configuration", configuration_description)
 
 
 def _add_help_subtree(root: Node, mode: str) -> None:
@@ -299,7 +315,13 @@ def _build_exec_root() -> Node:
     terminal_alias = configure.add_literal("terminal", "Enter configuration mode")
     terminal_alias.set_command("exec.configure", "Enter configuration mode")
 
-    _add_show_subtree(root, "exec", include_configuration=False)
+    _add_show_subtree(
+        root,
+        "exec",
+        running_config_description="Show committed MCP definition selection",
+        include_configuration=False,
+        include_version=True,
+    )
     _add_help_subtree(root, "exec")
 
     exit_node = root.add_literal("exit", "Exit the CLI")
@@ -369,7 +391,13 @@ def _build_global_root() -> Node:
     reference_next = reference_node.add_argument(reference_arg)
     reference_next.set_command("global.reference", "Create or edit a reference")
 
-    _add_show_subtree(root, "global", include_configuration=True)
+    _add_show_subtree(
+        root,
+        "global",
+        running_config_description="Show committed MCP definition selection",
+        include_configuration=True,
+        configuration_description="Show candidate configuration",
+    )
     _add_common_subtree(root, "global")
     return root
 
@@ -418,7 +446,13 @@ def _build_running_root() -> Node:
     no_reference_next = no_reference_node.add_argument(no_reference_arg)
     no_reference_next.set_command("running.reference_remove", "Remove a reference used by MCP")
 
-    _add_show_subtree(root, "running", include_configuration=True)
+    _add_show_subtree(
+        root,
+        "running",
+        running_config_description="Show committed MCP definition selection",
+        include_configuration=True,
+        configuration_description="Show candidate MCP definition selection",
+    )
     _add_common_subtree(root, "running")
     return root
 
@@ -452,7 +486,13 @@ def _build_topology_root() -> Node:
     edit_node = root.add_literal("edit", "Edit this topology in an external editor")
     edit_node.set_command("topology.edit", "Edit this topology in an external editor")
 
-    _add_show_subtree(root, "topology", include_configuration=True)
+    _add_show_subtree(
+        root,
+        "topology",
+        running_config_description="Show committed topology configuration",
+        include_configuration=True,
+        configuration_description="Show candidate topology configuration",
+    )
     _add_common_subtree(root, "topology")
     return root
 
@@ -476,7 +516,13 @@ def _build_device_root() -> Node:
     type_next = type_node.add_argument(type_arg)
     type_next.set_command("device.set_type", "Set the device type")
 
-    _add_show_subtree(root, "device", include_configuration=True)
+    _add_show_subtree(
+        root,
+        "device",
+        running_config_description="Show committed topology configuration",
+        include_configuration=True,
+        configuration_description="Show candidate topology configuration",
+    )
     _add_common_subtree(root, "device")
     return root
 
@@ -497,7 +543,13 @@ def _build_access_info_root() -> Node:
     device_next = device_node.add_argument(device_arg)
     device_next.set_command("access_info.device", "Create or edit a device")
 
-    _add_show_subtree(root, "access_info", include_configuration=True)
+    _add_show_subtree(
+        root,
+        "access_info",
+        running_config_description="Show committed access information",
+        include_configuration=True,
+        configuration_description="Show candidate access information",
+    )
     _add_common_subtree(root, "access_info")
     return root
 
@@ -578,7 +630,13 @@ def _build_access_device_root() -> Node:
         field_node = no_node.add_literal(keyword, description)
         field_node.set_command(action, description)
 
-    _add_show_subtree(root, "access_device", include_configuration=True)
+    _add_show_subtree(
+        root,
+        "access_device",
+        running_config_description="Show committed access information",
+        include_configuration=True,
+        configuration_description="Show candidate access information",
+    )
     _add_common_subtree(root, "access_device")
     return root
 
@@ -587,7 +645,13 @@ def _build_scenario_root() -> Node:
     root = Node()
     edit_node = root.add_literal("edit", "Edit this scenario in an external editor")
     edit_node.set_command("scenario.edit", "Edit this scenario in an external editor")
-    _add_show_subtree(root, "scenario", include_configuration=True)
+    _add_show_subtree(
+        root,
+        "scenario",
+        running_config_description="Show committed scenario configuration",
+        include_configuration=True,
+        configuration_description="Show candidate scenario configuration",
+    )
     _add_common_subtree(root, "scenario")
     return root
 
@@ -596,7 +660,13 @@ def _build_reference_root() -> Node:
     root = Node()
     edit_node = root.add_literal("edit", "Edit this reference in an external editor")
     edit_node.set_command("reference.edit", "Edit this reference in an external editor")
-    _add_show_subtree(root, "reference", include_configuration=True)
+    _add_show_subtree(
+        root,
+        "reference",
+        running_config_description="Show committed reference configuration",
+        include_configuration=True,
+        configuration_description="Show candidate reference configuration",
+    )
     _add_common_subtree(root, "reference")
     return root
 

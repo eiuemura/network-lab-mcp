@@ -680,12 +680,15 @@ in mcp 1.x) over the `stdio` transport. See
 ## Version, license, and quick start
 
 Run `help` in the CLI (`./run_cli.sh`) for a Quick Start covering the
-typical configuration workflow, and `show version` for the exact version,
-release date, source revision, and license currently running — see
-[docs/cli_reference.md](docs/cli_reference.md) for the full `help`/`show
-version` reference (`?` remains the separate, IOS XR-style
-context-sensitive syntax help). `help claude` explains how Claude Code
-uses Network Lab MCP.
+typical configuration workflow, and `show version` (EXEC mode only) for
+the exact version, release date, source revision, and license currently
+running — see [docs/cli_reference.md](docs/cli_reference.md) for the full
+`help`/`show version` reference (`?` remains the separate, IOS XR-style
+context-sensitive syntax help). Inside a configuration mode, `show
+running-config`/`show configuration` instead show the committed/candidate
+state of whatever you are currently editing there — see
+[docs/cli_reference.md](docs/cli_reference.md#show-running-config-vs-show-configuration).
+`help claude` explains how Claude Code uses Network Lab MCP.
 
 Network Lab MCP is licensed under the **GNU General Public License v3.0**
 (see [LICENSE](LICENSE)). Version (`0.1.0`), author, and license metadata

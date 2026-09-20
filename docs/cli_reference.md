@@ -80,9 +80,14 @@ candidate state, dirty state, or any file.
 
 ## `show version`
 
-`show version` is a read-only software-information command, available in
-every mode, that never touches candidate/dirty state, never reads
-access-info, and does not depend on the active topology/scenario/reference:
+`show version` is a read-only software-information command, **available
+only in EXEC mode** (it is software-level information, not part of any
+configuration context), that never touches candidate/dirty state, never
+reads access-info, and does not depend on the active topology/scenario/
+reference. `show ?` never lists it and Tab never completes it outside
+EXEC; typing it explicitly in a configuration mode hits the ordinary
+invalid-command/caret error, exactly like any other keyword that does not
+exist at that grammar position:
 
 ```
 network-lab# show version
@@ -95,6 +100,12 @@ Network Lab MCP
   License:       GNU General Public License v3.0
   Python:        3.12.3
 network-lab#
+```
+
+```
+network-lab(config)# show version
+     ^
+% Invalid input detected at '^' marker.
 ```
 
 - **Version**, **Author**, and **License** are read from installed package
@@ -118,7 +129,7 @@ network-lab#
 | Command | Effect |
 |---------|--------|
 | `configure` (alias: `configure terminal`) | Enter global configuration mode; initializes a running-config candidate (see "Candidate model" below). |
-| `show running-config` | Show the committed MCP definition selection (topology/scenario/reference names) — never a definition's own content. Identical in every mode; see "`show running-config` vs. `show configuration`". |
+| `show running-config` | Show the committed MCP definition selection (topology/scenario/reference names) — never a definition's own content. Also the meaning in global/`running` mode; a definition mode (topology/access-info/scenario/reference) scopes this to that object's own committed state instead — see "`show running-config` vs. `show configuration`". |
 | `show version` | Show Network Lab MCP's own version/license/runtime information — see "`show version`" above. |
 | `help` / `help <topic>` | Network Lab MCP Quick Start/usage help — see "`?` vs. `help`" above. Not the same as bare `?`. |
 | `exit` / `quit` | Terminate the CLI process. Only reachable in EXEC mode, where by construction no candidate configuration exists. |
@@ -133,20 +144,22 @@ network-lab#
 | `scenario <name>` | Create or edit a scenario definition. Enters scenario definition mode. |
 | `reference <name>` | Create or edit a reference definition. Enters reference definition mode. |
 | `show configuration` | Show whichever definition candidate (if any) is currently open — a note is shown if none is. |
-| `show running-config` | As above (committed selection, not the open definition). |
+| `show running-config` | The committed MCP running-config selection, same as EXEC — **not** the open definition's own content, even if one is open in the background (see "`show running-config` vs. `show configuration`" below). |
 | `clear` | Discard the entire uncommitted configure-session state (running-config candidate and any open definition candidate); stay in the current mode (or the nearest still-valid parent — see "`clear`" below). |
 | `commit` | Validate and persist the candidate; return to EXEC. |
 | `end` | Return to EXEC. Blocked (with a warning) if any candidate scope is dirty. Never implicitly commits or clears. |
 | `exit` | Same as `end` at this mode: return to EXEC, blocked while dirty. |
-| `show version` / `help` / `help <topic>` / `?` | As in EXEC mode — see above. |
+| `help` / `help <topic>` / `?` | As in EXEC mode — see above. |
 
 Opening a *different* definition (of any kind) while the current one is
 dirty is blocked, the same way switching topologies was guarded in the
 original Step 2 model — see "Definition switching guard" below.
 
-`show version`, `help`, and `help <topic>` behave identically in every
-mode (see above); the per-mode tables below omit them for brevity and list
-only what differs from EXEC/global.
+`help` and `help <topic>` behave identically in every mode (see above); the
+per-mode tables below omit them for brevity and list only what differs from
+EXEC/global. `show version` does **not** behave identically everywhere —
+it is EXEC-only (see "`show version`" above and "`show running-config` vs.
+`show configuration`" below) and is likewise omitted from the tables below.
 
 ## Running-config selection mode commands
 
@@ -167,18 +180,20 @@ only what differs from EXEC/global.
 | `description <text>` | Set the topology's free-form description (rest-of-line argument). |
 | `device <name>` | Create or edit a device's *safe* metadata (case-sensitive); enters topology device mode. |
 | `edit` | Open the topology candidate in an external YAML editor (see "External YAML editor" below). |
-| `show configuration` / `show running-config` | As in global mode. |
+| `show running-config` | This topology's own **committed** state, re-read fresh from disk — empty if it has never been committed. **Not** the MCP running-config selection. |
+| `show configuration` | This topology's **candidate** state (safe fields only, no access data). |
 | `clear` / `commit` | As above (topology-scoped edits are part of the same overall candidate). |
 | `end` | Return directly to EXEC; blocked while dirty. |
 | `exit` | Return one level up, to global configuration mode. No dirty check (still the same configuration session). |
-| `show version` / `help` / `help <topic>` / `?` | As in EXEC mode. |
+| `help` / `help <topic>` / `?` | As in EXEC mode. |
 
 ## Topology device mode commands (safe fields only)
 
 | Command | Effect |
 |---------|--------|
 | `type <iosxr\|iosxe\|nxos\|host>` | Device type. See "Device type enum" below. |
-| `show configuration` / `show running-config` | As above. |
+| `show running-config` | Just *this device's* committed block from the topology above — empty if this device (or the whole topology) has never been committed. |
+| `show configuration` | Just this device's candidate block. |
 | `clear` / `commit` / `end` / `exit` / `help` | As above. `exit` returns one level up, to topology definition mode. |
 
 Topology device mode intentionally has **no** `address`/`transport`/`port`/
@@ -191,7 +206,8 @@ access-info device mode instead, since topology is exposed to Claude via
 | Command | Effect |
 |---------|--------|
 | `device <name>` | Create or edit a device's private connection data (case-sensitive); enters access-info device mode. |
-| `show configuration` / `show running-config` | As above (candidate rendering masks `password`). |
+| `show running-config` | This access-info definition's own **committed** state, re-read fresh from disk — empty if it has never been committed. **Not** the MCP running-config selection. |
+| `show configuration` | This access-info definition's **candidate** state (`password` always masked as `********`). |
 | `clear` / `commit` / `end` / `exit` / `help` | As above. `exit` returns one level up, to global configuration mode. |
 
 access-info has no `edit` command in this phase — see
@@ -208,7 +224,8 @@ access-info has no `edit` command in this phase — see
 | `username <value>` | Device username. |
 | `password <value>` | Device password. Stored in plain text like Step 1 (this is a lab tool, not a secret manager) but never displayed, completed, or retained in history — see "Password safety" below. |
 | `no username` / `no password` / `no port` | Clear the corresponding field. |
-| `show configuration` / `show running-config` | As above. |
+| `show running-config` | Just *this device's* committed block from the access-info definition above (`password` masked) — empty if this device (or the whole definition) has never been committed. |
+| `show configuration` | Just this device's candidate block (`password` masked). |
 | `clear` / `commit` / `end` / `exit` / `help` | As above. `exit` returns one level up, to access-info definition mode. |
 
 ## Scenario / reference definition mode commands
@@ -216,8 +233,8 @@ access-info has no `edit` command in this phase — see
 | Command | Effect |
 |---------|--------|
 | `edit` | Open the candidate in an external YAML editor (see below). |
-| `show configuration` | Show the candidate as YAML (schema is intentionally not fixed yet — see [scenario_format.md](scenario_format.md)). |
-| `show running-config` | As above (committed selection, not this definition's content). |
+| `show running-config` | This definition's own **committed** YAML, re-read fresh from disk — empty if it has never been committed. **Not** the MCP running-config selection. |
+| `show configuration` | This definition's **candidate** YAML (schema is intentionally not fixed yet — see [scenario_format.md](scenario_format.md)). |
 | `clear` / `commit` / `end` / `exit` / `help` | As above. `exit` returns one level up, to global configuration mode. |
 
 Device identifier lookup/selection is case-sensitive (`device R1` and
@@ -651,12 +668,14 @@ submitted input line and never touches the candidate.
 
 ## `show running-config` vs. `show configuration`
 
-- `show running-config` — the **committed MCP definition selection**
-  (topology/scenario/reference *names*, never a definition's own content),
-  currently on disk, unaffected by any candidate. **Identical in every
-  mode** — topology mode's `show running-config` never dumps that
-  topology's committed YAML; use `show configuration` for the open
-  definition's candidate content instead. Format:
+Both commands are scoped to the **current CLI context**, not to a single
+fixed meaning:
+
+- **EXEC, global configuration, and `running` mode**: `show running-config`
+  is the **committed MCP running-config selection** (topology/scenario/
+  reference *names*, never a definition's own content) — this is the one
+  meaning that predates definitions having their own candidates, and it
+  never changes:
 
   ```
   network-lab# show running-config
@@ -673,16 +692,65 @@ submitted input line and never touches the candidate.
   network-lab#
   ```
 
-- `show configuration` — the **candidate**: the running-config candidate
-  while in `running` mode (same `!`-delimited format as above, but reading
-  pending selections), otherwise whichever definition candidate (if any) is
-  open — a topology block (safe fields only), an access-info block
-  (password-masked), or the raw candidate YAML for scenario/reference (no
-  fixed schema yet). Available in every mode except EXEC (there is no
-  candidate in EXEC).
+  `show configuration` here is the **candidate** version of the same thing:
+  the pending running-config selection while in `running` mode (same
+  `!`-delimited format), or — in global mode — whichever definition
+  candidate happens to be open in the background, per "Candidate model"
+  below (unchanged from earlier behavior).
 
-Both mask device passwords as `********` and display every identifier using
-its exact stored/candidate case.
+- **A definition mode** (`topology`/`access-info`/`scenario`/`reference`,
+  or their nested device submodes): both commands are scoped to *that one
+  object* instead of the MCP selection —
+
+  - `show running-config` — what is currently **committed on disk** for
+    this object, re-read fresh every time (never a stale in-memory copy).
+    **Empty** for a definition (or device) that has never been committed;
+    reflects the object's state immediately after this session's own
+    `commit`.
+  - `show configuration` — the **candidate**: what you are currently
+    editing.
+
+  ```
+  network-lab(config)# access-info test
+  network-lab(config-access-info-test)# device R1
+  network-lab(config-access-device-R1)# type iosxr
+  network-lab(config-access-device-R1)# address 192.0.2.11
+  network-lab(config-access-device-R1)# exit
+  network-lab(config-access-info-test)# show running-config
+  network-lab(config-access-info-test)# show configuration
+  access-info test
+   device R1
+    type iosxr
+    address 192.0.2.11
+   !
+  !
+  network-lab(config-access-info-test)# commit
+  Commit complete.
+  ```
+
+  (`show running-config` printed nothing at all — "empty" means no output
+  line, not a blank line — because no `access-info test` was committed
+  yet.) A nested device submode (`config-device-<name>` under a topology,
+  `config-access-device-<name>` under access-info) further scopes both
+  commands to *that one device* rather than every device in the parent
+  definition — a device that only exists in the candidate (just added, not
+  yet committed) makes `show running-config` empty even if the parent
+  definition itself is already committed.
+
+  There is deliberately no `show running-config configuration` or other
+  combined command — the two stay separate, just each newly aware of
+  context.
+
+- **`show version` exists only in EXEC mode.** It is software-level
+  information, not part of any configuration context, so `show ?` never
+  lists it and Tab never completes it outside EXEC; typing it explicitly
+  elsewhere hits the ordinary invalid-command/caret error, like any other
+  keyword that does not exist at that grammar position — there is no
+  special-cased error just for this command. See "`show version`" above.
+
+Every rendering masks device passwords as `********` and displays every
+identifier using its exact stored/candidate case, in both the committed and
+candidate views.
 
 ## Password safety
 

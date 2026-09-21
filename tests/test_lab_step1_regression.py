@@ -169,7 +169,7 @@ def test_get_active_topology_and_execution_instructions(lab_root, monkeypatch):
     assert [r["name"] for r in instructions["references"]] == ["sample"]
 
 
-def test_get_device_resolves_access_info(lab_root, monkeypatch):
+def test_get_device_resolves_selected_access_info(lab_root, monkeypatch):
     monkeypatch.setattr(lab, "find_lab_root", lambda: lab_root)
     topology_name, access = lab.get_device("R1")
     assert topology_name == "sample_lab"
@@ -179,40 +179,67 @@ def test_get_device_resolves_access_info(lab_root, monkeypatch):
         lab.get_device("does-not-exist")
 
 
-def test_get_device_fails_closed_when_access_info_missing(lab_root, monkeypatch):
+def test_get_device_fails_closed_when_device_absent_from_selected_access_info(lab_root, monkeypatch):
     monkeypatch.setattr(lab, "find_lab_root", lambda: lab_root)
     (lab_root / "topologies" / "sample_lab.yaml").write_text(
         "name: sample_lab\ndevices:\n  R1: {}\n  NOACCESS: {}\nlinks: []\n",
         encoding="utf-8",
     )
-    with pytest.raises(lab.LabConfigError, match="was not found"):
+    with pytest.raises(lab.LabConfigError, match="not present in access-info"):
         lab.get_device("NOACCESS")
 
 
-def test_resolve_device_access_fails_closed_on_ambiguity(lab_root):
-    # Two committed access-info definitions both containing "R1" -> the
-    # temporary global-uniqueness limitation makes this ambiguous,
-    # regardless of which topology is active. No credential value ever
-    # appears in the error, and neither the same-basename file nor any
-    # other selection heuristic (recency, alphabetical order) is used.
-    lab.write_access_info("lab_a", {"name": "lab_a", "devices": {"R1": {"address": "10.0.0.1", "password": "a"}}}, lab_root)
-    lab.write_access_info("lab_b", {"name": "lab_b", "devices": {"R1": {"address": "10.0.0.2", "password": "b"}}}, lab_root)
-    with pytest.raises(lab.LabConfigError) as exc_info:
-        lab.resolve_device_access("R1", lab_root)
-    message = str(exc_info.value)
-    assert "ambiguous" in message
-    assert "10.0.0" not in message
-    assert "a" != message and "b" != message
+def test_get_device_fails_closed_when_no_access_info_selected(lab_root, monkeypatch):
+    monkeypatch.setattr(lab, "find_lab_root", lambda: lab_root)
+    settings = lab.read_settings(lab_root)
+    del settings["active_access_info"]
+    lab.write_settings(settings, lab_root)
+    with pytest.raises(lab.LabConfigError, match="No access-info is selected"):
+        lab.get_device("R1")
 
 
-def test_resolve_device_access_fails_closed_when_absent(lab_root):
-    with pytest.raises(lab.LabConfigError, match="was not found"):
-        lab.resolve_device_access("does-not-exist", lab_root)
+def test_get_device_fails_closed_when_selected_access_info_missing(lab_root, monkeypatch):
+    monkeypatch.setattr(lab, "find_lab_root", lambda: lab_root)
+    settings = lab.read_settings(lab_root)
+    settings["active_access_info"] = "does-not-exist"
+    lab.write_settings(settings, lab_root)
+    with pytest.raises(lab.LabConfigError, match="does not exist"):
+        lab.get_device("R1")
 
 
-def test_resolve_device_access_succeeds_with_one_match(lab_root):
-    access = lab.resolve_device_access("R1", lab_root)
-    assert access["address"] == "192.0.2.11"
+def test_old_global_ambiguity_search_no_longer_exists():
+    # The Step 2.5 temporary global device-ID uniqueness limitation (a
+    # cross-file search over every committed access-info definition) is
+    # removed entirely, not merely bypassed -- resolution now only ever
+    # reads the one access-info definition selected in running-config.
+    assert not hasattr(lab, "resolve_device_access")
+
+
+def test_duplicate_device_ids_across_access_info_files_are_now_allowed(lab_root, monkeypatch):
+    # Two committed access-info definitions both containing "R1" is no
+    # longer ambiguous: only the one *selected* in running-config is ever
+    # read, so there is no cross-file search to be ambiguous about.
+    monkeypatch.setattr(lab, "find_lab_root", lambda: lab_root)
+    lab.write_access_info("lab_a", {"name": "lab_a", "devices": {"R1": {"address": "10.0.0.1"}}}, lab_root)
+    lab.write_access_info("lab_b", {"name": "lab_b", "devices": {"R1": {"address": "10.0.0.2"}}}, lab_root)
+
+    settings = lab.read_settings(lab_root)
+    settings["active_access_info"] = "lab_a"
+    lab.write_settings(settings, lab_root)
+    _, access = lab.get_device("R1")
+    assert access["address"] == "10.0.0.1"
+
+    settings["active_access_info"] = "lab_b"
+    lab.write_settings(settings, lab_root)
+    _, access = lab.get_device("R1")
+    assert access["address"] == "10.0.0.2"
+
+
+def test_missing_active_access_info_is_a_valid_legacy_settings_state(lab_root):
+    # A settings.yaml written before this field existed must still load.
+    settings = lab.read_settings(lab_root)
+    del settings["active_access_info"]
+    assert lab.get_active_access_info_name(settings) is None
 
 
 # ---- topology / access-info device.type consistency ----

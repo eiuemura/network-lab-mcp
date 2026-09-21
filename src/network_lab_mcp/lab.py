@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 
@@ -108,6 +108,21 @@ def get_active_reference_names(settings: dict) -> list[str]:
     if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
         raise LabConfigError("Settings 'active_references' must be a list of strings.")
     return names
+
+
+def get_active_access_info_name(settings: dict) -> Optional[str]:
+    """Return the selected access-info name, or None.
+
+    Unlike active_topology/active_scenario, no access-info selection is a
+    legitimate, fail-closed state (see terminal_open()/get_device() below),
+    not an error -- a settings.yaml written before this field existed is
+    still valid and simply has no access-info selected."""
+    name = settings.get("active_access_info")
+    if not name:
+        return None
+    if not isinstance(name, str):
+        raise LabConfigError("Settings 'active_access_info' must be a string.")
+    return name
 
 
 # --------------------------------------------------------------------------
@@ -319,31 +334,6 @@ def access_info_exists(name: str, lab_root: Path | None = None) -> bool:
     return (lab_root / "access-info" / f"{name}.yaml").is_file()
 
 
-def resolve_device_access(device_name: str, lab_root: Path | None = None) -> dict:
-    """Search every committed access-info definition for `device_name` and
-    return its private access data.
-
-    This is a deliberately temporary, unscoped lookup (see
-    "Known limitations" in README.md): access-info is not yet associated
-    with a specific topology, so it is searched globally by exact device ID.
-    Fails closed (LabConfigError) if the device ID is absent from every
-    access-info definition, or present in more than one -- silently picking
-    one would risk connecting to the wrong device. Credential values are
-    never included in the raised error."""
-    lab_root = lab_root or find_lab_root()
-    matches: list[tuple[str, dict]] = []
-    for access_info_name in list_access_info_names(lab_root):
-        data = load_access_info(access_info_name, lab_root)
-        devices = data.get("devices") or {}
-        if device_name in devices:
-            matches.append((access_info_name, devices[device_name] or {}))
-    if not matches:
-        raise LabConfigError(f"Access information for device '{device_name}' was not found.")
-    if len(matches) > 1:
-        raise LabConfigError(f"Access information for device '{device_name}' is ambiguous.")
-    return matches[0][1]
-
-
 # --------------------------------------------------------------------------
 # scenario / reference: schema intentionally not fixed yet (see
 # docs/scenario_format.md) -- minimal "valid YAML mapping" validation only
@@ -456,16 +446,22 @@ def get_execution_instructions() -> dict:
 
 def get_device(device_name: str) -> tuple[str, dict]:
     """Verify `device_name` exists in the active topology, then resolve its
-    private access information from committed access-info definitions.
+    private access information from the *selected* access-info definition
+    only (running-config's `active_access_info` -- see
+    get_active_access_info_name()).
 
     Returns (topology_name, access_info_dict) -- never topology data itself,
     since terminal connectivity needs address/transport/username/password,
-    which topology no longer carries. Raises LabConfigError (fail closed)
-    when the device is not present in the active topology, when access
-    information for it is missing or ambiguous (see
-    resolve_device_access()), or when the topology's and access-info's
-    device.type disagree once both are normalized through the shared
-    DEVICE_TYPES SSOT."""
+    which topology no longer carries. Raises LabConfigError (fail closed,
+    never a silent guess) when:
+    - the device is not present in the active topology;
+    - no access-info is selected in running-config;
+    - the selected access-info definition does not exist;
+    - the device is not present in the selected access-info definition
+      (no fallback search through any other access-info file);
+    - the topology's and access-info's device.type disagree once both are
+      normalized through the shared DEVICE_TYPES SSOT."""
+    lab_root = find_lab_root()
     active = get_active_topology()
     topology_devices = active["topology"].get("devices") or {}
     topology_device = topology_devices.get(device_name)
@@ -473,17 +469,31 @@ def get_device(device_name: str) -> tuple[str, dict]:
         raise LabConfigError(
             f"Device '{device_name}' is not present in active topology '{active['active_topology']}'."
         )
-    access = resolve_device_access(device_name)
+
+    settings = read_settings(lab_root)
+    access_info_name = get_active_access_info_name(settings)
+    if not access_info_name:
+        raise LabConfigError("No access-info is selected in running-config.")
+    if not access_info_exists(access_info_name, lab_root):
+        raise LabConfigError(f"Selected access-info '{access_info_name}' does not exist.")
+    access_data = load_access_info(access_info_name, lab_root)
+    access_devices = access_data.get("devices") or {}
+    access_device = access_devices.get(device_name)
+    if access_device is None:
+        raise LabConfigError(
+            f"Device '{device_name}' is not present in access-info '{access_info_name}'."
+        )
+    access_device = dict(access_device)
 
     topology_type = (topology_device or {}).get("type")
-    access_type = (access or {}).get("type")
+    access_type = access_device.get("type")
     if topology_type and access_type:
         if normalize_device_type(str(topology_type)) != normalize_device_type(str(access_type)):
             raise LabConfigError(
                 f"Device type mismatch for '{device_name}' between topology and access information."
             )
 
-    return active["active_topology"], access
+    return active["active_topology"], access_device
 
 
 # --------------------------------------------------------------------------

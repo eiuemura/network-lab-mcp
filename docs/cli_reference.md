@@ -151,23 +151,34 @@ network-lab(config)# show version
 | `show running-config reference` | Show the committed content of *every* active reference, in committed `active_references` order. |
 | `show running-config reference <name>` | Show the committed content of just one active reference. `<name>` must already be active; Tab/`?` only complete active reference names. |
 | `show version` | Show Network Lab MCP's own version/license/runtime information — see "`show version`" above. |
-| `show logging` | List every device's persistent terminal session logs (`logs/terminal/<device-id>/<session-start>.log`), newest first — see "`show logging`" below. EXEC only, like `show version`. |
-| `show logging <device-id>` | List just that device's logs, newest first. `<device-id>` Tab/`?`-completes from devices that currently have at least one log. |
+| `show logging` | Summarize every valid device logging directory with its eligible log-file count, plus a Total row — see "`show logging`" below. EXEC only, like `show version`. |
+| `show logging <device-id>` | List just that device's logs, newest first (unchanged, flat per-file listing). `<device-id>` Tab/`?`-completes from devices that currently have a valid logging directory. |
 | `show logging <device-id> <log-file>` | Show one log file's raw contents. Read-only; never modifies/deletes/rotates. `<log-file>` Tab/`?`-completes from that device's own log filenames only — an unknown device or filename is rejected, never a path-traversal attempt (`../`, an absolute path). |
-| `delete logging all` | Delete every eligible stored terminal log, across every device — see "`delete logging`" below. |
-| `delete logging <device-id> all` | Delete every eligible stored terminal log for one device. |
-| `delete logging <device-id> <log-file>` | Delete exactly one eligible stored terminal log, by its exact filename (same completion/eligibility rules as `show logging`). |
+| `delete logging all` | Delete every eligible stored terminal log, across every device, leaving device logging directories in place — see "`delete logging`" below. Requires `[y/N]` confirmation. |
+| `delete logging all directory` | Same, and additionally remove every valid (now-empty) device logging directory. `logs/terminal/` itself is never removed. Requires confirmation. |
+| `delete logging <device-id> all` | Delete every eligible stored terminal log for one device, leaving its directory in place. Requires confirmation. |
+| `delete logging <device-id> directory` | Delete a device's eligible logs, then remove its now-empty logging directory. Requires confirmation. |
+| `delete logging <device-id> <log-file>` | Delete exactly one eligible stored terminal log, by its exact filename (same completion/eligibility rules as `show logging`). Requires confirmation. |
 | `help` / `help <topic>` | Network Lab MCP Quick Start/usage help — see "`?` vs. `help`" above. Not the same as bare `?`. |
 | `exit` / `quit` | Terminate the CLI process. Only reachable in EXEC mode, where by construction no candidate configuration exists. |
 
 ### `show logging`
 
+Bare `show logging` is a per-device summary — one row per valid device
+logging directory with its eligible log-file count (an empty directory,
+e.g. left behind by `delete logging <device-id> all`, is still shown,
+with `0`, since it remains a meaningful `delete logging <device-id>
+directory` target), plus a Total row:
+
 ```
 network-lab# show logging
-Device  Session Start        Log File
-------  -------------------  --------------------
-R1      2026-09-21 10:32:10  20260921T103210.log
-R2      2026-09-21 10:31:55  20260921T103155.log
+Device  Log Files
+------  ---------
+R1             12
+R2              8
+SW2             0
+------  ---------
+Total          20
 
 network-lab# show logging R1
 Session Start        Log File
@@ -178,38 +189,74 @@ network-lab# show logging R1 20260921T103210.log
 <terminal transcript>
 ```
 
-No logs yet (missing `logs/terminal/` or an empty/unknown device) prints
-`No terminal logs found.` (or the device-scoped equivalent) rather than
-raising or fabricating a row. `show logging` (in any of its three forms)
-is EXEC-only, like `show version` — configuration mode `show` semantics
-remain exactly `show`/`show configuration`/`show running-config`.
+`show logging <device-id>` and `show logging <device-id> <log-file>` are
+unchanged from Step B: the former is still a flat, newest-first per-file
+listing for one device; only bare `show logging` changed shape. No valid
+device logging directories at all prints `No terminal logs found.`
+(never a traceback, never creates `logs/terminal/`). `show logging` (in
+any of its three forms) is EXEC-only, like `show version` — configuration
+mode `show` semantics remain exactly `show`/`show configuration`/`show
+running-config`.
 
 ### `delete logging`
 
 EXEC-only, like `show logging`; reuses the exact same stored-log
 enumeration (`show logging` and `delete logging` can never disagree about
 what exists). Bare `delete logging` and `delete logging <device-id>` are
-deliberately **not** executable — only the three explicit forms below are:
+deliberately **not** executable — only the five explicit forms below are,
+and every one of them requires an explicit `[y/N]` confirmation before
+anything is deleted:
 
 ```
 network-lab# delete logging R1 20260921T091500.log
+Delete terminal log R1/20260921T091500.log? [y/N]: y
 Deleted terminal log R1/20260921T091500.log.
 
 network-lab# delete logging R1 all
+Delete all 4 terminal logs for R1? [y/N]: y
 Deleted 4 terminal logs for R1.
 
+network-lab# delete logging R1 directory
+Delete empty logging directory for R1? [y/N]: y
+Deleted logging directory for R1.
+
 network-lab# delete logging all
+Delete all 17 terminal logs? [y/N]: y
 Deleted 17 terminal logs.
+
+network-lab# delete logging all directory
+Delete all 17 terminal logs and 6 device log directories? [y/N]: y
+Deleted 17 terminal logs and 6 device log directories.
 ```
+
+`[y/N]`: `y`/`Y` confirms; `n`/`N`/Enter alone (safe default) cancels
+(`Delete cancelled.`, nothing changed); Ctrl-C/EOF also cancel safely;
+anything else re-prompts (`Please enter y or n.`) instead of being
+silently treated either way. The answer is read directly (`input()`),
+never through the line-editing `PromptSession`, so it never enters
+command history. A `delete logging ...` line encountered inside a
+multi-line paste always fails closed (`% delete logging requires
+interactive confirmation and cannot be run from multi-line paste.`) — a
+paste can never safely supply, or be mistaken for, the answer.
+
+Confirming is not the last word: right after `y`, the whole operation is
+preflighted *again* and compared against what was originally shown. If
+anything eligible changed while the operator was deciding — a new log
+appeared, a writer became active, a directory's contents changed — the
+command aborts with `% Logging state changed while waiting for
+confirmation. % No logs were deleted. Retry the command.` (or the more
+specific rejection, e.g. an active-writer message, if that's what
+changed) rather than silently deleting a different set than what was
+shown.
 
 Safety, in order of how the implementation actually enforces it:
 
 - **Eligible files only.** Deletion targets exactly the files `show
   logging` already lists for that device — no wildcards (`delete logging
   R1 *.log` is not supported; the filename must match an existing log
-  exactly), no recursive directory deletion, and a symlink under a device
-  directory is never treated as an eligible target (excluded, not
-  followed).
+  exactly), no recursive directory deletion, and a symlink (a log file, or
+  a device directory itself) is never treated as an eligible target
+  (excluded, not followed).
 - **Path confinement.** A device or filename token must exactly match one
   already enumerated by the stored-log subsystem; there is no string
   concatenation into a filesystem path, so `../`-style traversal or an
@@ -225,24 +272,43 @@ Safety, in order of how the implementation actually enforces it:
   anywhere retrievable afterward), so protection is conservatively
   device-level, not file-level: if **either** a production or a Discovery
   session currently exists for a device, **none** of that device's logs
-  can be deleted (individually, or via `<device> all`), regardless of tmux
-  session-namespace classification. This is a deliberate, documented
-  limitation, not finer-grained protection than the architecture can
-  actually prove.
-- **Bulk operations fail closed.** `delete logging all` and `delete
-  logging <device-id> all` preflight the *entire* target set before
-  deleting anything: if any device targeted by the operation currently has
-  an active writer, the whole operation deletes nothing (not even the
-  logs of devices that are themselves inactive elsewhere in the same
-  call).
+  or its directory can be deleted, regardless of tmux session-namespace
+  classification. This is a deliberate, documented limitation, not
+  finer-grained protection than the architecture can actually prove. An
+  active device is rejected *before* any confirmation prompt is shown.
+- **Bulk operations fail closed.** `delete logging all`/`all directory`
+  and `delete logging <device-id> all`/`directory` preflight the *entire*
+  target set before ever asking for confirmation: if any device targeted
+  by the operation currently has an active writer, or (for a `directory`
+  form) any targeted device directory contains anything unexpected, the
+  whole operation is rejected and deletes nothing (not even the logs of
+  devices that are themselves fine).
+- **Directory cleanup is non-recursive and exact.** `<device-id>
+  directory` / `all directory` first prove a device's logging directory
+  contains *only* eligible log files (no unknown regular file, no nested
+  directory, no symlink of any kind) before unlinking those files and
+  then `rmdir`-ing the now-empty directory — never `shutil.rmtree`/`rm
+  -rf`. Any unexpected entry blocks that device (and, for `all
+  directory`, the entire operation) before anything is touched.
+  `logs/terminal/` itself is never a deletion target, only its valid
+  direct child device directories are, and an unrelated file directly
+  under `logs/terminal/` is never touched either.
+- **`all` and `directory` are a deliberate distinction.** `delete logging
+  all` / `delete logging <device-id> all` delete eligible log *files*
+  only and always leave the device directory behind (so `show logging`
+  keeps showing that device, with `0`); `directory` additionally removes
+  the now-empty directory itself. A directory removed this way is
+  recreated automatically the next time normal logging starts for that
+  device (session creation always ensures its own log directory exists).
 - **No session side effects.** Deletion never closes a terminal session,
   kills tmux, stops pipe-pane, or disturbs a Discovery bootstrap — an
   active-log rejection leaves the writing session completely untouched.
-- **Directories are never removed** (only the log files themselves), and
-  an empty/nonexistent device or a nonexistent exact filename is a clear
-  error (`% No terminal logs found for device 'R9'.` / `% No log file
-  '<name>' for device '<id>'.`), never a silent no-op or a fabricated
-  success.
+- **Clear, non-fatal errors.** An empty/nonexistent device, a nonexistent
+  exact filename, or nothing eligible at all is a clear error (`% No
+  terminal logs found for device 'R9'.` / `% No log file '<name>' for
+  device '<id>'.` / `% No terminal logs found.` / `% No device logging
+  directories found.`) with no confirmation prompt and no mutation, never
+  a silent no-op or a fabricated success.
 
 ### `show running-config <definition-type>`
 

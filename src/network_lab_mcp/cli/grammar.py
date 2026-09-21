@@ -425,27 +425,41 @@ def _add_logging_subtree(show_node: Node, mode: str) -> None:
 
 
 def _add_delete_subtree(root: Node) -> None:
-    """`delete logging` (EXEC only, Step B): reuses the exact same dynamic
-    providers as `show logging` (provide_log_device_ids/provide_log_files)
-    so what is deletable never drifts from what `show logging` displays --
-    no second log-discovery model. Unlike `show logging`, bare `delete
-    logging` and `delete logging <device>` are deliberately NOT executable
-    (no set_command on those nodes): only `delete logging all`, `delete
-    logging <device> all`, and `delete logging <device> <log-file>` are
-    complete commands. "all" is a fixed keyword living alongside the
-    dynamic <device-id>/<log-file> argument at the very same node --
-    see complete()/help()'s generic support for a node that combines
-    literal children with a further dynamic argument, added for exactly
-    this shape."""
+    """`delete logging` (EXEC only, Step B/B.1): reuses the exact same
+    dynamic providers as `show logging` (provide_log_device_ids/
+    provide_log_files) so what is deletable never drifts from what `show
+    logging` displays -- no second log-discovery model. Unlike `show
+    logging`, bare `delete logging` and `delete logging <device>` are
+    deliberately NOT executable (no set_command on those nodes): only
+    `delete logging all` (and its `directory` child), `delete logging
+    <device> all`, `delete logging <device> directory`, and `delete
+    logging <device> <log-file>` are complete commands.
+
+    "all"/"directory" are fixed keywords living alongside the dynamic
+    <device-id>/<log-file> argument at the very same node -- see
+    complete()/help()'s generic support (added for Step B) for a node
+    that combines literal children with a further dynamic argument; that
+    support already handles any number of literal children, so adding
+    "directory" here needed no further grammar core changes. `all` is
+    additionally both an executable command *and* the parent of its own
+    "directory" child -- the same "node carries both a command and
+    further children" mechanism bare `show`/`help` already use."""
     delete_node = root.add_literal("delete", "Delete stored information")
     logging_node = delete_node.add_literal("logging", "Delete terminal logs")
 
     all_node = logging_node.add_literal("all", "Delete all terminal logs")
     all_node.set_command("exec.delete_logging_all", "Delete all terminal logs")
 
+    all_directory_node = all_node.add_literal(
+        "directory", "Delete all terminal logs and device log directories"
+    )
+    all_directory_node.set_command(
+        "exec.delete_logging_all_directory", "Delete all terminal logs and device log directories"
+    )
+
     device_arg = Argument(
         "device_id",
-        "Device with stored terminal logs",
+        "Device logging directory",
         provider=provide_log_device_ids,
         hint="<device-id>",
         enumerate_when_empty=True,
@@ -454,6 +468,13 @@ def _add_delete_subtree(root: Node) -> None:
 
     device_all_node = device_next.add_literal("all", "Delete all terminal logs for this device")
     device_all_node.set_command("exec.delete_logging_device_all", "Delete all terminal logs for this device")
+
+    device_directory_node = device_next.add_literal(
+        "directory", "Delete terminal logs and device log directory"
+    )
+    device_directory_node.set_command(
+        "exec.delete_logging_device_directory", "Delete terminal logs and device log directory"
+    )
 
     file_arg = Argument(
         "log_file",

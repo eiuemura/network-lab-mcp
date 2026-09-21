@@ -982,18 +982,22 @@ committed active_access_info
   `pipe-pane` to `logs/terminal/<device-id>/<session-start>.log`
   (`YYYYMMDDT HHMMSS` session-start timestamp), gitignored. tmux's pane
   remains the runtime session source of truth and `terminal_read()` is
-  unchanged; the log is a separate, write-only historical record. `show
-  logging` (EXEC only) lists all devices' logs newest-first; `show logging
-  <device-id>` lists just that device's; `show logging <device-id>
-  <log-file>` shows one log's contents — all three are read-only and
-  integrated through the same grammar SSOT (`?`, `<cr>`, Tab completion).
+  unchanged; the log is a separate, write-only historical record. Bare
+  `show logging` (EXEC only) summarizes every valid device logging
+  directory with its eligible log-file count (an empty directory counts
+  as `0` and is still shown); `show logging <device-id>` lists just that
+  device's logs newest-first; `show logging <device-id> <log-file>` shows
+  one log's contents — all three are read-only and integrated through the
+  same grammar SSOT (`?`, `<cr>`, Tab completion).
 
   ```
   network-lab# show logging
-  Device  Session Start        Log File
-  ------  -------------------  --------------------
-  R1      2026-09-21 10:32:10  20260921T103210.log
-  R2      2026-09-21 10:31:55  20260921T103155.log
+  Device  Log Files
+  ------  ---------
+  R1             12
+  R2              8
+  ------  ---------
+  Total          20
 
   network-lab# show logging R1
   Session Start        Log File
@@ -1004,18 +1008,27 @@ committed active_access_info
   <terminal transcript>
   ```
 
-  `delete logging all` / `delete logging <device-id> all` / `delete
-  logging <device-id> <log-file>` (EXEC only) delete stored logs,
-  reusing the exact same eligibility/enumeration as `show logging` — no
-  wildcards, no recursive directory deletion, and never a log currently
-  being written: a production or Discovery bootstrap session both attach
-  logging to the same `logs/terminal/<device-id>/` directory keyed by
-  device name, and since no registry records which exact file a live
-  session is writing, protection is conservative and device-level — if
-  either kind of session exists for a device, none of that device's logs
-  can be deleted until it ends. Bulk deletion (`all`) preflights the whole
-  target set first: any active device anywhere in scope means nothing at
-  all is deleted. See
+  `delete logging all` / `<device-id> all` / `<device-id> <log-file>`
+  (files only, device directory left in place) and `delete logging all
+  directory` / `<device-id> directory` (files, then the now-empty
+  directory itself — never `logs/terminal/` — removed non-recursively,
+  never `rm -rf`) delete stored logs, reusing the exact same
+  eligibility/enumeration as `show logging` — no wildcards, no recursive
+  directory deletion, and never a log currently being written: a
+  production or Discovery bootstrap session both attach logging to the
+  same `logs/terminal/<device-id>/` directory keyed by device name, and
+  since no registry records which exact file a live session is writing,
+  protection is conservative and device-level — if either kind of session
+  exists for a device, none of that device's logs or its directory can be
+  deleted until it ends. Every form requires an explicit `[y/N]`
+  confirmation (Enter alone safely cancels) that is re-validated right
+  after the answer, before anything is deleted, so state that changed
+  while the operator was deciding aborts the operation instead of
+  silently deleting something different than what was shown; a `delete
+  logging ...` line inside a multi-line paste always fails closed rather
+  than blocking on, or misreading, the next pasted line as the answer.
+  Bulk deletion (`all`) preflights the whole target set first: any active
+  device anywhere in scope means nothing at all is deleted. See
   [docs/cli_reference.md](docs/cli_reference.md#delete-logging).
 
 - **Example** (`test_lab` selected as `active_access_info`, already

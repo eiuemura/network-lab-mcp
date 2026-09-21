@@ -291,14 +291,53 @@ historical record at `logs/terminal/<device-id>/<session-start>.log`
 (`YYYYMMDDTHHMMSS`), which is gitignored. `show logging` (EXEC only, see
 below) is the only reader of these files.
 
-### Terminal log deletion (Step B)
+### Terminal log deletion (Step B / Step B.1)
 
 `delete logging all` / `delete logging <device-id> all` / `delete
-logging <device-id> <log-file>` (EXEC only) are the only writers besides
-the logging mechanism itself: they delete stored log *files*, never
-directories, and only files `list_device_logs()` (the same enumeration
-`show logging` reads) already considers eligible -- a symlink under a
-device directory is excluded, never followed or treated as eligible.
+logging <device-id> <log-file>` (files only) and `delete logging all
+directory` / `delete logging <device-id> directory` (files, then the
+now-empty device directory itself) (EXEC only) are the only writers
+besides the logging mechanism itself. Every one of them, and every path
+through `terminal.py`'s deletion backend, is built on the exact same
+enumeration `show logging` reads (`list_logged_device_ids()` /
+`list_device_logs()`) -- a symlink (a log file, or a device directory
+itself) is excluded, never followed or treated as eligible.
+
+`terminal.DeletionPlan` is the shared unit of work: an immutable,
+comparable (`==`) snapshot of exactly which files and which device
+directories one operation would touch. Each `build_*_deletion_plan()`
+function (`build_file_deletion_plan`, `build_device_all_deletion_plan`,
+`build_device_directory_deletion_plan`, `build_global_all_deletion_plan`,
+`build_global_directory_deletion_plan`) either raises `TerminalError`
+(nothing eligible, or something unsafe) or returns a plan; none of them
+ever prompt or read input -- `cli/main.py` owns confirmation and message
+text entirely (Step B.1's boundary: interactive `[y/N]` behavior does not
+belong inside the logging backend). `apply_deletion_plan()` unlinks the
+plan's files, then `rmdir`s its directories (never `shutil.rmtree`/a
+recursive delete) -- non-recursive by construction, so an unexpected
+directory content can only ever block a plan at build time, never cause
+a partial deletion at apply time.
+
+`cli/main.py`'s `_confirm_and_apply()` is the shared confirm-then-verify
+flow every destructive handler uses: build the plan once (to compute
+counts for the `[y/N]` message), confirm, then **build the plan again**
+and compare it to the first one before ever calling
+`apply_deletion_plan()`. Since preflighting device directories,
+enumerating files, and checking active writers are all cheap, read-only
+operations, re-running the exact same builder is sufficient to catch
+anything that changed while the operator was deciding -- a new log
+file, a session that started logging, or a directory that gained an
+unexpected entry -- without a bespoke diff/lock mechanism. A mismatch (or
+a re-preflight failure, which propagates as an ordinary `TerminalError`)
+aborts with nothing deleted; only an unchanged, still-safe plan is ever
+applied. `_read_confirmation_line()`/`_confirm_delete()` use plain
+`input()`, never `PromptSession`, so a confirmation answer can never
+reach `MaskingHistory`. A destructive command reached through
+`execute_input_block()`'s multi-line paste path always fails closed
+(`execute_command_line(..., interactive=False)` threads a synthetic
+`"_interactive": False` into the handler's `args`) instead of blocking on
+stdin or risking the next pasted line being misread as the answer --
+every other handler ignores that key entirely.
 
 Active-writer protection is the central safety property, and its
 granularity is a documented, deliberate limitation rather than an
@@ -322,10 +361,19 @@ tmux namespace classification is otherwise irrelevant to this check: a
 Discovery session is protected because it writes an eligible log, not
 because of its namespace.
 
-`delete logging all` / `delete logging <device-id> all` preflight their
-entire target set before deleting anything -- if any targeted device has
-an active writer, nothing at all is deleted, including the logs of
-devices that are themselves inactive. Deletion never closes a session,
+`delete logging all` / `all directory` / `<device-id> all` / `<device-id>
+directory` all preflight their entire target set (files, and for a
+`directory` form, directory contents/writers too) before ever asking for
+confirmation -- if any targeted device has an active writer, or (for a
+`directory` form) any targeted directory contains anything other than
+eligible log files, nothing at all is deleted, including the logs of
+devices that are themselves inactive. `build_global_directory_deletion_plan()`
+reuses `build_device_directory_deletion_plan()` once per valid device
+directory rather than duplicating that per-device safety logic, so the
+first unsafe device's own error (already naming that device) blocks the
+whole operation. `logs/terminal/` itself is never a removal target, only
+its valid, non-symlink direct child device directories are; unrelated
+files directly under it are left alone. Deletion never closes a session,
 stops `pipe-pane`, or otherwise touches session lifecycle; that remains
 entirely the concern of `terminal_close()`/Discovery's own cleanup.
 

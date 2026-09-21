@@ -979,14 +979,34 @@ def _format_session_start(started) -> str:
     return started.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _render_log_summary_table(counts: list[tuple[str, int]]) -> str:
+    """`show logging` bare (Step B.1 section 14-15): one row per valid
+    device logging directory with its eligible log-file count -- an
+    empty directory (e.g. after `delete logging <device> all`) is still
+    shown, with 0, since it remains a meaningful `delete logging <device>
+    directory` target -- plus a Total row (sum of eligible logs only,
+    never a directory count) separated by its own dashed rule. Distinct
+    from _render_log_table() (a flat per-file listing), which
+    `show logging <device>` still uses unchanged."""
+    columns = ("Device", "Log Files")
+    body = [(device, str(count)) for device, count in counts]
+    footer = ("Total", str(sum(count for _device, count in counts)))
+    widths = [max(len(columns[i]), max(len(row[i]) for row in body + [footer])) for i in range(len(columns))]
+    separator = "  ".join("-" * widths[i] for i in range(len(columns)))
+    lines = ["  ".join(columns[i].ljust(widths[i]) for i in range(len(columns))), separator]
+    lines.extend("  ".join(row[i].ljust(widths[i]) for i in range(len(columns))) for row in body)
+    lines.append(separator)
+    lines.append("  ".join(footer[i].ljust(widths[i]) for i in range(len(columns))))
+    return "\n".join(lines)
+
+
 def h_show_logging(session: cfgmod.CliSession, args: dict) -> None:
-    rows = [
-        (device_id, _format_session_start(started), filename)
-        for device_id in sorted(terminal.list_logged_device_ids())
-        for started, filename in terminal.list_device_logs(device_id)
-    ]
-    rows.sort(key=lambda row: row[1], reverse=True)
-    print(_render_log_table(("Device", "Session Start", "Log File"), rows))
+    device_ids = sorted(terminal.list_logged_device_ids())
+    if not device_ids:
+        print("No terminal logs found.")
+        return
+    counts = [(device_id, len(terminal.list_device_logs(device_id))) for device_id in device_ids]
+    print(_render_log_summary_table(counts))
 
 
 def h_show_logging_device(session: cfgmod.CliSession, args: dict) -> None:
@@ -1004,31 +1024,160 @@ def h_show_logging_device_file(session: cfgmod.CliSession, args: dict) -> None:
         print(content, end="" if content.endswith("\n") else "\n")
 
 
-# ---- delete logging (Step B, EXEC only) ----
+# ---- delete logging (Step B / Step B.1, EXEC only) ----
 #
-# Every handler here is a trivial pass-through to terminal.py's delete
-# backend (the same pattern as show logging's own handlers above) --
-# terminal.TerminalError is already caught generically by
-# execute_command_line() and printed as "% <message>", so no error
-# handling is duplicated here.
+# terminal.py owns enumeration/preflight/manifest/deletion (DeletionPlan,
+# build_*_deletion_plan(), apply_deletion_plan()) and never reads
+# interactive input; this module owns the [y/N] confirmation and message
+# text only (Step B.1 section 50 boundary). terminal.TerminalError is
+# already caught generically by execute_command_line() and printed as
+# "% <message>", so a preflight rejection needs no handling here.
 
 
-def h_delete_logging_all(session: cfgmod.CliSession, args: dict) -> None:
-    count = terminal.delete_all_logs()
-    print(f"Deleted {count} terminal logs.")
+def _plural(count: int, singular: str, plural: str) -> str:
+    return singular if count == 1 else plural
 
 
-def h_delete_logging_device_all(session: cfgmod.CliSession, args: dict) -> None:
-    device_id = args["device_id"]
-    count = terminal.delete_all_device_logs(device_id)
-    print(f"Deleted {count} terminal logs for {device_id}.")
+def _read_confirmation_line() -> str:
+    """Thin wrapper around input() (no prompt argument -- the prompt is
+    always printed separately by _confirm_delete(), so tests can observe
+    it via captured stdout regardless of how the answer itself is
+    supplied). Isolated so tests can supply a deterministic answer
+    without a real interactive stdin, and so Ctrl-C/EOF handling lives in
+    exactly one place. Uses plain input(), not prompt_toolkit's own
+    PromptSession/history, so a confirmation answer is never inserted
+    into command history and never confused with a pasted physical line
+    (see h_delete_logging_*'s _require_interactive() check, which runs
+    before this is ever reached)."""
+    return input()
+
+
+def _confirm_delete(message: str) -> bool:
+    """[y/N] confirmation for one destructive delete logging operation.
+    Enter alone (or any of n/N) is No -- never destructive by omission.
+    Anything else that isn't y/Y/n/N re-prompts instead of being silently
+    interpreted either way. Ctrl-C/EOF cancel safely, matching the
+    pre-existing topology case-collision confirmation's own convention
+    (see _confirm() above) without touching that separate helper."""
+    prompt = f"{message} [y/N]: "
+    while True:
+        print(prompt, end="", flush=True)
+        try:
+            answer = _read_confirmation_line().strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer in ("y", "Y"):
+            return True
+        if answer in ("n", "N", ""):
+            return False
+        print("Please enter y or n.")
+
+
+def _require_interactive(args: dict) -> None:
+    """`delete logging` requires a real [y/N] answer, which a multi-line
+    paste can never safely supply (see execute_input_block()'s
+    `interactive` flag) -- fail closed instead of either blocking the
+    paste on stdin or silently treating the next pasted line as the
+    answer."""
+    if not args.get("_interactive", True):
+        raise terminal.TerminalError(
+            "delete logging requires interactive confirmation and cannot be run from multi-line paste."
+        )
+
+
+def _confirm_and_apply(initial_plan, message: str, build_plan) -> "terminal.DeletionPlan | None":
+    """Shared confirm-then-re-preflight-then-apply flow for every
+    destructive delete logging command (Step B.1 sections 10-12/51-52).
+    `initial_plan` is what was already built (and used to compute
+    `message`); `build_plan` is called again only after the user
+    confirms, to catch anything that changed while they were deciding
+    (a new log, a newly active writer, new directory contents) -- if the
+    freshly-built plan differs at all from `initial_plan`, nothing is
+    deleted and the caller is told to retry. Returns the applied plan, or
+    None if the user declined or the target state changed underneath
+    them (either way, a message has already been printed)."""
+    if not _confirm_delete(message):
+        print("Delete cancelled.")
+        return None
+    reconfirmed_plan = build_plan()
+    if reconfirmed_plan != initial_plan:
+        print("% Logging state changed while waiting for confirmation.")
+        print("% No logs were deleted. Retry the command.")
+        return None
+    terminal.apply_deletion_plan(reconfirmed_plan)
+    return reconfirmed_plan
 
 
 def h_delete_logging_device_file(session: cfgmod.CliSession, args: dict) -> None:
+    _require_interactive(args)
     device_id = args["device_id"]
     log_file = args["log_file"]
-    terminal.delete_device_log_file(device_id, log_file)
-    print(f"Deleted terminal log {device_id}/{log_file}.")
+    build_plan = lambda: terminal.build_file_deletion_plan(device_id, log_file)
+    plan = build_plan()
+    message = f"Delete terminal log {device_id}/{log_file}?"
+    if _confirm_and_apply(plan, message, build_plan) is not None:
+        print(f"Deleted terminal log {device_id}/{log_file}.")
+
+
+def h_delete_logging_device_all(session: cfgmod.CliSession, args: dict) -> None:
+    _require_interactive(args)
+    device_id = args["device_id"]
+    build_plan = lambda: terminal.build_device_all_deletion_plan(device_id)
+    plan = build_plan()
+    count = len(plan.files)
+    message = f"Delete all {count} terminal {_plural(count, 'log', 'logs')} for {device_id}?"
+    if _confirm_and_apply(plan, message, build_plan) is not None:
+        print(f"Deleted {count} terminal {_plural(count, 'log', 'logs')} for {device_id}.")
+
+
+def h_delete_logging_device_directory(session: cfgmod.CliSession, args: dict) -> None:
+    _require_interactive(args)
+    device_id = args["device_id"]
+    build_plan = lambda: terminal.build_device_directory_deletion_plan(device_id)
+    plan = build_plan()
+    count = len(plan.files)
+    if count == 0:
+        message = f"Delete empty logging directory for {device_id}?"
+        success = f"Deleted logging directory for {device_id}."
+    else:
+        message = (
+            f"Delete all {count} terminal {_plural(count, 'log', 'logs')} "
+            f"and logging directory for {device_id}?"
+        )
+        success = (
+            f"Deleted {count} terminal {_plural(count, 'log', 'logs')} "
+            f"and logging directory for {device_id}."
+        )
+    if _confirm_and_apply(plan, message, build_plan) is not None:
+        print(success)
+
+
+def h_delete_logging_all(session: cfgmod.CliSession, args: dict) -> None:
+    _require_interactive(args)
+    build_plan = terminal.build_global_all_deletion_plan
+    plan = build_plan()
+    count = len(plan.files)
+    message = f"Delete all {count} terminal {_plural(count, 'log', 'logs')}?"
+    if _confirm_and_apply(plan, message, build_plan) is not None:
+        print(f"Deleted {count} terminal {_plural(count, 'log', 'logs')}.")
+
+
+def h_delete_logging_all_directory(session: cfgmod.CliSession, args: dict) -> None:
+    _require_interactive(args)
+    build_plan = terminal.build_global_directory_deletion_plan
+    plan = build_plan()
+    file_count = len(plan.files)
+    dir_count = len(plan.directories)
+    message = (
+        f"Delete all {file_count} terminal {_plural(file_count, 'log', 'logs')} and "
+        f"{dir_count} device log {_plural(dir_count, 'directory', 'directories')}?"
+    )
+    if _confirm_and_apply(plan, message, build_plan) is not None:
+        print(
+            f"Deleted {file_count} terminal {_plural(file_count, 'log', 'logs')} and "
+            f"{dir_count} device log {_plural(dir_count, 'directory', 'directories')}."
+        )
 
 
 def h_commit(session: cfgmod.CliSession, args: dict) -> None:
@@ -1367,7 +1516,9 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "exec.show_logging_device": h_show_logging_device,
     "exec.show_logging_device_file": h_show_logging_device_file,
     "exec.delete_logging_all": h_delete_logging_all,
+    "exec.delete_logging_all_directory": h_delete_logging_all_directory,
     "exec.delete_logging_device_all": h_delete_logging_device_all,
+    "exec.delete_logging_device_directory": h_delete_logging_device_directory,
     "exec.delete_logging_device_file": h_delete_logging_device_file,
     "exec.help": h_help,
     "exec.help_topic": h_help_topic,
@@ -1512,7 +1663,7 @@ def _make_key_bindings(session: cfgmod.CliSession) -> KeyBindings:
     return kb
 
 
-def execute_command_line(session: cfgmod.CliSession, line: str) -> bool:
+def execute_command_line(session: cfgmod.CliSession, line: str, *, interactive: bool = True) -> bool:
     """Parse and execute exactly one physical command line against the
     session's current authoritative mode/candidate state, exactly as a
     manually typed line would be. Used both for ordinary single-line input
@@ -1522,6 +1673,14 @@ def execute_command_line(session: cfgmod.CliSession, line: str) -> bool:
     -- there is no separate paste-side notion of "current mode". Returns
     True on success, False if a parse or handler error was printed.
 
+    `interactive` (default True, matching every pre-existing call site)
+    is only ever False for a physical line inside a multi-line paste (see
+    execute_input_block()) -- it is threaded into the handler's `args` as
+    `"_interactive"`, a synthetic key every handler except the delete
+    logging ones ignores, so a confirmation-requiring command can fail
+    closed instead of ever blocking on stdin (or worse, misreading the
+    next pasted line as its answer) when run from a paste.
+
     Propagates `_ExitCli` (EXEC `exit`/`quit`) uncaught, matching how a
     manually typed `exit` unwinds the REPL loop in `run()`."""
     result = grammar.parse(session.mode, line)
@@ -1530,8 +1689,10 @@ def execute_command_line(session: cfgmod.CliSession, line: str) -> bool:
         return False
 
     handler = HANDLERS[result.action]
+    args = dict(result.args or {})
+    args["_interactive"] = interactive
     try:
-        handler(session, result.args or {})
+        handler(session, args)
     except (
         cfgmod.ConfigError,
         cfgmod.CommitValidationError,
@@ -1573,7 +1734,7 @@ def execute_input_block(session: cfgmod.CliSession, text: str) -> None:
             if line == "!":
                 _apply_structural_bang(session)
                 continue
-            if not execute_command_line(session, line):
+            if not execute_command_line(session, line, interactive=False):
                 break
     else:
         execute_command_line(session, text)

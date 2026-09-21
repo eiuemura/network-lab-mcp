@@ -45,18 +45,21 @@ def test_show_logging_with_empty_log_directory(isolated_logs, lab_root, capsys):
     assert capsys.readouterr().out.strip() == "No terminal logs found."
 
 
-def test_show_logging_multiple_devices_newest_first(isolated_logs, lab_root, capsys):
+def test_show_logging_summarizes_device_counts_and_total(isolated_logs, lab_root, capsys):
+    """Step B.1: bare `show logging` was changed from a flat per-file
+    listing to a per-device count summary (with a Total row) -- this
+    test previously asserted the old flat-listing format, which is now
+    only `show logging <device-id>`'s own behavior (see
+    test_show_logging_device_multiple_sessions_newest_first below)."""
     _write_log(isolated_logs, "R1", "20260921T091500")
     _write_log(isolated_logs, "R2", "20260921T091505")
     _write_log(isolated_logs, "R1", "20260921T103210")
     session = cfgmod.CliSession(lab_root)
     climain.execute_command_line(session, "show logging")
     lines = capsys.readouterr().out.strip().splitlines()
-    data_lines = lines[2:]  # skip header + dashes
-    assert [line.split()[0] for line in data_lines] == ["R1", "R2", "R1"]
-    assert "20260921T103210.log" in data_lines[0]
-    assert "20260921T091505.log" in data_lines[1]
-    assert "20260921T091500.log" in data_lines[2]
+    assert any(line.split()[:2] == ["R1", "2"] for line in lines)
+    assert any(line.split()[:2] == ["R2", "1"] for line in lines)
+    assert any(line.split()[:2] == ["Total", "3"] for line in lines)
 
 
 # ---- h_show_logging_device ----

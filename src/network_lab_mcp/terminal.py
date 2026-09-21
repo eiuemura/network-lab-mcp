@@ -28,6 +28,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -389,10 +390,20 @@ def _start_session_logging(session_name: str, device_name: str) -> Path:
 
 
 def list_logged_device_ids() -> list[str]:
-    """Device IDs that have at least one log directory under logs/terminal/."""
+    """Device IDs that have a valid logging directory under
+    logs/terminal/ -- directory-existence based, not log-content based,
+    so a device whose logs were all deleted (but whose directory was
+    intentionally left behind, see delete_all_device_logs()) is still
+    listed, with zero logs (Step B.1 section 15). A symlink is never a
+    valid device logging directory (Step B.1 section 28) -- it is
+    excluded here, the single SSOT this and every other consumer (`show
+    logging`, `delete logging ...`, directory-deletion eligibility) reads
+    valid device directories from."""
     if not LOGS_ROOT.is_dir():
         return []
-    return sorted(p.name for p in LOGS_ROOT.iterdir() if p.is_dir() and _NAME_RE.match(p.name))
+    return sorted(
+        p.name for p in LOGS_ROOT.iterdir() if p.is_dir() and not p.is_symlink() and _NAME_RE.match(p.name)
+    )
 
 
 def list_device_logs(device_name: str) -> list[tuple[datetime, str]]:
@@ -521,12 +532,31 @@ def _unlink_eligible_log(path: Path) -> None:
     path.unlink()
 
 
-def delete_device_log_file(device_name: str, filename: str) -> None:
-    """Delete exactly one eligible log file for one device. Raises
-    TerminalError (deletes nothing) if the filename does not exactly
-    match one of that device's own already-listed eligible logs, or if
-    the device currently has an active writer (device-level fail-closed
-    -- see module docstring)."""
+@dataclass(frozen=True)
+class DeletionPlan:
+    """An immutable, comparable snapshot of exactly what one `delete
+    logging ...` operation would do -- built by one of the
+    build_*_deletion_plan() functions below, applied (unchanged) by
+    apply_deletion_plan(). `device_name` is the single targeted device
+    for a device-scoped operation, or None for a global one. `files` and
+    `directories` are sorted deterministically so two independently-built
+    plans for the same real state always compare equal, and Step B.1's
+    confirm-then-re-preflight flow (see cli/main.py) can detect drift by
+    simple equality: build once to show the user what will happen, build
+    again right after they confirm, and only apply if the two plans are
+    identical -- never trusting a stale, possibly-outdated plan."""
+
+    device_name: str | None
+    files: tuple[Path, ...]
+    directories: tuple[str, ...]
+
+
+def build_file_deletion_plan(device_name: str, filename: str) -> DeletionPlan:
+    """Preflight for `delete logging <device> <log-file>`. Raises
+    TerminalError (nothing to plan, nothing deleted) if the filename does
+    not exactly match one of that device's own already-listed eligible
+    logs, or if the device currently has an active writer (device-level
+    fail-closed -- see module docstring above)."""
     if not _NAME_RE.match(device_name):
         raise TerminalError(f"No log file '{filename}' for device '{device_name}'.")
     eligible = {path.name: path for path in _eligible_log_files(device_name)}
@@ -534,13 +564,16 @@ def delete_device_log_file(device_name: str, filename: str) -> None:
         raise TerminalError(f"No log file '{filename}' for device '{device_name}'.")
     if _device_has_active_session(device_name):
         raise TerminalError(f"Cannot delete an active terminal log for device '{device_name}'.")
-    _unlink_eligible_log(eligible[filename])
+    return DeletionPlan(device_name, (eligible[filename],), ())
 
 
-def delete_all_device_logs(device_name: str) -> int:
-    """Delete every eligible log file for one device. Raises TerminalError
-    (deletes nothing) if the device has no eligible logs at all, or if it
-    currently has an active writer. Returns the number of files deleted."""
+def build_device_all_deletion_plan(device_name: str) -> DeletionPlan:
+    """Preflight for `delete logging <device> all`. Raises TerminalError
+    if the device has no eligible logs at all, or if it currently has an
+    active writer. The device's own logging *directory* is deliberately
+    never part of this plan -- `all` only ever targets files (Step B.1
+    section 36/37); use build_device_directory_deletion_plan() for
+    directory removal."""
     if not _NAME_RE.match(device_name):
         raise TerminalError(f"No terminal logs found for device '{device_name}'.")
     targets = _eligible_log_files(device_name)
@@ -548,19 +581,42 @@ def delete_all_device_logs(device_name: str) -> int:
         raise TerminalError(f"No terminal logs found for device '{device_name}'.")
     if _device_has_active_session(device_name):
         raise TerminalError(f"Cannot delete all logs for '{device_name}' while a terminal log is active.")
-    for path in targets:
-        _unlink_eligible_log(path)
-    return len(targets)
+    return DeletionPlan(device_name, tuple(sorted(targets, key=str)), ())
 
 
-def delete_all_logs() -> int:
-    """Delete every eligible terminal log across every device. Preflights
-    the WHOLE operation before deleting anything: if ANY device targeted
-    by this call (one with at least one eligible log) currently has an
-    active writer, nothing at all is deleted -- not even the logs of
-    devices that are themselves inactive. Raises TerminalError either way
-    (active-writer rejection, or nothing to delete); returns the count
-    deleted on success."""
+def build_device_directory_deletion_plan(device_name: str) -> DeletionPlan:
+    """Preflight for `delete logging <device> directory`. Raises
+    TerminalError (nothing deleted) if: the device has no valid logging
+    directory at all; that directory contains anything other than
+    eligible terminal log files (an unknown regular file, a nested
+    directory, or any symlink -- including one shaped like a
+    '<timestamp>.log' name); or the device currently has an active
+    writer. Deliberately non-recursive: this only ever inspects the
+    device directory's own direct entries, never descends further."""
+    if not _NAME_RE.match(device_name) or device_name not in list_logged_device_ids():
+        raise TerminalError(f"No logging directory found for device '{device_name}'.")
+    device_dir = _device_log_dir(device_name)
+    eligible_names = {path.name for path in _eligible_log_files(device_name)}
+    for entry in device_dir.iterdir():
+        if entry.is_symlink() or entry.is_dir() or entry.name not in eligible_names:
+            raise TerminalError(
+                f"Cannot delete logging directory for '{device_name}' because it contains "
+                "non-terminal-log entries."
+            )
+    if _device_has_active_session(device_name):
+        raise TerminalError(f"Cannot delete logging directory for '{device_name}' while a terminal log is active.")
+    files = tuple(sorted((device_dir / name for name in eligible_names), key=str))
+    return DeletionPlan(device_name, files, (device_name,))
+
+
+def build_global_all_deletion_plan() -> DeletionPlan:
+    """Preflight for `delete logging all`. Preflights the WHOLE operation
+    before deleting anything: if ANY device targeted by this call (one
+    with at least one eligible log) currently has an active writer,
+    nothing at all is deleted -- not even the logs of devices that are
+    themselves inactive. Device directories are never part of this plan
+    (see build_device_all_deletion_plan()'s note -- the same "files
+    only" policy applies globally)."""
     all_targets: list[Path] = []
     active_devices: list[str] = []
     for device_name in list_logged_device_ids():
@@ -578,9 +634,58 @@ def delete_all_logs() -> int:
         )
     if not all_targets:
         raise TerminalError("No terminal logs found.")
-    for path in all_targets:
+    return DeletionPlan(None, tuple(sorted(all_targets, key=str)), ())
+
+
+def build_global_directory_deletion_plan() -> DeletionPlan:
+    """Preflight for `delete logging all directory`. Reuses
+    build_device_directory_deletion_plan() once per valid device logging
+    directory -- the exact same per-device safety checks (active writer,
+    unknown entries, symlinks), so there is no duplicated safety logic --
+    and lets the first unsafe device's own TerminalError (already naming
+    that device) propagate, blocking the entire operation before
+    anything is deleted."""
+    device_names = list_logged_device_ids()
+    if not device_names:
+        raise TerminalError("No device logging directories found.")
+    all_files: list[Path] = []
+    for device_name in device_names:
+        plan = build_device_directory_deletion_plan(device_name)
+        all_files.extend(plan.files)
+    return DeletionPlan(None, tuple(sorted(all_files, key=str)), tuple(sorted(device_names)))
+
+
+def _rmdir_device_directory(device_name: str) -> None:
+    """Remove exactly one now-empty device logging directory. Non-recursive
+    (`rmdir`, never `shutil.rmtree`/recursive unlink) -- if the directory
+    is not actually empty (an unknown entry appeared after the plan was
+    built and applied, which should never happen given a correctly
+    re-preflighted plan), this raises OSError rather than silently
+    removing unexpected contents. Defense in depth beyond the exact-name
+    match that produced this call: refuse anything that is not a direct,
+    non-symlink child of LOGS_ROOT."""
+    device_dir = _device_log_dir(device_name)
+    resolved_root = LOGS_ROOT.resolve()
+    resolved_dir = device_dir.resolve()
+    if resolved_dir.parent != resolved_root:
+        raise TerminalError("Refusing to remove a directory outside the terminal log root.")
+    if device_dir.is_symlink() or not device_dir.is_dir():
+        raise TerminalError("Refusing to remove a non-directory terminal log path.")
+    device_dir.rmdir()
+
+
+def apply_deletion_plan(plan: DeletionPlan) -> None:
+    """Apply an already-built, already-reconfirmed DeletionPlan: unlink
+    every planned file, then rmdir every planned (now-empty) device
+    directory. Callers (cli/main.py) are responsible for confirmation and
+    for re-building the plan immediately beforehand to catch drift -- see
+    module docstring's re-preflight requirement; this function itself
+    performs no confirmation and no additional safety checks beyond what
+    _unlink_eligible_log()/_rmdir_device_directory() always enforce."""
+    for path in plan.files:
         _unlink_eligible_log(path)
-    return len(all_targets)
+    for device_name in plan.directories:
+        _rmdir_device_directory(device_name)
 
 
 # --------------------------------------------------------------------------

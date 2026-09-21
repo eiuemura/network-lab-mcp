@@ -292,12 +292,67 @@ def topology_exists(name: str, lab_root: Path | None = None) -> bool:
 JUMP_HOST_TYPE = "host"
 
 
+def validate_jump_hosts(context_label: str, jump_hosts: dict) -> None:
+    """Validate a jump_hosts mapping: each entry must resolve (through the
+    shared device.type SSOT, so abbreviations/case are handled consistently)
+    to exactly 'host' -- never a network-device type -- and, if it sets a
+    transport, that transport must be 'ssh', since native OpenSSH ProxyJump
+    is SSH-only. Reuses normalize_device_type() rather than maintaining a
+    separate jump-host type enum."""
+    if not isinstance(jump_hosts, dict):
+        raise LabConfigError(f"{context_label} has an invalid 'jump_hosts' section; expected a mapping.")
+    for jump_host_name, jump_host in jump_hosts.items():
+        if not isinstance(jump_host_name, str) or not jump_host_name.strip():
+            raise LabConfigError(f"{context_label} has a jump host with an empty or invalid name.")
+        jump_host = jump_host or {}
+        raw_type = jump_host.get("type")
+        if raw_type not in (None, ""):
+            try:
+                normalized_type = normalize_device_type(str(raw_type))
+            except LabConfigError as exc:
+                raise LabConfigError(f"{context_label} jump host '{jump_host_name}': {exc}") from exc
+            if normalized_type != JUMP_HOST_TYPE:
+                raise LabConfigError(
+                    f"{context_label} jump host '{jump_host_name}' must have type '{JUMP_HOST_TYPE}', "
+                    f"not '{normalized_type}'."
+                )
+        raw_transport = jump_host.get("transport")
+        if raw_transport not in (None, "") and str(raw_transport).lower() != "ssh":
+            raise LabConfigError(
+                f"{context_label} jump host '{jump_host_name}' must use transport 'ssh' for ProxyJump."
+            )
+
+
+def validate_device_jump_host_references(context_label: str, devices: dict, jump_hosts: dict) -> None:
+    """A device's optional 'jump_host' must name an existing jump host, and
+    single-hop OpenSSH ProxyJump requires the device's own transport to be
+    ssh too -- a telnet device can never use a jump host."""
+    for device_name, device in devices.items():
+        device = device or {}
+        jump_host_ref = device.get("jump_host")
+        if not jump_host_ref:
+            continue
+        if jump_host_ref not in jump_hosts:
+            raise LabConfigError(
+                f"{context_label} device '{device_name}' references unknown jump host '{jump_host_ref}'."
+            )
+        raw_transport = device.get("transport")
+        if raw_transport and str(raw_transport).lower() != "ssh":
+            raise LabConfigError(
+                f"{context_label} device '{device_name}' uses jump_host but transport is not 'ssh'."
+            )
+
+
 def validate_access_info_data(name: str, data: Any) -> None:
     """Validate an in-memory access-info mapping. Device names only need
     basic sanity here (non-empty strings) -- unlike topology, access-info
     device keys do not by themselves create terminal sessions, so they are
     not required to pass the topology session-name-collision check. The
-    device.type enum is still validated through the same SSOT as topology."""
+    device.type enum is still validated through the same SSOT as topology.
+
+    Also validates the optional single-hop jump_hosts mapping and any
+    device.jump_host reference into it (see validate_jump_hosts() /
+    validate_device_jump_host_references())."""
     if not isinstance(data, dict):
         raise LabConfigError(f"Access information '{name}' data must be a YAML mapping.")
     devices = data.get("devices") or {}
@@ -307,6 +362,9 @@ def validate_access_info_data(name: str, data: Any) -> None:
         if not isinstance(device_name, str) or not device_name.strip():
             raise LabConfigError(f"Access information '{name}' has a device with an empty or invalid name.")
     validate_device_types(f"Access information '{name}'", devices)
+    jump_hosts = data.get("jump_hosts") or {}
+    validate_jump_hosts(f"Access information '{name}'", jump_hosts)
+    validate_device_jump_host_references(f"Access information '{name}'", devices, jump_hosts)
 
 
 def load_access_info(name: str, lab_root: Path | None = None) -> dict:
@@ -332,6 +390,8 @@ def list_access_info_names(lab_root: Path | None = None) -> list[str]:
 def access_info_exists(name: str, lab_root: Path | None = None) -> bool:
     lab_root = lab_root or find_lab_root()
     return (lab_root / "access-info" / f"{name}.yaml").is_file()
+
+
 
 
 # --------------------------------------------------------------------------
@@ -450,17 +510,27 @@ def get_device(device_name: str) -> tuple[str, dict]:
     only (running-config's `active_access_info` -- see
     get_active_access_info_name()).
 
-    Returns (topology_name, access_info_dict) -- never topology data itself,
-    since terminal connectivity needs address/transport/username/password,
-    which topology no longer carries. Raises LabConfigError (fail closed,
-    never a silent guess) when:
+    Returns (topology_name, resolved_access_dict). `resolved_access_dict` is
+    never topology data itself, since terminal connectivity needs
+    address/transport/username/password, which topology no longer carries;
+    if the device references a jump host, the resolved jump host's own
+    connection data is attached under the 'jump_host_config' key (kept
+    entirely separate from the device's own credentials -- see
+    terminal._build_transport_command()).
+
+    Raises LabConfigError (fail closed, never a silent guess) when:
     - the device is not present in the active topology;
     - no access-info is selected in running-config;
     - the selected access-info definition does not exist;
     - the device is not present in the selected access-info definition
       (no fallback search through any other access-info file);
     - the topology's and access-info's device.type disagree once both are
-      normalized through the shared DEVICE_TYPES SSOT."""
+      normalized through the shared DEVICE_TYPES SSOT;
+    - the device references a jump host that does not exist in the same
+      access-info definition (structurally impossible for a *committed*
+      file, since validate_access_info_data() already rejects that, but a
+      defensive check costs nothing).
+    """
     lab_root = find_lab_root()
     active = get_active_topology()
     topology_devices = active["topology"].get("devices") or {}
@@ -492,6 +562,16 @@ def get_device(device_name: str) -> tuple[str, dict]:
             raise LabConfigError(
                 f"Device type mismatch for '{device_name}' between topology and access information."
             )
+
+    jump_host_ref = access_device.get("jump_host")
+    if jump_host_ref:
+        jump_hosts = access_data.get("jump_hosts") or {}
+        jump_host = jump_hosts.get(jump_host_ref)
+        if jump_host is None:
+            raise LabConfigError(
+                f"Device '{device_name}' references unknown jump host '{jump_host_ref}'."
+            )
+        access_device["jump_host_config"] = dict(jump_host)
 
     return active["active_topology"], access_device
 

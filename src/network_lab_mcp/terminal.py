@@ -262,6 +262,16 @@ def _require_binary(binary: str) -> None:
         raise TerminalError(f"The '{binary}' binary is not available on this system.")
 
 
+def _ssh_target(config: dict, default_port: int) -> tuple[str, int]:
+    address = config.get("address")
+    if not address:
+        raise TerminalError("Device configuration is missing 'address'.")
+    port = config.get("port", default_port)
+    username = config.get("username")
+    target = f"{username}@{address}" if username else str(address)
+    return target, port
+
+
 def _build_transport_command(device_config: dict) -> tuple[str, list[str]]:
     transport = device_config.get("transport")
     address = device_config.get("address")
@@ -270,10 +280,20 @@ def _build_transport_command(device_config: dict) -> tuple[str, list[str]]:
 
     if transport == "ssh":
         _require_binary("ssh")
-        port = device_config.get("port", 22)
-        username = device_config.get("username")
-        target = f"{username}@{address}" if username else str(address)
-        return transport, ["ssh", "-p", str(port), target]
+        target, port = _ssh_target(device_config, 22)
+        command = ["ssh", "-p", str(port), target]
+
+        jump_host = device_config.get("jump_host_config")
+        if jump_host is not None:
+            # Single-hop native OpenSSH ProxyJump (-J jump-target:jump-port).
+            # No shell-hop automation: OpenSSH itself opens the second SSH
+            # connection through the first, and the tmux pane still just
+            # sees one interactive session to read/send against, exactly
+            # like a direct connection.
+            jump_target, jump_port = _ssh_target(jump_host, 22)
+            command = ["ssh", "-J", f"{jump_target}:{jump_port}", "-p", str(port), target]
+
+        return transport, command
 
     if transport == "telnet":
         _require_binary("telnet")

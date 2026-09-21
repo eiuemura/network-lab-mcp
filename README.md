@@ -18,10 +18,11 @@ that separation — see [Configuration model](#configuration-model) below —
 completing the IOS XR-style navigation model (`root`/`exit`/`end`, `commit`
 staying in the current mode, uncommitted-changes-only `show
 configuration`), explicitly selecting access-info in running-config, and
-adding single-hop OpenSSH ProxyJump support via access-info `jump_hosts`).
-Topology discovery (CDP/LLDP) and a `discover topology` command are still
-not implemented — that is Step 3. See
-[Current limitations](#current-limitations) and [Future steps](#future-steps).
+adding single-hop OpenSSH ProxyJump support via access-info `jump_hosts`),
+and **Step 3** (IOS XR + LLDP topology discovery via `discover topology`,
+persistent terminal session logging, and `show logging`). See
+[Step 3: IOS XR + LLDP topology discovery](#step-3-ios-xr--lldp-topology-discovery)
+and [Current limitations](#current-limitations).
 
 ## Configuration model
 
@@ -507,12 +508,14 @@ device submode and the access-info device submode (so `type ?`/Tab only
 ever offer these four values, and an unambiguous abbreviation like `type
 nx` normalizes to `nxos`, or `type h` to `host`).
 
-This enum exists because Step 3 topology discovery will dispatch
-platform-specific CDP/LLDP commands and parsers based on `device.type`:
-`iosxr`/`iosxe`/`nxos` are discovery-capable, while `host` is a normal
-registered topology node for which CDP/LLDP discovery is intentionally
-skipped — it is not an "unsupported type" error, just a node that Step 3's
-discovery pass will pass over.
+This enum is also how Step 3's `discover topology` selects its targets
+from the selected access-info's devices: `iosxr` is the only currently
+supported Discovery target (LLDP only, see
+[Step 3](#step-3-ios-xr--lldp-topology-discovery) below); `host` is a
+normal registered topology node for which discovery is intentionally
+skipped, not an "unsupported type" error, and `iosxe`/`nxos` are likewise
+skipped (not implemented yet) rather than failing a mixed access-info
+definition.
 
 Topology and access-info store `type` independently (they are separate
 files, possibly authored at different times); terminal access validates
@@ -844,11 +847,17 @@ add a new public MCP tool.
 
 ## Current limitations
 
-- No topology discovery (CDP/LLDP) and no `discover topology`/topology
-  deletion from the CLI (`no topology <name>` is not implemented; both are
-  Step 3).
-- Login to a device is interactive (via `terminal_read()`/`terminal_send()`),
-  not automated.
+- Topology discovery (Step 3) is IOS XR + LLDP only: no CDP, no IOS XE/
+  NX-OS discovery, no SNMP/NETCONF/RESTCONF, and no generic discovery
+  plugin framework. See
+  ["Step 3: IOS XR + LLDP topology discovery"](#step-3-ios-xr--lldp-topology-discovery)
+  below.
+- No `no topology <name>` (topology deletion) from the CLI, and no
+  automatic stale-link pruning after Discovery.
+- Login to a device via the public `terminal_open()`/`terminal_send()`/
+  `terminal_read()` path is interactive, not automated -- only Discovery's
+  private bootstrap path (see below) automates login, and only for its own
+  temporary sessions.
 - Non-editable/wheel installation is not supported.
 - Telnet transport mechanics (binary detection, command construction, launch
   inside the managed tmux path, and output visibility) were validated against
@@ -867,26 +876,152 @@ add a new public MCP tool.
   YAML, root is a mapping" is enforced (see
   [docs/scenario_format.md](docs/scenario_format.md)).
 
-## Future steps
+## Step 3: IOS XR + LLDP topology discovery
 
-- **Step 3**: topology discovery (CDP/LLDP), `discover topology`, and
-  multi-hop or otherwise richer jump routing if a real need for it
-  emerges. Conceptually:
+Step 3's initial scope is deliberately narrow: **IOS XR devices, LLDP
+only**, direct SSH or existing single-hop ProxyJump, driven from the
+already-committed `active_access_info`. It never installs/activates a
+package, enables LLDP, or changes router configuration; `show cdp
+neighbors` is explicitly not part of this phase (the real lab runs
+`xr-lldp`, not the CDP package). CDP, IOS XE/NX-OS discovery, SNMP/
+NETCONF/RESTCONF, multi-hop jump chains, and a generic discovery/plugin
+framework are all out of scope for this phase.
+
+```
+committed active_access_info
+    -> private bootstrap connection (direct SSH / ProxyJump, reused from
+       terminal.py; a structurally separate, temporary session namespace
+       -- never reachable through the public terminal_open())
+    -> IOS XR login + `show version` / `show running-config` /
+       `show lldp neighbors`, captured to a persistent terminal log
+    -> IOS XR LLDP parsing -> normalized observations
+    -> identity resolution (bounded hostname/alias matching, fails closed
+       on anything ambiguous) -> managed vs. unresolved neighbor
+    -> link reconciliation (reciprocal dedup, parallel links preserved,
+       conflicts reported, never silently resolved)
+    -> topology candidate (same candidate/commit/clear system as any
+       other topology edit)
+    -> `show` / `show configuration` for review -> explicit `commit`
+```
+
+- **`discover topology`** (global configuration mode only): reads
+  *committed* `active_access_info` (never an uncommitted candidate
+  selection), selects its `type: iosxr` devices (`type: host` is skipped,
+  not an error; `iosxe`/`nxos` are unsupported and skipped; zero IOS XR
+  targets is a hard failure), and requires **all** of them to succeed --
+  any login/command/timeout failure fails the whole operation before the
+  prior candidate is touched. On success it prints a Discovery summary
+  and, if any LLDP neighbor could not be resolved to a managed device,
+  an explicit "Unresolved neighbors" section (raw Device ID, observing
+  device/interface, remote port, capability) — then enters topology
+  configuration mode with the result applied as the candidate, exactly
+  like a manually typed `topology <name>`. It never commits and never
+  changes `active_topology` itself.
+- **Managed vs. unresolved neighbors**: an LLDP neighbor is "managed"
+  only if its Device ID resolves *uniquely* to one of the selected
+  access-info's own IOS XR devices (exact hostname match, then
+  case-normalized match, then a short-name/FQDN-style alias match — never
+  a substring search, never inferred from the logical device ID).
+  Anything else (e.g. a real external router visible only via LLDP) stays
+  unresolved: it is never invented as a managed topology device. Its raw
+  evidence is retained for the current `discover topology` run's own
+  output and remains reviewable afterwards through the device's own
+  persistent terminal log (`show logging <device-id> <log-file>`, since
+  the original `show lldp neighbors` output is right there) — there is no
+  separate `show discover`/discovery-history command or database; re-running
+  `discover topology` produces a fresh normalized result the same way.
+- **Link reconciliation**: two devices' reciprocal LLDP observations
+  collapse into one topology link (keyed by the unordered pair of
+  (device, interface) endpoints, so parallel links on different
+  interfaces between the same two routers stay distinct); a one-sided
+  observation (only one side ran LLDP) still creates a link; a reciprocal
+  pair that disagrees about the interface mapping is reported as a
+  conflict and not silently resolved into either interpretation.
+- **Existing vs. new target topology**: if a topology already exists
+  under the default name, its description and unrelated devices/links are
+  preserved — Discovery only adds newly discovered managed devices/links
+  (never duplicating an already-present link, and never deleting a link
+  merely because this run didn't observe it; stale-link pruning is out of
+  scope). If it doesn't exist yet, a brand-new candidate is created, with
+  nothing on disk until `commit`.
+- **Default topology name**: the selected access-info definition's own
+  name (e.g. `active_access_info: test_lab` defaults to `topology
+  test_lab`) — this is only Discovery's default *result* name, never a
+  runtime requirement; access-info and topology names are still free to
+  differ, as everywhere else in this project.
+- **Persistent terminal logs**: every device session (production, and
+  Discovery's private bootstrap sessions alike) is logged via tmux's own
+  `pipe-pane` to `logs/terminal/<device-id>/<session-start>.log`
+  (`YYYYMMDDT HHMMSS` session-start timestamp), gitignored. tmux's pane
+  remains the runtime session source of truth and `terminal_read()` is
+  unchanged; the log is a separate, write-only historical record. `show
+  logging` (EXEC only) lists all devices' logs newest-first; `show logging
+  <device-id>` lists just that device's; `show logging <device-id>
+  <log-file>` shows one log's contents — all three are read-only and
+  integrated through the same grammar SSOT (`?`, `<cr>`, Tab completion).
 
   ```
-  access-info -> device access -> CDP / LLDP -> type-specific parser
-      -> normalized observations -> topology candidate
+  network-lab# show logging
+  Device  Session Start        Log File
+  ------  -------------------  --------------------
+  R1      2026-09-21 10:32:10  20260921T103210.log
+  R2      2026-09-21 10:31:55  20260921T103155.log
+
+  network-lab# show logging R1
+  Session Start        Log File
+  -------------------  --------------------
+  2026-09-21 10:32:10  20260921T103210.log
+
+  network-lab# show logging R1 20260921T103210.log
+  <terminal transcript>
   ```
 
-  When Step 3 discovery is started from a selected `access-info
-  <name>`, the default generated topology definition name will also be
-  `<name>` — a naming *convention* for that future command only, never an
-  implicit runtime association the way access-info/topology names can
-  otherwise differ freely today. Topology will then have three paths to the
-  same candidate/model: the structured CLI, an external YAML editor, and
-  discovery. This repository implements only the first two so far, and does
-  not implement `discover topology`, CDP/LLDP execution, any per-platform
-  discovery parser, topology reconciliation, or discovery persistence yet.
+- **Example** (`test_lab` selected as `active_access_info`, already
+  containing R1-R4):
+
+  ```
+  network-lab# configure
+  network-lab(config)# discover topology
+  Discovering topology from access-info 'test_lab'...
+  Discovery complete.
+
+    Access-info:          test_lab
+    IOS XR targets:       4
+    Connected:            4
+    LLDP observations:    20
+    Managed links:        8
+    Unresolved neighbors: 2
+    Topology candidate:   test_lab
+
+  Unresolved neighbors:
+    ASR9001_R1.cisco.com
+      R1 GigabitEthernet0/0/0/10 -> GigabitEthernet0/0/0/0 (router)
+      R2 GigabitEthernet0/0/0/10 -> GigabitEthernet0/0/0/1 (router)
+
+  network-lab(config-topology-test_lab)# show configuration
+  ...
+  network-lab(config-topology-test_lab)# commit
+  Commit complete.
+  network-lab(config-topology-test_lab)# root
+  network-lab(config)# running-config
+  network-lab(config-running)# topology test_lab
+  network-lab(config-running)# commit
+  Commit complete.
+  ```
+
+  `get_active_topology()` (and every other MCP tool) keeps returning the
+  previously active topology until that final explicit running-config
+  `topology`/`commit` step — Discovery's own commit only persists the
+  topology *definition*, exactly like any other `topology <name>` commit.
+
+- **Real-lab acceptance tests are gated** (never run by a plain `pytest`):
+
+  ```
+  NETWORK_LAB_REAL_TESTS=1 pytest tests/test_real_lab_iosxr.py -v --tb=line
+  ```
+
+  (`--tb=line`, and never `--showlocals`, so a real device's password
+  never ends up in a failure traceback.)
 
 ## MCP SDK
 

@@ -461,6 +461,14 @@ def _build_global_root() -> Node:
     running_config_node = root.add_literal("running-config", "Configure definitions used by MCP")
     running_config_node.set_command("global.running_config", "Configure definitions used by MCP")
 
+    discover_node = root.add_literal("discover", "Discover topology from active access information")
+    discover_topology_node = discover_node.add_literal(
+        "topology", "Discover topology from active access information"
+    )
+    discover_topology_node.set_command(
+        "global.discover_topology", "Discover topology from active access information"
+    )
+
     access_info_arg = Argument(
         "name",
         "Access information name",

@@ -312,3 +312,169 @@ def reconcile_links(
 
     return links, conflicts
 
+
+# --------------------------------------------------------------------------
+# Top-level orchestration -- builds an in-memory DiscoveryResult
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DiscoveryResult:
+    access_info_name: str
+    default_topology_name: str
+    iosxr_target_count: int
+    connected_count: int
+    observation_count: int
+    devices: dict[str, dict] = field(default_factory=dict)
+    managed_links: list[ManagedLink] = field(default_factory=list)
+    unresolved: list[UnresolvedNeighbor] = field(default_factory=list)
+    conflicts: list[LinkConflict] = field(default_factory=list)
+    identity_map: dict[str, str] = field(default_factory=dict)
+
+
+def _select_iosxr_targets(access_data: dict) -> dict[str, dict]:
+    """Supported Discovery targets: type iosxr only. `type host` is
+    silently skipped (not an error); iosxe/nxos are unsupported for this
+    phase and are also skipped, not failed -- only a mixed definition with
+    *zero* iosxr targets fails (see discover_topology())."""
+    targets: dict[str, dict] = {}
+    devices = access_data.get("devices") or {}
+    jump_hosts = access_data.get("jump_hosts") or {}
+    for device_id, device_cfg in devices.items():
+        device_cfg = device_cfg or {}
+        raw_type = device_cfg.get("type")
+        if not raw_type:
+            continue
+        try:
+            normalized = lab.normalize_device_type(str(raw_type))
+        except lab.LabConfigError:
+            continue
+        if normalized != "iosxr":
+            continue
+        resolved = dict(device_cfg)
+        jump_ref = device_cfg.get("jump_host")
+        if jump_ref and jump_ref in jump_hosts:
+            resolved["jump_host_config"] = dict(jump_hosts[jump_ref])
+        targets[device_id] = resolved
+    return targets
+
+
+def discover_topology(lab_root=None) -> DiscoveryResult:
+    """Run the full Discovery flow against committed running-config's
+    selected access-info and return an in-memory DiscoveryResult.
+
+    Never touches the committed candidate/topology/settings -- turning this
+    into a topology candidate is the caller's job (cli/config.py), exactly
+    like any other topology edit. Conservative or nothing: if any supported
+    IOS XR target fails login/collection, the whole operation fails
+    (DiscoveryError) before any bootstrap session is even considered for
+    reconciliation -- there is no partial result."""
+    lab_root = lab_root or lab.find_lab_root()
+    access_info_name = resolve_default_topology_name(lab_root)
+    if not lab.access_info_exists(access_info_name, lab_root):
+        raise DiscoveryError(f"Selected access-info '{access_info_name}' does not exist.")
+    access_data = lab.load_access_info(access_info_name, lab_root)
+
+    iosxr_targets = _select_iosxr_targets(access_data)
+    if not iosxr_targets:
+        raise DiscoveryError(f"No supported IOS XR devices found in access-info '{access_info_name}'.")
+
+    collected: dict[str, dict] = {}
+    try:
+        for device_id, device_cfg in iosxr_targets.items():
+            collected[device_id] = _bootstrap_collect(device_id, device_cfg)
+    finally:
+        for device_id in iosxr_targets:
+            terminal.close_bootstrap_terminal(device_id)
+
+    identity_map = {device_id: info["hostname"] for device_id, info in collected.items()}
+
+    resolved: list[tuple[LldpObservation, str]] = []
+    unresolved: list[UnresolvedNeighbor] = []
+    observation_count = 0
+    for device_id, info in collected.items():
+        observations = parse_lldp_neighbors(info["show_lldp_neighbors"], device_id)
+        observation_count += len(observations)
+        for obs in observations:
+            remote_id = resolve_remote_identity(obs.remote_device_id_raw, identity_map)
+            if remote_id is not None and remote_id in iosxr_targets:
+                resolved.append((obs, remote_id))
+            else:
+                unresolved.append(
+                    UnresolvedNeighbor(
+                        remote_device_id_raw=obs.remote_device_id_raw,
+                        local_device_id=obs.local_device_id,
+                        local_interface=obs.local_interface,
+                        remote_port_id=obs.remote_port_id,
+                        capabilities=obs.capabilities,
+                    )
+                )
+
+    links, conflicts = reconcile_links(resolved)
+
+    return DiscoveryResult(
+        access_info_name=access_info_name,
+        default_topology_name=access_info_name,
+        iosxr_target_count=len(iosxr_targets),
+        connected_count=len(collected),
+        observation_count=observation_count,
+        devices={device_id: {"type": "iosxr"} for device_id in iosxr_targets},
+        managed_links=links,
+        unresolved=unresolved,
+        conflicts=conflicts,
+        identity_map=identity_map,
+    )
+
+
+def resolve_default_topology_name(lab_root=None) -> str:
+    """The default Discovery target topology name: the committed selected
+    access-info definition's own name (section 53) -- same-basename is
+    only this default, never a runtime requirement (section 54). Exposed
+    separately from discover_topology() so a caller (the CLI) can check
+    candidate-switch safety *before* running the real, expensive Discovery
+    flow, not just after."""
+    lab_root = lab_root or lab.find_lab_root()
+    settings = lab.read_settings(lab_root)
+    access_info_name = lab.get_active_access_info_name(settings)
+    if not access_info_name:
+        raise DiscoveryError("No access-info is selected in running-config.")
+    return access_info_name
+
+
+def _topology_link_key(link: dict) -> tuple:
+    endpoint_a = (link.get("a"), link.get("a_interface"))
+    endpoint_b = (link.get("b"), link.get("b_interface"))
+    return tuple(sorted((endpoint_a, endpoint_b)))
+
+
+def build_topology_devices_and_links(result: DiscoveryResult, existing_candidate: dict) -> tuple[dict, list]:
+    """Merge a DiscoveryResult's managed devices/links into whatever
+    devices/links already exist in `existing_candidate` (a brand-new empty
+    topology or an already-committed/candidate one). Conservative: never
+    removes an existing device or link, and never duplicates a link that's
+    already present (compared by its unordered (device, interface)
+    endpoint pair) -- see "Existing target topology behavior" (section 60).
+    Pure/no I/O: the caller (cli/config.py) is responsible for actually
+    writing the result into `session.definition_candidate`."""
+    devices = dict(existing_candidate.get("devices") or {})
+    for device_id, fields in result.devices.items():
+        merged = dict(devices.get(device_id) or {})
+        merged.update(fields)
+        devices[device_id] = merged
+
+    links = list(existing_candidate.get("links") or [])
+    seen_keys = {_topology_link_key(link) for link in links}
+    for managed_link in result.managed_links:
+        link_dict = {
+            "a": managed_link.a_device,
+            "a_interface": managed_link.a_interface,
+            "b": managed_link.b_device,
+            "b_interface": managed_link.b_interface,
+        }
+        key = _topology_link_key(link_dict)
+        if key in seen_keys:
+            continue
+        links.append(link_dict)
+        seen_keys.add(key)
+
+    return devices, links

@@ -146,14 +146,42 @@ network-lab(config)# show version
 | `configure` (alias: `configure terminal`) | Enter global configuration mode; initializes a running-config candidate (see "Candidate model" below). |
 | `show running-config` | Show the committed MCP definition selection (access-info/topology/scenario/reference names) — never a definition's own content. Also the meaning in global/`running` mode; a definition mode (topology/access-info/scenario/reference) scopes this to that object's own committed state instead — see "`show running-config` vs. `show configuration`". |
 | `show version` | Show Network Lab MCP's own version/license/runtime information — see "`show version`" above. |
+| `show logging` | List every device's persistent terminal session logs (`logs/terminal/<device-id>/<session-start>.log`), newest first — see "`show logging`" below. EXEC only, like `show version`. |
+| `show logging <device-id>` | List just that device's logs, newest first. `<device-id>` Tab/`?`-completes from devices that currently have at least one log. |
+| `show logging <device-id> <log-file>` | Show one log file's raw contents. Read-only; never modifies/deletes/rotates. `<log-file>` Tab/`?`-completes from that device's own log filenames only — an unknown device or filename is rejected, never a path-traversal attempt (`../`, an absolute path). |
 | `help` / `help <topic>` | Network Lab MCP Quick Start/usage help — see "`?` vs. `help`" above. Not the same as bare `?`. |
 | `exit` / `quit` | Terminate the CLI process. Only reachable in EXEC mode, where by construction no candidate configuration exists. |
+
+### `show logging`
+
+```
+network-lab# show logging
+Device  Session Start        Log File
+------  -------------------  --------------------
+R1      2026-09-21 10:32:10  20260921T103210.log
+R2      2026-09-21 10:31:55  20260921T103155.log
+
+network-lab# show logging R1
+Session Start        Log File
+-------------------  --------------------
+2026-09-21 10:32:10  20260921T103210.log
+
+network-lab# show logging R1 20260921T103210.log
+<terminal transcript>
+```
+
+No logs yet (missing `logs/terminal/` or an empty/unknown device) prints
+`No terminal logs found.` (or the device-scoped equivalent) rather than
+raising or fabricating a row. `show logging` (in any of its three forms)
+is EXEC-only, like `show version` — configuration mode `show` semantics
+remain exactly `show`/`show configuration`/`show running-config`.
 
 ## Global configuration mode commands
 
 | Command | Effect |
 |---------|--------|
 | `running-config` | Enter running-config selection mode (`network-lab(config-running)#`). |
+| `discover topology` | Run Step 3 IOS XR + LLDP discovery against the committed `active_access_info` and apply the result as a topology candidate (new or merged into an existing one) — see README.md's "Step 3: IOS XR + LLDP topology discovery". Enters topology definition mode on success. Never commits, never selects `active_topology`. Blocked (like opening any other definition) if a *different* definition is currently open and dirty. |
 | `access-info <name>` | Create or edit an access-info definition; `<name>` existing loads it, otherwise starts a new one. Enters access-info definition mode. |
 | `topology <name>` | Create or edit a topology definition (see "Case-only topology-name collision safeguard" below). Enters topology definition mode. |
 | `scenario <name>` | Create or edit a scenario definition. Enters scenario definition mode. |
@@ -1029,9 +1057,19 @@ but is out of scope for this phase.
 
 ## Limitations
 
-- No `no topology <name>` or `discover topology` (both Step 3).
-- No link editor; an existing topology's `links` (and any other field the
-  CLI does not directly edit) are preserved untouched through a commit.
+- No `no topology <name>` (topology deletion).
+- No structured `link` editing command; `links` is only ever set by
+  `discover topology` or the external `edit` -- `show`/`show
+  configuration`/`show running-config` display it as read-only review
+  information, not as a re-typeable command line (see "`discover
+  topology`" below). Any other field the CLI does not directly edit is
+  likewise preserved untouched through a commit.
+- `discover topology` is IOS XR + LLDP only (see README.md's "Step 3: IOS
+  XR + LLDP topology discovery" for the full scope and limitations); no
+  CDP, no IOS XE/NX-OS discovery, no automatic commit or `active_topology`
+  selection, and no discovery-history command.
+- `show logging` only lists/reads existing terminal logs; there is no
+  `clear logging`/deletion/rotation/search CLI yet.
 - Scenario and reference content has a schema that is intentionally not
   fixed yet (see [scenario_format.md](scenario_format.md)) — only "valid
   YAML, root is a mapping" is enforced.

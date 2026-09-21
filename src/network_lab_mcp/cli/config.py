@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from network_lab_mcp import lab
+from network_lab_mcp import discovery, lab
 
 
 class ConfigError(Exception):
@@ -286,6 +286,20 @@ class CliSession:
         if plan.kind == "case_collision":
             raise ConfigError("A case-only topology collision must be confirmed before it can be applied.")
         self._enter_definition("topology", plan.name, "topology")
+
+    def apply_discovery_result(self, result: "discovery.DiscoveryResult") -> None:
+        """Turn a completed Discovery run into a topology candidate, using
+        exactly the same open/create/merge machinery as a manually typed
+        `topology <name>`: an existing committed topology's candidate base
+        (description, unrelated devices/links) is preserved, and only the
+        newly discovered managed devices/links are added -- never applied
+        partially, and never itself committed or selected as
+        active_topology (that stays the operator's explicit next step)."""
+        plan = self.plan_topology_definition(result.default_topology_name)
+        self.apply_topology_definition_plan(plan)
+        devices, links = discovery.build_topology_devices_and_links(result, self.definition_candidate)
+        self.definition_candidate["devices"] = devices
+        self.definition_candidate["links"] = links
 
     def enter_access_info_definition(self, name: str) -> None:
         self._enter_definition("access_info", name, "access_info")

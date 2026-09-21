@@ -33,6 +33,7 @@ from prompt_toolkit.history import History
 from prompt_toolkit.key_binding import KeyBindings
 
 import network_lab_mcp
+from network_lab_mcp import discovery
 from network_lab_mcp import lab
 from network_lab_mcp import terminal
 from network_lab_mcp.cli import config as cfgmod
@@ -203,7 +204,13 @@ def _display_field_name(field_name: str) -> str:
 
 
 def render_topology_block(data: dict) -> list[str]:
-    """Safe logical topology only: no address/transport/port/username/password."""
+    """Safe logical topology only: no address/transport/port/username/password.
+
+    `links` has no structured CLI editing command (topology mode has no
+    `link <a> <a-if> <b> <b-if>` command -- it is only ever set by
+    `discover topology` or the external `edit`), so it is rendered as
+    read-only review information, not as a re-typeable command line, under
+    its own `links` block."""
     lines = [f"topology {data.get('name', '')}"]
     description = data.get("description")
     if description:
@@ -213,6 +220,18 @@ def render_topology_block(data: dict) -> list[str]:
         device_type = (device or {}).get("type")
         if device_type not in (None, ""):
             lines.append(f"  type {device_type}")
+        lines.append(" !")
+    links = data.get("links") or []
+    if links:
+        lines.append(" links")
+        for link in links:
+            a = link.get("a", "?")
+            b = link.get("b", "?")
+            a_interface = link.get("a_interface")
+            b_interface = link.get("b_interface")
+            a_side = f"{a} {a_interface}" if a_interface else a
+            b_side = f"{b} {b_interface}" if b_interface else b
+            lines.append(f"  {a_side} <-> {b_side}")
         lines.append(" !")
     lines.append("!")
     return lines
@@ -300,6 +319,11 @@ def _scoped_to_current_device(data: Optional[dict], device_name: Optional[str]) 
     scoped = dict(data)
     scoped["devices"] = {device_name: devices[device_name]}
     scoped.pop("jump_hosts", None)
+    # links is a topology-level (not device-level) concept and any given
+    # link necessarily names another device -- never another device's data
+    # leaking into this one device's scoped view (see
+    # render_topology_block()'s links section).
+    scoped.pop("links", None)
     return scoped
 
 
@@ -929,6 +953,58 @@ def h_global_running_config(session: cfgmod.CliSession, args: dict) -> None:
     session.mode = "running"
 
 
+def _group_unresolved_neighbors(unresolved: list) -> dict:
+    grouped: dict = {}
+    for obs in unresolved:
+        grouped.setdefault(obs.remote_device_id_raw, []).append(obs)
+    return grouped
+
+
+def render_discovery_summary(result: "discovery.DiscoveryResult") -> str:
+    grouped_unresolved = _group_unresolved_neighbors(result.unresolved)
+    lines = [
+        "Discovery complete.",
+        "",
+        f"  Access-info:          {result.access_info_name}",
+        f"  IOS XR targets:       {result.iosxr_target_count}",
+        f"  Connected:            {result.connected_count}",
+        f"  LLDP observations:    {result.observation_count}",
+        f"  Managed links:        {len(result.managed_links)}",
+        f"  Unresolved neighbors: {len(grouped_unresolved)}",
+        f"  Topology candidate:   {result.default_topology_name}",
+    ]
+    if result.conflicts:
+        lines.append("")
+        lines.append(f"Link reconciliation conflicts ({len(result.conflicts)}, not added):")
+        for conflict in result.conflicts:
+            a_dev, a_intf = conflict.endpoint_a
+            b_dev, b_intf = conflict.endpoint_b
+            lines.append(f"  {a_dev} {a_intf} <-> {b_dev} {b_intf}: inconsistent reciprocal observation")
+    if grouped_unresolved:
+        lines.append("")
+        lines.append("Unresolved neighbors:")
+        for raw_id, observations in grouped_unresolved.items():
+            lines.append(f"  {raw_id}")
+            for obs in observations:
+                capability = ",".join(obs.capabilities) if obs.capabilities else "-"
+                lines.append(
+                    f"    {obs.local_device_id} {obs.local_interface} -> {obs.remote_port_id} ({capability})"
+                )
+    return "\n".join(lines)
+
+
+def h_global_discover_topology(session: cfgmod.CliSession, args: dict) -> None:
+    target_name = discovery.resolve_default_topology_name(session.lab_root)
+    ok, message = session.can_switch_definition("topology", target_name)
+    if not ok:
+        print(f"% {message}")
+        return
+    print(f"Discovering topology from access-info '{target_name}'...")
+    result = discovery.discover_topology(session.lab_root)
+    session.apply_discovery_result(result)
+    print(render_discovery_summary(result))
+
+
 def h_global_access_info(session: cfgmod.CliSession, args: dict) -> None:
     name = args["name"]
     ok, message = session.can_switch_definition("access_info", name)
@@ -1128,6 +1204,7 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "exec.exit": h_exec_exit,
     "exec.quit": h_exec_exit,
     "global.running_config": h_global_running_config,
+    "global.discover_topology": h_global_discover_topology,
     "global.access_info": h_global_access_info,
     "global.topology": h_global_topology,
     "global.scenario": h_global_scenario,
@@ -1283,6 +1360,7 @@ def execute_command_line(session: cfgmod.CliSession, line: str) -> bool:
         lab.LabConfigError,
         editor.EditorError,
         terminal.TerminalError,
+        discovery.DiscoveryError,
     ) as exc:
         if isinstance(exc, cfgmod.CommitValidationError):
             for error in exc.errors:

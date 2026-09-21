@@ -300,6 +300,7 @@ def test_bare_help_lists_all_global_root_commands():
     tokens = [line.token for line in result.lines]
     assert tokens == [
         "running-config",
+        "discover",
         "access-info",
         "topology",
         "scenario",

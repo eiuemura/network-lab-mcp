@@ -137,7 +137,12 @@ transparently to Claude, which still only ever sees the one resulting
 terminal session. This tool does not parse or automate login: password
 prompts, host key confirmations, and any other interactive prompt are left
 for the caller to observe via `terminal_read()` and respond to via
-`terminal_send()`.
+`terminal_send()`. This active-topology-membership restriction is
+unchanged by Step 3: `discover topology`'s private bootstrap connectivity
+(automated login, only for its own temporary sessions) is a completely
+separate internal code path in a structurally distinct tmux namespace,
+never reachable through this tool and never weakening it — see
+[architecture.md](architecture.md#a-third-session-namespace-discovery-bootstrap).
 
 **Error behavior**: raises a tool error (fail closed, never a silent guess)
 when:

@@ -252,6 +252,175 @@ send text/keys, capture pane, list, close) — local validation exercises the
 real production code path, just against a safe local command (e.g. `cat`)
 instead of `ssh`/`telnet`.
 
+### Persistent terminal session logging
+
+Every device session -- production and Discovery's private bootstrap
+sessions alike -- is logged via tmux's own `pipe-pane` mechanism
+(`tmux pipe-pane -o -t <session> 'cat >> <logfile>'`), started right after
+the session is first created (never on reuse, since the pipe stays
+attached for the pane's whole lifetime). This is the only logging
+mechanism: nothing here re-renders or duplicates pane content into a
+second application log, and `terminal_send()`'s payload is never logged
+separately from what the pane/log itself already shows. tmux's pane
+remains the runtime session source of truth and `terminal_read()` is
+completely unchanged -- the log is a separate, write-only, persistent
+historical record at `logs/terminal/<device-id>/<session-start>.log`
+(`YYYYMMDDTHHMMSS`), which is gitignored. `show logging` (EXEC only, see
+below) is the only reader of these files.
+
+### A third session namespace: Discovery bootstrap
+
+```
+Production:  network-lab-device-<device-id>
+Validation:  network-lab-validation-<validation-id>
+Discovery:   network-lab-discovery-<device-id>
+```
+
+Step 3's Discovery bootstrap connectivity reuses the exact same
+`_build_transport_command()` (direct SSH and single-hop ProxyJump alike)
+and session primitives as production, in this third, structurally
+separate namespace, so a Discovery session can never collide with,
+appear in, or be closed by any public `terminal_*` tool call -- the public
+`terminal_open()` topology-membership restriction is completely
+unaffected. The one difference passed to `_build_transport_command()` is
+`accept_new_host_keys=True` (`ssh -o StrictHostKeyChecking=accept-new`):
+Discovery is an unattended flow with no human to answer an interactive
+host-key confirmation prompt, so it avoids that prompt outright for a
+genuinely new host key, rather than automating the confirmation. It never
+bypasses a *changed*-host-key failure (`StrictHostKeyChecking=no`/
+`UserKnownHostsFile=/dev/null` are never used) -- that remains a hard
+failure the operator must resolve themselves (e.g. `ssh-keygen -R
+<address>`) after independently verifying the new fingerprint really is
+the expected device, exactly as OpenSSH's own normal host-key security
+model requires.
+
+Because Discovery must work before a topology fully exists yet (its
+whole point is to help build one), the bootstrap session is opened
+directly against a selected access-info device by logical ID, with no
+active-topology membership check at all -- unlike `terminal_open()`, which
+requires the device to be in the active topology. This is intentional and
+does not weaken `terminal_open()`'s own restriction, which is a completely
+separate code path.
+
+### Minimal internal command runner
+
+Discovery's login (`_login()`) and per-command execution (`_run_command()`
+in `discovery.py`) poll the pane (`_wait_for_pattern()` in `terminal.py`)
+for an IOS XR prompt regex (`RP/\S+/CPU\d+:<hostname>#`, which also
+doubles as the hostname source -- see below) or a password prompt, with a
+bounded timeout that fails closed (`TerminalError`/`DiscoveryError`, never
+a silent guess or infinite wait). This is deliberately minimal: there is
+no generic expect library, no IOS XR CLI state machine, and no terminal
+automation framework -- just "send one command, wait for the prompt to
+come back, slice out the output between the echoed command and the
+prompt."
+
+## Step 3: IOS XR + LLDP topology discovery
+
+```
+committed active_access_info
+    -> discovery._select_iosxr_targets()  (type iosxr only; host/iosxe/
+       nxos are skipped, not failed, unless zero iosxr targets remain)
+    -> discovery._bootstrap_collect()  (per device: login, `terminal
+       length 0`, `show version`, `show running-config`,
+       `show lldp neighbors` -- all logged persistently, see above)
+    -> discovery.parse_lldp_neighbors()  (raw text -> LldpObservation,
+       never resolving identity itself)
+    -> discovery.resolve_remote_identity()  (LldpObservation.remote_
+       device_id_raw -> logical device ID, or None -- fails closed on
+       anything ambiguous)
+    -> discovery.reconcile_links()  (resolved observations -> ManagedLink
+       list + LinkConflict list)
+    -> discovery.DiscoveryResult  (in-memory only)
+    -> cli/config.py CliSession.apply_discovery_result()  (opens/creates
+       the topology candidate via the *same* plan_topology_definition()/
+       apply_topology_definition_plan() as a manually typed `topology
+       <name>`, then merges in discovery.build_topology_devices_and_links())
+```
+
+`discovery.py` owns every Discovery-specific behavior (bootstrap
+connectivity reuses `terminal.py`'s primitives, but the login sequence,
+command runner, parser, identity resolution, and reconciliation are all
+here) and is the *only* new module Step 3 adds; `cli/config.py`'s
+`apply_discovery_result()` is the only new candidate-mutation logic, and
+it is a thin adapter onto the pre-existing topology candidate machinery
+-- there is no separate Discovery datastore, history table, or schema.
+
+### Identity resolution is bounded and fails closed
+
+`resolve_remote_identity()` matches an LLDP remote Device ID against an
+in-memory `{logical_device_id: observed_hostname}` map built from each
+bootstrap session's own IOS XR prompt, in this order, each step requiring
+a *unique* match or the neighbor stays unresolved:
+
+1. exact observed-hostname match
+2. case-normalized exact match
+3. short-name/FQDN-style alias match (the raw ID's segment before its
+   first `.`, compared case-insensitively against each hostname --
+   e.g. `APJC_JP_OSK_R2.cisco` matches hostname `APJC_JP_OSK_R2`)
+
+There is no substring search, no fuzzy matching, and no inference from
+the logical device ID itself (never `"R2" in device_id`). A neighbor that
+resolves to more than one logical device at any step is treated exactly
+like one that resolves to none -- unresolved, never guessed.
+
+### Managed vs. unresolved neighbors, and where their evidence lives
+
+A resolved neighbor that is also one of *this run's* selected IOS XR
+targets becomes a candidate topology device/link. Everything else --
+external routers, LLDP-visible but not in the selected access-info, or
+genuinely ambiguous -- is an **unresolved neighbor**: never invented as a
+managed topology device, but not silently dropped either. Its full raw
+evidence (remote Device ID, observing device/interface, remote port,
+capability) is:
+
+- rendered directly in that `discover topology` run's own CLI output
+  (mandatory, not reducible to just a count), and
+- separately, persistently recoverable afterwards from the observing
+  device's own terminal log (`show logging <device-id> <log-file>`,
+  since the original `show lldp neighbors` output is right there).
+
+Deliberately, there is **no third persistence layer** for this evidence:
+no `show discover`/discovery-history command, and no unresolved-neighbor
+record written into the committed topology YAML. Re-running `discover
+topology` produces a fresh normalized result the same way every time.
+
+### Link reconciliation
+
+`reconcile_links()` indexes resolved observations by their own
+`(local_device_id, local_interface)` key (never by a "canonical pair"
+derived from a claimed remote port, since the two sides of a conflict may
+claim *different* remote ports for the same local interface -- keying by
+each side's own dict entry is what correctly prevents double-processing
+in that case). For each local endpoint not yet consumed:
+
+- if the *remote* endpoint has no observation of its own, the link is
+  one-sided but still created (section 48: bidirectional LLDP is not an
+  absolute requirement);
+- if it does, and it reciprocally agrees (claims the same original local
+  device/interface back), the pair collapses into one `ManagedLink`;
+- if it does, but disagrees (a different interface mapping), a
+  `LinkConflict` is recorded instead -- the link is never silently
+  created from either side's guess.
+
+A link's identity is its unordered pair of `(device, interface)`
+endpoints, so two parallel links between the same router pair on
+different interfaces are never deduplicated together.
+
+### Topology candidate merge is conservative
+
+`build_topology_devices_and_links()` only ever *adds* to whatever
+devices/links already exist in the target topology's candidate (new or
+already-committed): existing devices/fields/links are never removed, and
+a discovered link already present (compared by its endpoint-pair key,
+independent of field order) is never duplicated. This is why Discovery
+never needs a special "diff" of its own beyond the ordinary candidate
+system already documented above (candidate/original/dirty tracking,
+`show`/`show configuration`/`show running-config`/`commit`/`clear`/
+`root`/`exit`/`end`) -- `discover topology` is, structurally, just another
+way to populate a topology candidate, the same way the external YAML
+editor is.
+
 ## Step 2 / 2.5: the human configuration/control plane
 
 The **Human Configuration / Control Interface** is an IOS XR-compatible CLI
@@ -420,7 +589,13 @@ tool call, with no MCP server restart.
 To keep the MCP layer thin and the scope tight, this repository still
 deliberately excludes:
 
-- Topology discovery (CDP/LLDP) and `discover topology` — this is Step 3.
+- CDP discovery, IOS XE/NX-OS discovery, SNMP/NETCONF/RESTCONF discovery,
+  and a generic discovery/plugin framework -- Step 3 implements only IOS
+  XR + LLDP (see "Step 3: IOS XR + LLDP topology discovery" below).
+- Automatic stale topology-link pruning, `discover topology` automatically
+  committing or selecting `active_topology`, and a discovery-history
+  subsystem (`show discover`/a discovery database) -- none of these are
+  in scope even for the implemented Step 3.
 - An HTTP MCP server, containerization, or an MCP-owned runtime/session
   database.
 - A public local-shell transport (local processes are used only inside the

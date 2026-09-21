@@ -429,3 +429,212 @@ def test_definition_mode_topology_view_matches_exec_running_config_topology_view
     exec_out = capsys.readouterr().out
 
     assert definition_mode_out == exec_out
+
+
+# ==========================================================================
+# Inline `?` (token?) vs. spaced `?` (token ?) polish
+#
+# IOS XR distinguishes help for the token currently being typed (`token?`,
+# no space -- grammar.help() called with text_before_cursor NOT ending in
+# whitespace) from help for what may follow an already-completed token
+# (`token ?` -- text_before_cursor ends in whitespace). For any token that
+# exactly matches a real fixed keyword or dynamic active-reference name,
+# and that match is itself a valid command endpoint, `token?` must show
+# both that match's own help line *and* `<cr>` -- not just the match (the
+# pre-existing bug: `show_cr` was only ever computed from an *empty*
+# partial, so a complete-but-unspaced token never got `<cr>`).
+# ==========================================================================
+
+
+def _ref_ctx(*active_names):
+    return grammar.CliContext(committed_active_reference_names=tuple(active_names))
+
+
+# ---- fixed tokens: access-info / topology / scenario ----
+
+
+@pytest.mark.parametrize(
+    "keyword,description",
+    [
+        ("access-info", "Committed active access-info definition"),
+        ("topology", "Committed active topology definition"),
+        ("scenario", "Committed active scenario definition"),
+    ],
+)
+def test_single_selection_keyword_inline_help_shows_description_and_cr(keyword, description):
+    ctx = grammar.CliContext()
+    result = grammar.help("exec", f"show running-config {keyword}", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [(keyword, description)]
+    assert result.show_cr
+
+
+@pytest.mark.parametrize("keyword", ["access-info", "topology", "scenario"])
+def test_single_selection_keyword_spaced_help_shows_cr_only(keyword):
+    ctx = grammar.CliContext()
+    result = grammar.help("exec", f"show running-config {keyword} ", ctx)
+    assert result.lines == []
+    assert result.show_cr
+
+
+# ---- fixed token: reference (complete keyword, no space) ----
+
+
+def test_reference_keyword_inline_help_shows_description_and_cr_not_names():
+    ctx = _ref_ctx("iosxr_basics", "sr_mpls")
+    result = grammar.help("exec", "show running-config reference", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [
+        ("reference", "Committed active reference definition(s)")
+    ]
+    assert result.show_cr
+    assert "iosxr_basics" not in [line.token for line in result.lines]
+
+
+def test_reference_keyword_spaced_help_shows_active_names_and_cr():
+    ctx = _ref_ctx("iosxr_basics", "sr_mpls")
+    result = grammar.help("exec", "show running-config reference ", ctx)
+    assert [line.token for line in result.lines] == ["iosxr_basics", "sr_mpls"]
+    assert result.show_cr
+
+
+# ---- partial fixed-keyword help retains existing (no-<cr>) semantics ----
+
+
+@pytest.mark.parametrize(
+    "partial,expected",
+    [
+        ("acc", "access-info"),
+        ("top", "topology"),
+        ("scen", "scenario"),
+        ("ref", "reference"),
+    ],
+)
+def test_partial_fixed_keyword_help_unchanged(partial, expected):
+    ctx = grammar.CliContext()
+    result = grammar.help("exec", f"show running-config {partial}", ctx)
+    assert [line.token for line in result.lines] == [expected]
+    assert not result.show_cr
+
+
+def test_parent_running_config_help_unchanged():
+    ctx = grammar.CliContext()
+    result = grammar.help("exec", "show running-config ", ctx)
+    assert [line.token for line in result.lines] == ["access-info", "topology", "scenario", "reference"]
+    assert result.show_cr
+
+
+# ---- dynamic active-reference tokens: complete (no space) ----
+
+
+def test_complete_active_reference_inline_help_shows_description_and_cr():
+    ctx = _ref_ctx("iosxr_basics", "sr_mpls")
+    result = grammar.help("exec", "show running-config reference iosxr_basics", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [
+        ("iosxr_basics", "Committed active reference name")
+    ]
+    assert result.show_cr
+    assert "sr_mpls" not in [line.token for line in result.lines]
+
+
+def test_another_complete_active_reference_inline_help():
+    ctx = _ref_ctx("iosxr_basics", "sr_mpls")
+    result = grammar.help("exec", "show running-config reference sr_mpls", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [
+        ("sr_mpls", "Committed active reference name")
+    ]
+    assert result.show_cr
+
+
+def test_complete_active_reference_spaced_help_shows_cr_only():
+    ctx = _ref_ctx("iosxr_basics", "sr_mpls")
+    result = grammar.help("exec", "show running-config reference iosxr_basics ", ctx)
+    assert result.lines == []
+    assert result.show_cr
+
+
+# ---- dynamic active-reference tokens: partial ----
+
+
+def test_partial_active_reference_help_lists_matches_without_cr():
+    ctx = _ref_ctx("iosxr_basics", "iosxr_operations", "sr_mpls")
+    result = grammar.help("exec", "show running-config reference ios", ctx)
+    assert [line.token for line in result.lines] == ["iosxr_basics", "iosxr_operations"]
+    assert not result.show_cr
+
+
+# ---- inactive stored reference never treated as a valid dynamic token ----
+
+
+def test_inactive_reference_inline_help_produces_nothing():
+    ctx = _ref_ctx("iosxr_basics", "sr_mpls")
+    result = grammar.help("exec", "show running-config reference ospf_basics", ctx)
+    assert result.lines == []
+    assert not result.show_cr
+
+
+def test_inactive_reference_partial_help_offers_nothing():
+    ctx = _ref_ctx("iosxr_basics", "sr_mpls")
+    result = grammar.help("exec", "show running-config reference ospf", ctx)
+    assert result.lines == []
+    assert not result.show_cr
+
+
+# ---- case sensitivity ----
+
+
+def test_case_mismatched_active_reference_inline_help_is_not_a_match():
+    ctx = _ref_ctx("iosxr_basics")
+    result = grammar.help("exec", "show running-config reference IOSXR_BASICS", ctx)
+    assert result.lines == []
+    assert not result.show_cr
+
+
+# ---- candidate-only / inactive references excluded from dynamic help (using the isolated lab_root fixture for a real committed+candidate+inactive mix) ----
+
+
+def test_dynamic_reference_help_and_completion_use_committed_state_only(lab_root):
+    lab.write_reference("sr_mpls", {"name": "sr_mpls", "description": "", "guidance": []}, lab_root)
+    lab.write_reference("ospf_basics", {"name": "ospf_basics", "description": "", "guidance": []}, lab_root)
+    _settings(lab_root, active_references=["sample"])  # sr_mpls/ospf_basics stored but inactive
+
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.mode = "running"
+    climain.execute_command_line(session, "reference sr_mpls")  # candidate-only addition
+    assert session.settings_candidate["active_references"] == ["sample", "sr_mpls"]
+
+    ctx = climain.build_context(session)
+    assert ctx.committed_active_reference_names == ("sample",)  # candidate addition not reflected
+
+    assert grammar.complete("exec", "show running-config reference ", ctx).candidates == ["sample"]
+
+    result_help = grammar.help("exec", "show running-config reference ", ctx)
+    assert [line.token for line in result_help.lines] == ["sample"]
+
+    for name in ("sr_mpls", "ospf_basics"):
+        result = grammar.help("exec", f"show running-config reference {name}", ctx)
+        assert result.lines == [], name
+        assert not result.show_cr, name
+
+
+# ---- generic fix sanity: unrelated existing complete-token cases ----
+
+
+def test_generic_fix_does_not_break_unrelated_partial_keyword_help():
+    ctx = grammar.CliContext()
+    result = grammar.help("exec", "sh", ctx)
+    assert [line.token for line in result.lines] == ["show"]
+    assert not result.show_cr  # "show" alone is not a valid EXEC command
+
+
+def test_generic_fix_improves_other_complete_fixed_commands_consistently():
+    # Same underlying mechanism, exercised on pre-existing commands
+    # unrelated to running-config, proving this is a grammar/help SSOT
+    # fix and not a running-config-specific hack.
+    ctx = grammar.CliContext()
+    result = grammar.help("exec", "configure", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [("configure", "Enter configuration mode")]
+    assert result.show_cr
+
+    result = grammar.help("global", "commit", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [("commit", "Commit configuration changes")]
+    assert result.show_cr

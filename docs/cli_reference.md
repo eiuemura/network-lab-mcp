@@ -621,8 +621,35 @@ network-lab# show running-config
 
 - **Bare `?`** (empty line, or right after a space): lists every valid next
   token at the current position.
-- **Partial-token `?`** (immediately after a partial fixed keyword, no
-  space): lists only the fixed keywords that still match the partial input.
+- **Partial-token `?`** (immediately after a partial fixed keyword or a
+  partial dynamic object-ID token, no space): lists only the matches that
+  still match the partial input, with no `<cr>` -- a partial token is not
+  yet a complete command endpoint.
+- **Complete-token `?`** (immediately after a fixed keyword or dynamic
+  object-ID token that exactly matches, no space): help for *that one*
+  already-typed token -- its own description, plus `<cr>` if the command
+  may legally terminate there. This is distinct from the same keyword
+  followed by a space (below), which asks what may *follow* it instead:
+
+  ```
+  network-lab# show running-config access-info?
+    access-info          Committed active access-info definition
+    <cr>
+  network-lab# show running-config access-info ?
+    <cr>
+  ```
+
+  The same distinction applies to a complete dynamic active-reference
+  name (see "`show running-config <definition-type>`" above):
+
+  ```
+  network-lab# show running-config reference iosxr_basics?
+    iosxr_basics         Committed active reference name
+    <cr>
+  network-lab# show running-config reference iosxr_basics ?
+    <cr>
+  ```
+
 - **Next-token `?`** (after a keyword and a space): lists the next
   syntax — a generic hint (e.g. `<name>` for a plain selector argument, such
   as `running-config` mode's `topology <name>`) when nothing has been typed

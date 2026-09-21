@@ -1218,6 +1218,21 @@ def help(mode: str, text_before_cursor: str, ctx: CliContext) -> HelpResult:
             label = argument.existing_label if argument.creatable else argument.description
             for value in sorted(argument.provider(ctx, partial, tuple(committed))):
                 lines.append(HelpLine(value, label))
+            # IOS XR distinguishes `token?` (help for the token just
+            # typed) from `token ?` (help for what may follow it). A
+            # *select-existing* identifier (never `creatable`, e.g. an
+            # active reference name) is itself a complete command the
+            # instant it exactly matches one of the argument's own known
+            # candidates -- not merely a matching prefix (`ios?`) and not
+            # a value the provider doesn't recognize at all (an inactive
+            # stored reference). `creatable` identifiers are deliberately
+            # excluded here: a not-yet-existing name is *also* a valid
+            # complete command for them (it would create one), which this
+            # narrower, provider-driven check cannot decide either way,
+            # so their existing (unimproved) behavior is left unchanged.
+            if not argument.creatable and partial in argument.provider(ctx, "", tuple(committed)):
+                show_cr = node.argument_child.command is not None
+                return HelpResult(lines, show_cr, partial)
         else:
             lines.append(HelpLine(argument.display_hint(), argument.description))
         # True only for a node that is itself a complete command *and* takes
@@ -1230,6 +1245,16 @@ def help(mode: str, text_before_cursor: str, ctx: CliContext) -> HelpResult:
 
     lines = []
     lowered = partial.lower()
+    # Same `token?` vs `token ?` distinction as above, for fixed keywords:
+    # an exact (case-insensitive) match of one child keyword -- not merely
+    # a matching prefix (`acc?`) -- is itself complete help for that one
+    # keyword, plus `<cr>` if that keyword can itself end the command
+    # (mirrors _match_literal()'s own "exact match wins" parse-time rule).
+    if partial != "" and lowered in node.literal_children:
+        matched_child = node.literal_children[lowered]
+        lines.append(HelpLine(lowered, matched_child.description))
+        show_cr = matched_child.command is not None
+        return HelpResult(lines, show_cr, partial)
     for keyword, child in node.literal_children.items():
         if keyword.startswith(lowered):
             lines.append(HelpLine(keyword, child.description))

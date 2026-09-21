@@ -1004,6 +1004,33 @@ def h_show_logging_device_file(session: cfgmod.CliSession, args: dict) -> None:
         print(content, end="" if content.endswith("\n") else "\n")
 
 
+# ---- delete logging (Step B, EXEC only) ----
+#
+# Every handler here is a trivial pass-through to terminal.py's delete
+# backend (the same pattern as show logging's own handlers above) --
+# terminal.TerminalError is already caught generically by
+# execute_command_line() and printed as "% <message>", so no error
+# handling is duplicated here.
+
+
+def h_delete_logging_all(session: cfgmod.CliSession, args: dict) -> None:
+    count = terminal.delete_all_logs()
+    print(f"Deleted {count} terminal logs.")
+
+
+def h_delete_logging_device_all(session: cfgmod.CliSession, args: dict) -> None:
+    device_id = args["device_id"]
+    count = terminal.delete_all_device_logs(device_id)
+    print(f"Deleted {count} terminal logs for {device_id}.")
+
+
+def h_delete_logging_device_file(session: cfgmod.CliSession, args: dict) -> None:
+    device_id = args["device_id"]
+    log_file = args["log_file"]
+    terminal.delete_device_log_file(device_id, log_file)
+    print(f"Deleted terminal log {device_id}/{log_file}.")
+
+
 def h_commit(session: cfgmod.CliSession, args: dict) -> None:
     _do_commit(session)
 
@@ -1339,6 +1366,9 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "exec.show_logging": h_show_logging,
     "exec.show_logging_device": h_show_logging_device,
     "exec.show_logging_device_file": h_show_logging_device_file,
+    "exec.delete_logging_all": h_delete_logging_all,
+    "exec.delete_logging_device_all": h_delete_logging_device_all,
+    "exec.delete_logging_device_file": h_delete_logging_device_file,
     "exec.help": h_help,
     "exec.help_topic": h_help_topic,
     "exec.exit": h_exec_exit,

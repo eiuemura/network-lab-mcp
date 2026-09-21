@@ -154,6 +154,9 @@ network-lab(config)# show version
 | `show logging` | List every device's persistent terminal session logs (`logs/terminal/<device-id>/<session-start>.log`), newest first — see "`show logging`" below. EXEC only, like `show version`. |
 | `show logging <device-id>` | List just that device's logs, newest first. `<device-id>` Tab/`?`-completes from devices that currently have at least one log. |
 | `show logging <device-id> <log-file>` | Show one log file's raw contents. Read-only; never modifies/deletes/rotates. `<log-file>` Tab/`?`-completes from that device's own log filenames only — an unknown device or filename is rejected, never a path-traversal attempt (`../`, an absolute path). |
+| `delete logging all` | Delete every eligible stored terminal log, across every device — see "`delete logging`" below. |
+| `delete logging <device-id> all` | Delete every eligible stored terminal log for one device. |
+| `delete logging <device-id> <log-file>` | Delete exactly one eligible stored terminal log, by its exact filename (same completion/eligibility rules as `show logging`). |
 | `help` / `help <topic>` | Network Lab MCP Quick Start/usage help — see "`?` vs. `help`" above. Not the same as bare `?`. |
 | `exit` / `quit` | Terminate the CLI process. Only reachable in EXEC mode, where by construction no candidate configuration exists. |
 
@@ -180,6 +183,66 @@ No logs yet (missing `logs/terminal/` or an empty/unknown device) prints
 raising or fabricating a row. `show logging` (in any of its three forms)
 is EXEC-only, like `show version` — configuration mode `show` semantics
 remain exactly `show`/`show configuration`/`show running-config`.
+
+### `delete logging`
+
+EXEC-only, like `show logging`; reuses the exact same stored-log
+enumeration (`show logging` and `delete logging` can never disagree about
+what exists). Bare `delete logging` and `delete logging <device-id>` are
+deliberately **not** executable — only the three explicit forms below are:
+
+```
+network-lab# delete logging R1 20260921T091500.log
+Deleted terminal log R1/20260921T091500.log.
+
+network-lab# delete logging R1 all
+Deleted 4 terminal logs for R1.
+
+network-lab# delete logging all
+Deleted 17 terminal logs.
+```
+
+Safety, in order of how the implementation actually enforces it:
+
+- **Eligible files only.** Deletion targets exactly the files `show
+  logging` already lists for that device — no wildcards (`delete logging
+  R1 *.log` is not supported; the filename must match an existing log
+  exactly), no recursive directory deletion, and a symlink under a device
+  directory is never treated as an eligible target (excluded, not
+  followed).
+- **Path confinement.** A device or filename token must exactly match one
+  already enumerated by the stored-log subsystem; there is no string
+  concatenation into a filesystem path, so `../`-style traversal or an
+  absolute path is simply never matched, not specially detected.
+- **Active-writer protection, at device granularity.** A production
+  terminal session (`terminal_open()`) and a private Discovery bootstrap
+  session both attach persistent logging to the same
+  `logs/terminal/<device-id>/` directory, keyed only by device name —
+  tmux's pipe-pane is attached once at session creation and never
+  explicitly detached before the session ends. The current architecture
+  has no registry mapping a live session to the *exact* log file it is
+  writing (that path is computed once, at creation, and never recorded
+  anywhere retrievable afterward), so protection is conservatively
+  device-level, not file-level: if **either** a production or a Discovery
+  session currently exists for a device, **none** of that device's logs
+  can be deleted (individually, or via `<device> all`), regardless of tmux
+  session-namespace classification. This is a deliberate, documented
+  limitation, not finer-grained protection than the architecture can
+  actually prove.
+- **Bulk operations fail closed.** `delete logging all` and `delete
+  logging <device-id> all` preflight the *entire* target set before
+  deleting anything: if any device targeted by the operation currently has
+  an active writer, the whole operation deletes nothing (not even the
+  logs of devices that are themselves inactive elsewhere in the same
+  call).
+- **No session side effects.** Deletion never closes a terminal session,
+  kills tmux, stops pipe-pane, or disturbs a Discovery bootstrap — an
+  active-log rejection leaves the writing session completely untouched.
+- **Directories are never removed** (only the log files themselves), and
+  an empty/nonexistent device or a nonexistent exact filename is a clear
+  error (`% No terminal logs found for device 'R9'.` / `% No log file
+  '<name>' for device '<id>'.`), never a silent no-op or a fabricated
+  success.
 
 ### `show running-config <definition-type>`
 

@@ -424,6 +424,48 @@ def _add_logging_subtree(show_node: Node, mode: str) -> None:
     file_next.set_command(f"{mode}.show_logging_device_file", "Display the contents of one terminal log file")
 
 
+def _add_delete_subtree(root: Node) -> None:
+    """`delete logging` (EXEC only, Step B): reuses the exact same dynamic
+    providers as `show logging` (provide_log_device_ids/provide_log_files)
+    so what is deletable never drifts from what `show logging` displays --
+    no second log-discovery model. Unlike `show logging`, bare `delete
+    logging` and `delete logging <device>` are deliberately NOT executable
+    (no set_command on those nodes): only `delete logging all`, `delete
+    logging <device> all`, and `delete logging <device> <log-file>` are
+    complete commands. "all" is a fixed keyword living alongside the
+    dynamic <device-id>/<log-file> argument at the very same node --
+    see complete()/help()'s generic support for a node that combines
+    literal children with a further dynamic argument, added for exactly
+    this shape."""
+    delete_node = root.add_literal("delete", "Delete stored information")
+    logging_node = delete_node.add_literal("logging", "Delete terminal logs")
+
+    all_node = logging_node.add_literal("all", "Delete all terminal logs")
+    all_node.set_command("exec.delete_logging_all", "Delete all terminal logs")
+
+    device_arg = Argument(
+        "device_id",
+        "Device with stored terminal logs",
+        provider=provide_log_device_ids,
+        hint="<device-id>",
+        enumerate_when_empty=True,
+    )
+    device_next = logging_node.add_argument(device_arg)
+
+    device_all_node = device_next.add_literal("all", "Delete all terminal logs for this device")
+    device_all_node.set_command("exec.delete_logging_device_all", "Delete all terminal logs for this device")
+
+    file_arg = Argument(
+        "log_file",
+        "Terminal log",
+        provider=provide_log_files,
+        hint="<log-file>",
+        enumerate_when_empty=True,
+    )
+    file_next = device_next.add_argument(file_arg)
+    file_next.set_command("exec.delete_logging_device_file", "Delete this terminal log")
+
+
 def _add_help_subtree(root: Node, mode: str) -> None:
     """`help` (bare) is Network Lab MCP's own Quick Start; `help <topic>`
     drills into one of HELP_TOPICS. Both are ordinary grammar nodes -- one
@@ -489,6 +531,7 @@ def _build_exec_root() -> Node:
         include_logging=True,
         include_running_config_definition_views=True,
     )
+    _add_delete_subtree(root)
     _add_help_subtree(root, "exec")
 
     exit_node = root.add_literal("exit", "Exit the CLI")
@@ -1219,6 +1262,15 @@ def complete(mode: str, text_before_cursor: str, ctx: CliContext) -> CompletionR
     if node.literal_children:
         lowered = partial.lower()
         matches = [kw for kw in node.literal_children if kw.startswith(lowered)]
+        # A node can combine fixed keywords with a further dynamic argument
+        # at the same level (e.g. "delete logging" -> "all" | <device-id>).
+        # No pre-existing node does this (every node so far is either a
+        # pure keyword dispatcher or a pure argument slot), so this is
+        # purely additive -- it only ever changes behavior for a node that
+        # actually has both.
+        argument = node.argument
+        if argument is not None and not argument.sensitive and argument.provider is not None:
+            matches = matches + sorted(argument.provider(ctx, partial, tuple(committed)))
         return CompletionResult(matches, partial)
 
     return CompletionResult([], partial)
@@ -1290,8 +1342,40 @@ def help(mode: str, text_before_cursor: str, ctx: CliContext) -> HelpResult:
         lines.append(HelpLine(lowered, matched_child.description))
         show_cr = matched_child.command is not None
         return HelpResult(lines, show_cr, partial)
+
+    # A node can combine fixed keywords with a further dynamic argument at
+    # the same level (e.g. "delete logging" -> "all" | <device-id>). The
+    # fixed keyword's exact match always wins (handled just above, mirroring
+    # parse()'s own precedence -- see the "if node.argument is not None"
+    # fallback inside parse()'s literal-children branch). Short of that, an
+    # exact non-creatable dynamic-argument match is itself complete help for
+    # that value plus `<cr>` if it can end the command -- the same "token?"
+    # rule the pure-argument branch above already applies for its own node.
+    # No pre-existing node combines both, so all of this is purely additive.
+    argument = node.argument
+    if (
+        argument is not None
+        and not argument.sensitive
+        and not argument.creatable
+        and argument.provider is not None
+        and partial != ""
+        and partial in argument.provider(ctx, "", tuple(committed))
+    ):
+        show_cr = node.argument_child.command is not None
+        return HelpResult([HelpLine(partial, argument.description)], show_cr, partial)
+
     for keyword, child in node.literal_children.items():
         if keyword.startswith(lowered):
             lines.append(HelpLine(keyword, child.description))
+
+    if argument is not None and not argument.sensitive and argument.provider is not None:
+        if partial == "" and argument.enumerate_when_empty:
+            for value in sorted(argument.provider(ctx, "", tuple(committed))):
+                lines.append(HelpLine(value, argument.description))
+        elif partial != "":
+            label = argument.existing_label if argument.creatable else argument.description
+            for value in sorted(argument.provider(ctx, partial, tuple(committed))):
+                lines.append(HelpLine(value, label))
+
     show_cr = partial == "" and node.command is not None
     return HelpResult(lines, show_cr, partial)

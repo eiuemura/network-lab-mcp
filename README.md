@@ -1004,6 +1004,20 @@ committed active_access_info
   <terminal transcript>
   ```
 
+  `delete logging all` / `delete logging <device-id> all` / `delete
+  logging <device-id> <log-file>` (EXEC only) delete stored logs,
+  reusing the exact same eligibility/enumeration as `show logging` — no
+  wildcards, no recursive directory deletion, and never a log currently
+  being written: a production or Discovery bootstrap session both attach
+  logging to the same `logs/terminal/<device-id>/` directory keyed by
+  device name, and since no registry records which exact file a live
+  session is writing, protection is conservative and device-level — if
+  either kind of session exists for a device, none of that device's logs
+  can be deleted until it ends. Bulk deletion (`all`) preflights the whole
+  target set first: any active device anywhere in scope means nothing at
+  all is deleted. See
+  [docs/cli_reference.md](docs/cli_reference.md#delete-logging).
+
 - **Example** (`test_lab` selected as `active_access_info`, already
   containing R1-R4):
 

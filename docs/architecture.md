@@ -291,6 +291,44 @@ historical record at `logs/terminal/<device-id>/<session-start>.log`
 (`YYYYMMDDTHHMMSS`), which is gitignored. `show logging` (EXEC only, see
 below) is the only reader of these files.
 
+### Terminal log deletion (Step B)
+
+`delete logging all` / `delete logging <device-id> all` / `delete
+logging <device-id> <log-file>` (EXEC only) are the only writers besides
+the logging mechanism itself: they delete stored log *files*, never
+directories, and only files `list_device_logs()` (the same enumeration
+`show logging` reads) already considers eligible -- a symlink under a
+device directory is excluded, never followed or treated as eligible.
+
+Active-writer protection is the central safety property, and its
+granularity is a documented, deliberate limitation rather than an
+oversight: both a production session and a Discovery bootstrap session
+attach `pipe-pane` logging to the *same* `logs/terminal/<device-id>/`
+directory, keyed only by device name (see above), and that attachment is
+never explicitly detached before the session ends. Nothing in this
+architecture records, anywhere retrievable after session creation, which
+exact log file a live session is piping to -- `_start_session_logging()`
+computes that path once and its return value is discarded by both
+`open_device_terminal()` and `open_bootstrap_terminal()`. The only
+reliable, provable primitive is therefore device-level:
+`terminal._device_has_active_session(device_name)` checks whether a
+production (`derive_production_session_name()`) or Discovery
+(`derive_discovery_session_name()`) session currently exists for that
+exact device -- if either does, deletion is rejected for **all** of that
+device's stored logs, not a guessed "active" one. Validation sessions
+never attach logging (`open_validation_session()` never passes
+`log_device_name`), so they are never a protection concern here, and
+tmux namespace classification is otherwise irrelevant to this check: a
+Discovery session is protected because it writes an eligible log, not
+because of its namespace.
+
+`delete logging all` / `delete logging <device-id> all` preflight their
+entire target set before deleting anything -- if any targeted device has
+an active writer, nothing at all is deleted, including the logs of
+devices that are themselves inactive. Deletion never closes a session,
+stops `pipe-pane`, or otherwise touches session lifecycle; that remains
+entirely the concern of `terminal_close()`/Discovery's own cleanup.
+
 ### A third session namespace: Discovery bootstrap
 
 ```

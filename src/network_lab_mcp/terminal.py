@@ -444,6 +444,146 @@ def read_device_log(device_name: str, filename: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# Terminal log deletion (Step B: EXEC `delete logging ...`)
+#
+# Eligibility is defined by reusing list_device_logs() -- the exact same
+# enumeration `show logging` uses -- so there is no second log-discovery
+# model; what can be deleted never drifts from what is displayed.
+#
+# Active-writer protection: both a normal production session
+# (derive_production_session_name()) and a Discovery bootstrap session
+# (derive_discovery_session_name()) attach persistent pipe-pane logging to
+# the *same* logs/terminal/<device-id>/ directory, keyed by device name
+# only -- see _create_logged_session()/open_device_terminal()/
+# open_bootstrap_terminal(). Validation sessions never attach logging at
+# all (open_validation_session() never passes log_device_name), so they
+# are never a protection concern here. tmux's pipe-pane is attached once
+# at session creation and never explicitly detached before the session is
+# killed, so an existing session is treated as still actively writing.
+#
+# The current architecture does not record which exact log file a live
+# session is piping to anywhere retrievable after creation (the path is
+# computed once in _start_session_logging() and its return value is
+# discarded by both callers) -- there is no session-to-log-path registry
+# to consult. The only reliable, provable primitive is therefore
+# device-level: "does a production or Discovery session for this exact
+# device currently exist?". Protection is applied at that granularity,
+# deliberately never guessing the exact active file from timestamp,
+# filename, size, or modification time (see module docstring for why: it
+# would be a guess, not a proof) -- an active device fails closed for
+# individual-file deletion, device-all deletion, and (transitively)
+# global-all deletion.
+# --------------------------------------------------------------------------
+
+
+def _device_has_active_session(device_name: str) -> bool:
+    """True if a production or Discovery bootstrap session for this exact
+    device currently exists -- the only two session kinds that ever
+    attach persistent logging. This is a read-only check: it never
+    creates, closes, or otherwise touches either session."""
+    return _session_exists(derive_production_session_name(device_name)) or _session_exists(
+        derive_discovery_session_name(device_name)
+    )
+
+
+def _eligible_log_files(device_name: str) -> list[Path]:
+    """Resolved filesystem paths for device_name's own eligible log files,
+    derived from list_device_logs() -- never a second enumeration. A
+    symlink is excluded defensively: it is not a persistent log this
+    subsystem itself wrote, so it is simply never an eligible deletion
+    target (unlinking a symlink only ever removes the link itself, never
+    a target it points to, but this keeps deletion scoped to exactly the
+    regular files show logging already exposes)."""
+    log_dir = _device_log_dir(device_name)
+    paths = []
+    for _started, filename in list_device_logs(device_name):
+        path = log_dir / filename
+        if path.is_symlink():
+            continue
+        paths.append(path)
+    return paths
+
+
+def _unlink_eligible_log(path: Path) -> None:
+    """Delete exactly one already-resolved eligible log file. Defense in
+    depth beyond the exact-enumeration match that produced `path`: refuse
+    anything that is not a plain file confined under LOGS_ROOT (a
+    belt-and-suspenders check; a path outside LOGS_ROOT or a non-regular
+    file can never actually reach here through the exact-match callers
+    below, since every path passed in was built from LOGS_ROOT / a
+    listed device / a listed filename)."""
+    resolved_root = LOGS_ROOT.resolve()
+    resolved_path = path.resolve()
+    if resolved_root != resolved_path and resolved_root not in resolved_path.parents:
+        raise TerminalError("Refusing to delete a file outside the terminal log root.")
+    if path.is_symlink() or not path.is_file():
+        raise TerminalError("Refusing to delete a non-regular terminal log file.")
+    path.unlink()
+
+
+def delete_device_log_file(device_name: str, filename: str) -> None:
+    """Delete exactly one eligible log file for one device. Raises
+    TerminalError (deletes nothing) if the filename does not exactly
+    match one of that device's own already-listed eligible logs, or if
+    the device currently has an active writer (device-level fail-closed
+    -- see module docstring)."""
+    if not _NAME_RE.match(device_name):
+        raise TerminalError(f"No log file '{filename}' for device '{device_name}'.")
+    eligible = {path.name: path for path in _eligible_log_files(device_name)}
+    if filename not in eligible:
+        raise TerminalError(f"No log file '{filename}' for device '{device_name}'.")
+    if _device_has_active_session(device_name):
+        raise TerminalError(f"Cannot delete an active terminal log for device '{device_name}'.")
+    _unlink_eligible_log(eligible[filename])
+
+
+def delete_all_device_logs(device_name: str) -> int:
+    """Delete every eligible log file for one device. Raises TerminalError
+    (deletes nothing) if the device has no eligible logs at all, or if it
+    currently has an active writer. Returns the number of files deleted."""
+    if not _NAME_RE.match(device_name):
+        raise TerminalError(f"No terminal logs found for device '{device_name}'.")
+    targets = _eligible_log_files(device_name)
+    if not targets:
+        raise TerminalError(f"No terminal logs found for device '{device_name}'.")
+    if _device_has_active_session(device_name):
+        raise TerminalError(f"Cannot delete all logs for '{device_name}' while a terminal log is active.")
+    for path in targets:
+        _unlink_eligible_log(path)
+    return len(targets)
+
+
+def delete_all_logs() -> int:
+    """Delete every eligible terminal log across every device. Preflights
+    the WHOLE operation before deleting anything: if ANY device targeted
+    by this call (one with at least one eligible log) currently has an
+    active writer, nothing at all is deleted -- not even the logs of
+    devices that are themselves inactive. Raises TerminalError either way
+    (active-writer rejection, or nothing to delete); returns the count
+    deleted on success."""
+    all_targets: list[Path] = []
+    active_devices: list[str] = []
+    for device_name in list_logged_device_ids():
+        targets = _eligible_log_files(device_name)
+        if not targets:
+            continue
+        if _device_has_active_session(device_name):
+            active_devices.append(device_name)
+            continue
+        all_targets.extend(targets)
+    if active_devices:
+        raise TerminalError(
+            "Cannot delete all terminal logs while terminal logs are active. "
+            "Close or wait for the active sessions first."
+        )
+    if not all_targets:
+        raise TerminalError("No terminal logs found.")
+    for path in all_targets:
+        _unlink_eligible_log(path)
+    return len(all_targets)
+
+
+# --------------------------------------------------------------------------
 # Transport command construction
 # --------------------------------------------------------------------------
 

@@ -408,6 +408,7 @@ access-info) — it does not change what MCP tools, logs, or errors expose.
 | `topology <name>` | Create or edit a topology definition (see "Case-only topology-name collision safeguard" below). Enters topology definition mode. |
 | `scenario <name>` | Create or edit a scenario definition. Enters scenario definition mode. |
 | `reference <name>` | Create or edit a reference definition. Enters reference definition mode. |
+| `no topology <name>` | Candidate deletion of a **stored topology definition** — see "`no topology <name>`" below. Not the same as `config-running# no topology`, which (see that section) does not currently exist as a command at all. |
 | `show` / `show configuration` | Uncommitted changes only: the running-config candidate's delta, aggregated with the open definition's delta if one is open (each rendered by its own type-aware delta renderer) — see "`show running-config` vs. `show configuration`" below. Nothing open and nothing changed -> no output. |
 | `show running-config` | The committed MCP running-config selection, same as EXEC — **not** the open definition's own content, even if one is open in the background. |
 | `commit` | Validate and persist the candidate. Stays in global configuration mode. |
@@ -432,7 +433,7 @@ it is EXEC-only (see "`show version`" above and "`show running-config` vs.
 |---------|--------|
 | `access-info <name>` | Select the access-info MCP/`terminal_open()` will use. `<name>` must already exist as a committed access-info definition, *or* be the access-info currently being created/edited in this same configure session. |
 | `no access-info` | Remove the access-info selection from the candidate (omission, not a sentinel value). A legitimate, fail-closed state once committed: `terminal_open()` then refuses every device until one is selected again. |
-| `topology <name>` | Select the topology MCP will use. Same existence rule as `access-info`. |
+| `topology <name>` | Select the topology MCP will use. Same existence rule as `access-info`. There is deliberately no `no topology` here to unset it — `active_topology` is a mandatory running-config field (`commit` already rejects a missing one), so there is nothing safe for it to fall back to. This is unrelated to `no topology <name>` in global configuration mode, which deletes a **stored topology definition** instead — see "`no topology <name>`" below. |
 | `scenario <name>` | Select the scenario MCP will use. Same existence rule. |
 | `reference <name>` | Add `<name>` to the selected references. Same existence rule; duplicates are rejected. |
 | `no reference <name>` | Remove `<name>` from the selected references. |
@@ -701,6 +702,67 @@ A *clean* definition (loaded, but never semantically changed) can be freely
 switched away from. Running-config editing is an independent scope: opening
 `running-config` mode, or switching what it selects, is never blocked by a
 dirty definition candidate, and vice versa.
+
+## `no topology <name>`
+
+`no topology <name>` (global configuration only) candidate-deletes one
+**stored topology definition** — distinct from `config-running# no
+topology`, which does not exist as a command (see the running-config
+selection table above): `active_topology` is mandatory there, so there
+is no safe "unset" to fall back to.
+
+```
+network-lab(config)# no topology test_lab
+network-lab(config)# show
+no topology test_lab
+network-lab(config)# commit
+Commit complete.
+```
+
+Deletion is candidate-only until `commit` — nothing is unlinked by
+`no topology <name>` itself. `<name>`'s file remains, `show running-config`
+still shows its committed content, and MCP/runtime continue reading the
+committed definition, exactly as before, right up until a successful
+commit. `clear` cancels the pending deletion (restores the definition
+into the candidate, exactly as it existed before) the same way it
+reverts any other uncommitted definition edit.
+
+**It participates in the same definition-switching guard above** — a
+configure session may have at most one dirty definition candidate at a
+time, of any kind, and deletion counts as a topology-definition mutation
+just like editing does:
+
+- editing topology A, then attempting to delete topology B (or vice
+  versa), is rejected until A's edit is committed or cleared;
+- deleting topology A, then attempting to delete topology B, is likewise
+  rejected;
+- but operations on the **same** topology identity compose freely:
+  edit A then delete A (the edit becomes moot — the diff is just `no
+  topology A`); delete A then re-enter `topology A` (cancels the
+  deletion, restoring A's original committed content with no net diff);
+  delete A, restore, then edit (only the new edit appears in the diff,
+  original unrelated content untouched); create a brand-new topology
+  then delete it in the same session (net zero — the whole candidate is
+  simply discarded, and `commit` writes nothing).
+
+`no topology ?` only ever lists names that are actually legal to select
+next: every stored topology when the definition candidate is clean, only
+the one already-dirty topology identity if a topology edit or pending
+deletion is open, and nothing at all if a *different* kind is dirty or
+the one open topology is already pending deletion. Execution enforces
+the same rule regardless of what help/completion showed.
+
+Deleting a topology never cascades: it never touches running-config's
+`active_topology` selection, another topology, access-info, scenario,
+reference, or terminal/Discovery state. If the topology being deleted is
+the currently *active* one in running-config (checked against the
+candidate running-config, so a combined commit that also switches
+`active_topology` to something else in the same commit is allowed),
+`commit` fails closed:
+
+```
+% Cannot remove topology 'test_lab' because it is active in running-config.
+```
 
 ## Tab / Ctrl-I completion
 

@@ -119,6 +119,15 @@ _DEFINITION_WRITERS: dict[str, Callable] = {
     "reference": lab.write_reference,
 }
 
+# Only topology definitions currently support candidate deletion (`no
+# topology <name>`, see remove_topology_definition()/commit() below) --
+# access-info/scenario/reference deletion is explicitly out of scope, so
+# this deliberately has just the one entry rather than a dict comprehension
+# over every kind.
+_DEFINITION_DELETERS: dict[str, Callable] = {
+    "topology": lab.delete_topology,
+}
+
 
 def load_committed_definition(kind: str, name: str, lab_root: Path) -> Optional[dict]:
     """Return the current committed-on-disk data for a definition of the
@@ -162,6 +171,15 @@ class CliSession:
     def definition_dirty(self) -> bool:
         if self.definition_kind is None:
             return False
+        if self.definition_candidate is None:
+            # A whole definition is prospectively deleted (currently only
+            # topology definitions support this -- see
+            # remove_topology_definition()). Always dirty: the final
+            # state ("absent") always differs from a real committed
+            # original -- remove_topology_definition() never leaves this
+            # state set for a never-committed (definition_original is
+            # None) candidate, which it discards outright instead.
+            return True
         if self.definition_original is None:
             return True  # brand-new, never-committed definition
         return self.definition_candidate != self.definition_original
@@ -286,6 +304,54 @@ class CliSession:
         if plan.kind == "case_collision":
             raise ConfigError("A case-only topology collision must be confirmed before it can be applied.")
         self._enter_definition("topology", plan.name, "topology")
+
+    def remove_topology_definition(self, name: str) -> None:
+        """`no topology <name>` (global configuration only): candidate
+        deletion of one stored topology definition -- never an immediate
+        filesystem operation (see commit()). Participates in the same
+        "at most one dirty definition candidate at a time" rule as every
+        other definition kind (can_switch_definition()); deletion counts
+        as a topology-definition mutation, so a different dirty
+        definition (topology or otherwise) blocks it, and a pending
+        topology deletion blocks editing/creating/deleting a
+        *different* topology, exactly like the existing topology-switch
+        guard.
+
+        The candidate represents deletion as `definition_candidate is
+        None` while `definition_kind`/`definition_name`/
+        `definition_original` stay set to the real committed definition
+        being removed -- reusing _enter_definition()'s existing reload
+        guard (`definition_candidate is not None`) means re-entering the
+        *same* topology (`topology <name>`) automatically reloads and
+        restores it, cancelling the pending deletion, with no changes
+        needed there. clear()'s existing "restore from
+        definition_original" branch cancels it the same way.
+
+        Deleting the topology *currently open as a brand-new, never-
+        committed candidate* (definition_original is None) is instead a
+        net-zero cancellation: the whole candidate slot is discarded
+        outright, exactly like clear() already treats that case, since
+        there is nothing real to mark as prospectively absent."""
+        if self.definition_kind == "topology" and self.definition_name == name:
+            if self.definition_original is None:
+                self.definition_kind = None
+                self.definition_name = None
+                self.definition_candidate = None
+                self.current_device_name = None
+                return
+            self.definition_candidate = None
+            self.current_device_name = None
+            return
+        ok, message = self.can_switch_definition("topology", name)
+        if not ok:
+            raise ConfigError(message)
+        if not lab.topology_is_deletable(name, self.lab_root):
+            raise ConfigError(f"Topology '{name}' does not exist.")
+        self.definition_original = lab.load_topology(name, self.lab_root)
+        self.definition_candidate = None
+        self.definition_kind = "topology"
+        self.definition_name = name
+        self.current_device_name = None
 
     def apply_discovery_result(self, result: "discovery.DiscoveryResult") -> None:
         """Turn a completed Discovery run into a topology candidate, using
@@ -458,8 +524,9 @@ class CliSession:
 
         errors: list[str] = []
         definition_being_written = self.definition_kind is not None and self.definition_dirty()
+        definition_being_deleted = definition_being_written and self.definition_candidate is None
 
-        if definition_being_written:
+        if definition_being_written and not definition_being_deleted:
             try:
                 _DEFINITION_VALIDATORS[self.definition_kind](self.definition_name, self.definition_candidate)
             except lab.LabConfigError as exc:
@@ -467,6 +534,11 @@ class CliSession:
 
         def _will_exist(kind: str, exists_fn: Callable, name: Optional[str]) -> bool:
             if not name:
+                return False
+            if definition_being_deleted and self.definition_kind == kind and self.definition_name == name:
+                # This exact commit is what removes it -- never treated
+                # as "will exist" even though the file is still on disk
+                # right now (deletion hasn't happened yet).
                 return False
             if exists_fn(name, self.lab_root):
                 return True
@@ -481,7 +553,12 @@ class CliSession:
         if not target_topology:
             errors.append("Running configuration is missing a valid active topology.")
         elif not _will_exist("topology", lab.topology_exists, target_topology):
-            errors.append(f"Topology '{target_topology}' does not exist.")
+            if definition_being_deleted and self.definition_kind == "topology" and self.definition_name == target_topology:
+                errors.append(
+                    f"Cannot remove topology '{target_topology}' because it is active in running-config."
+                )
+            else:
+                errors.append(f"Topology '{target_topology}' does not exist.")
 
         scenario = settings.get("active_scenario")
         if not scenario:
@@ -497,8 +574,15 @@ class CliSession:
             raise CommitValidationError(errors)
 
         if definition_being_written:
-            _DEFINITION_WRITERS[self.definition_kind](self.definition_name, self.definition_candidate, self.lab_root)
-            self.definition_original = copy.deepcopy(self.definition_candidate)
+            if definition_being_deleted:
+                _DEFINITION_DELETERS[self.definition_kind](self.definition_name, self.lab_root)
+                self.definition_kind = None
+                self.definition_name = None
+                self.definition_original = None
+                self.definition_candidate = None
+            else:
+                _DEFINITION_WRITERS[self.definition_kind](self.definition_name, self.definition_candidate, self.lab_root)
+                self.definition_original = copy.deepcopy(self.definition_candidate)
 
         if self.settings_dirty():
             lab.write_settings(self.settings_candidate, self.lab_root)

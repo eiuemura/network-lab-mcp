@@ -332,6 +332,41 @@ def topology_exists(name: str, lab_root: Path | None = None) -> bool:
     return (lab_root / "topologies" / f"{name}.yaml").is_file()
 
 
+def topology_is_deletable(name: str, lab_root: Path | None = None) -> bool:
+    """True if `name` is an exact, enumerated topology name (from
+    list_topology_names(), the same SSOT `topology <name>`'s own dynamic
+    completion reads) whose stored file is a regular, non-symlink file
+    directly confined under lab/topologies/. Shared by the CLI's `no
+    topology <name>` candidate-creation check (cli/config.py) and
+    delete_topology() itself, so a symlinked or path-unsafe entry is
+    rejected as early as candidate creation, not only at commit."""
+    lab_root = lab_root or find_lab_root()
+    if name not in list_topology_names(lab_root):
+        return False
+    topologies_dir = lab_root / "topologies"
+    path = topologies_dir / f"{name}.yaml"
+    resolved_dir = topologies_dir.resolve()
+    resolved_path = path.resolve()
+    return resolved_path.parent == resolved_dir and not path.is_symlink() and path.is_file()
+
+
+def delete_topology(name: str, lab_root: Path | None = None) -> None:
+    """Permanently remove a committed topology definition file. Used only
+    by the CLI's `no topology <name>` candidate-deletion commit path
+    (cli/config.py's CliSession.commit()) -- never called for any other
+    definition kind, and never recursive.
+
+    Exact-match against list_topology_names(), never a raw path built
+    from unchecked input, and confined to a direct, non-symlink regular
+    file under lab/topologies/ (topology_is_deletable()) -- mirroring the
+    same exact-enumeration-match / path-confinement discipline already
+    used for terminal log deletion (terminal.py)."""
+    lab_root = lab_root or find_lab_root()
+    if not topology_is_deletable(name, lab_root):
+        raise LabConfigError(f"Topology '{name}' does not exist.")
+    (lab_root / "topologies" / f"{name}.yaml").unlink()
+
+
 # --------------------------------------------------------------------------
 # access-info (lab/access-info/*.yaml): private device access, never exposed
 # --------------------------------------------------------------------------

@@ -213,6 +213,19 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
         committed_active_reference_names = tuple(lab.get_active_reference_names(lab.read_settings(lab_root)))
     except lab.LabConfigError:
         committed_active_reference_names = ()
+
+    # `no topology <name>` (Step C): candidate-aware -- see
+    # grammar.provide_no_topology_names()'s docstring for the exact rule.
+    if session.definition_kind == "topology" and session.definition_dirty():
+        if session.definition_candidate is None:
+            no_topology_candidate_names: tuple[str, ...] = ()
+        else:
+            no_topology_candidate_names = (session.definition_name,)
+    elif session.definition_kind is not None and session.definition_dirty():
+        no_topology_candidate_names = ()
+    else:
+        no_topology_candidate_names = tuple(lab.list_topology_names(lab_root))
+
     return grammar.CliContext(
         topology_names=tuple(lab.list_topology_names(lab_root)),
         scenario_names=tuple(lab.list_scenario_names(lab_root)),
@@ -225,6 +238,7 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
         log_device_ids=log_device_ids,
         log_files_by_device=log_files_by_device,
         committed_active_reference_names=committed_active_reference_names,
+        no_topology_candidate_names=no_topology_candidate_names,
     )
 
 
@@ -502,7 +516,19 @@ def render_generic_configuration_delta(name: str, original: Optional[dict], cand
 
 
 def _render_configuration_delta(kind: Optional[str], name: Optional[str], original: Optional[dict], candidate: Optional[dict]) -> str:
-    if kind is None or candidate is None:
+    if kind is None:
+        return ""
+    if candidate is None:
+        # A whole definition is prospectively deleted (`no topology
+        # <name>` -- currently the only definition kind that supports
+        # candidate deletion; see cfgmod.CliSession.remove_topology_definition()).
+        # `original` is always the real committed definition being
+        # removed here: a brand-new, never-committed candidate is
+        # discarded outright by remove_topology_definition() instead of
+        # ever reaching this state, so `original is None` alongside
+        # `candidate is None` never represents a genuine deletion.
+        if kind == "topology" and original is not None:
+            return f"no topology {name}"
         return ""
     if kind == "topology":
         return render_topology_configuration_delta(name, original, candidate)
@@ -1326,6 +1352,10 @@ def h_global_topology(session: cfgmod.CliSession, args: dict) -> None:
     session.apply_topology_definition_plan(plan)
 
 
+def h_global_no_topology(session: cfgmod.CliSession, args: dict) -> None:
+    session.remove_topology_definition(args["name"])
+
+
 def h_global_scenario(session: cfgmod.CliSession, args: dict) -> None:
     name = args["name"]
     ok, message = session.can_switch_definition("scenario", name)
@@ -1544,6 +1574,7 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "global.discover_topology": h_global_discover_topology,
     "global.access_info": h_global_access_info,
     "global.topology": h_global_topology,
+    "global.no_topology": h_global_no_topology,
     "global.scenario": h_global_scenario,
     "global.reference": h_global_reference,
     "global.exit": h_end,

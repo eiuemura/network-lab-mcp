@@ -180,6 +180,14 @@ stdio protocol.
   distinct topology, rather than silently opening the existing one or
   silently creating a look-alike. This is a narrow safety check, not fuzzy
   name matching.
+- **`no topology <name>`** (global configuration only): candidate deletion
+  of a *stored topology definition* — nothing is unlinked until `commit`,
+  `clear` cancels it, and it participates in the same one-dirty-definition
+  rule as topology editing (deleting a different topology while another is
+  being edited, or vice versa, is rejected the same way switching topologies
+  already was). `commit` refuses to delete the topology currently active in
+  running-config. See
+  [docs/cli_reference.md](docs/cli_reference.md#no-topology-name).
 - **Step 1 validator reuse**: topology/access-info/device.type validation on
   commit reuses `network_lab_mcp.lab.validate_topology_data()` /
   `validate_access_info_data()` / `normalize_device_type()` — the CLI does

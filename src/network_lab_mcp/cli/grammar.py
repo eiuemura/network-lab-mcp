@@ -67,6 +67,16 @@ class CliContext:
     # active_references, in committed order -- never candidate state and
     # never every stored reference file.
     committed_active_reference_names: tuple[str, ...] = ()
+    # `no topology <name>` (global configuration only): candidate-aware --
+    # every stored topology name when no dirty definition candidate is
+    # open; only the one already-dirty topology identity if a topology
+    # edit/pending-deletion is open (the one same-identity operation that
+    # remains legal); nothing at all if a *different* definition kind is
+    # dirty, or if the one open topology is already pending deletion (see
+    # cli/main.py's build_context()). Execution (CliSession.
+    # remove_topology_definition()) is the authoritative enforcement of
+    # this either way.
+    no_topology_candidate_names: tuple[str, ...] = ()
 
 
 # A provider receives the already-committed raw tokens of the command so
@@ -159,6 +169,10 @@ def validate_port(value: str) -> ValidationOutcome:
 
 def provide_topology_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     return [n for n in ctx.topology_names if n.startswith(prefix)]
+
+
+def provide_no_topology_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    return [n for n in ctx.no_topology_candidate_names if n.startswith(prefix)]
 
 
 def provide_scenario_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
@@ -640,6 +654,24 @@ def _build_global_root() -> Node:
     reference_node = root.add_literal("reference", "Create or edit a reference")
     reference_next = reference_node.add_argument(reference_arg)
     reference_next.set_command("global.reference", "Create or edit a reference")
+
+    # `no topology <name>` (Step C): candidate deletion of a STORED
+    # topology definition -- distinct from `config-running# no topology`,
+    # which unsets the *active topology selection* instead (a completely
+    # separate candidate scope; see cli/config.py's CliSession module
+    # docstring). Never creatable: deletion only ever targets a name the
+    # dynamic, candidate-aware provider above already lists as legal.
+    no_node = root.add_literal("no", "Remove a stored definition")
+    no_topology_arg = Argument(
+        "name",
+        "Existing topology",
+        provider=provide_no_topology_names,
+        hint="<name>",
+        enumerate_when_empty=True,
+    )
+    no_topology_node = no_node.add_literal("topology", "Remove a topology definition")
+    no_topology_next = no_topology_node.add_argument(no_topology_arg)
+    no_topology_next.set_command("global.no_topology", "Remove a topology definition")
 
     _add_show_subtree(
         root,

@@ -305,6 +305,7 @@ def test_bare_help_lists_all_global_root_commands():
         "topology",
         "scenario",
         "reference",
+        "no",
         "show",
         "clear",
         "commit",

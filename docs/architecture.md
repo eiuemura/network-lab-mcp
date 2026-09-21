@@ -623,6 +623,71 @@ the full rendering rules, including the access-info-only standalone `!`
 paste round-trip behavior (cli_reference.md's "Multi-line configuration
 paste").
 
+### Topology definition deletion (Step C)
+
+`no topology <name>` (global configuration only) extends the single
+`definition_candidate` slot above with a prospective-absence
+representation, rather than adding a second, independent
+"deletion set" data structure: `definition_kind`/`definition_name`/
+`definition_original` stay set to the real committed definition being
+removed, while `definition_candidate` itself becomes `None`
+(`CliSession.remove_topology_definition()`). `definition_dirty()`
+treats this as always dirty (a real committed original always differs
+from eventual absence).
+
+This minimal representation change means every existing mechanism
+already does the right thing with no further changes:
+
+- `_enter_definition()`'s existing reload guard only skips reloading when
+  `definition_candidate is not None` -- so re-entering the *same*
+  topology (`topology <name>`) while it is pending deletion naturally
+  fails that guard and reloads fresh from disk, restoring the original
+  candidate and cancelling the deletion, for free.
+- `clear()`'s existing "restore from `definition_original`" branch
+  (`self.definition_candidate = copy.deepcopy(self.definition_original)`)
+  cancels a pending deletion the same way, with no special-casing.
+- `can_switch_definition()` needed no changes at all: since deletion
+  makes `definition_dirty()` True, attempting to edit or delete a
+  *different* topology (or any other definition kind) while a deletion
+  is pending is already rejected by the pre-existing guard, and the
+  existing "same identity is always allowed" check
+  (`(self.definition_kind, self.definition_name) == (kind, name)`)
+  already permits every same-topology transition (edit -> delete,
+  delete -> restore, delete -> restore -> edit).
+- Deleting a topology that was only ever a brand-new, never-committed
+  candidate (`definition_original is None`) is instead a net-zero
+  cancellation: the whole candidate slot is discarded outright (the same
+  case `clear()` already handles for a never-committed definition),
+  since there is nothing real to mark absent.
+
+`_render_configuration_delta()` (cli/main.py) is the one place that
+needed an explicit new branch: a `None` candidate alongside a non-`None`
+`original` renders as a single `no topology <name>` line (never the
+per-field diff the other renderers produce), and `commit()`
+(cli/config.py) needed a parallel deletion path: skip the normal
+per-kind validator (there is nothing to validate), reject the commit if
+the definition being deleted is still the *effective* (candidate, not
+already-committed) `active_topology` -- so a combined commit that also
+selects a different `active_topology` in the same transaction is
+correctly allowed -- and call `lab.delete_topology()` instead of the
+normal writer. `lab.delete_topology()`/`lab.topology_is_deletable()`
+require an exact match against `list_topology_names()` and a
+non-symlink, path-confined regular file, mirroring the discipline
+already used for terminal log deletion (`terminal.py`). No cascade: no
+other definition, running-config field, terminal session, or Discovery
+state is ever touched by a topology deletion.
+
+Investigation for this task found no real cross-definition reference
+to a topology by name anywhere in the schema (scenario/reference are
+open-ended YAML documents; access-info is keyed by device name, not
+topology name) -- the only real reference is running-config's own
+`active_topology`, handled above. It also found that `config-running`
+mode has no `no topology` command at all (only `no access-info` and `no
+reference <name>`), since `active_topology` is a mandatory field with no
+safe "unset" value -- so there is no actual naming collision with the
+new global-configuration `no topology <name>` to resolve, only a
+documentation clarification (see cli_reference.md).
+
 ### Command grammar as the single source of truth
 
 `cli/grammar.py` builds one trie per CLI mode (EXEC, global, running-config,

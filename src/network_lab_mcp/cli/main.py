@@ -82,18 +82,45 @@ def _normalize_newlines(text: str) -> str:
 def _split_pasted_command_lines(text: str) -> list[str]:
     """Split a pasted multi-line block into normalized physical command
     lines: CRLF/CR normalized to LF, leading configuration-display
-    indentation stripped from each line, and blank lines / standalone "!"
-    visual separators (as produced by the show-configuration renderers)
-    dropped. Everything else in a line -- internal spacing, punctuation,
-    special characters inside a value -- is preserved exactly, so this must
-    never be used on a single manually-typed line."""
+    indentation stripped from each line, and blank lines dropped.
+    Everything else in a line -- internal spacing, punctuation, special
+    characters inside a value -- is preserved exactly, so this must never
+    be used on a single manually-typed line.
+
+    A standalone "!" separator line (exactly "!" once stripped, as
+    produced by the show-configuration renderers) is preserved here as a
+    literal "!" entry rather than dropped -- execute_input_block() gives
+    it its own narrow, mode-bounded meaning (see _apply_structural_bang())
+    instead of treating it as an ordinary command line."""
     lines = []
     for raw_line in _normalize_newlines(text).split("\n"):
         content = raw_line.lstrip(" \t")
-        if not content.strip() or content.strip() == "!":
+        stripped = content.strip()
+        if not stripped:
             continue
-        lines.append(content)
+        lines.append("!" if stripped == "!" else content)
     return lines
+
+
+# Step A access-info paste round-trip: rendered access-info configuration
+# closes every device/jump-host/definition block with a standalone "!"
+# (see render_access_info_block()), so pasting it back must let "!" close
+# the matching block -- otherwise a sibling "device R2" line right after
+# "device R1"'s block is parsed while still inside R1's own submode and
+# fails as an unknown command. This is deliberately NOT a generic "!" ==
+# "exit" alias: it only applies inside a multi-line paste (never to a
+# single manually-typed line, see execute_command_line()/run()), and only
+# in these three access-info modes -- topology/scenario/reference paste
+# behavior is unchanged, and a stray "!" at global configuration or EXEC
+# is an explicit, deliberate no-op (never exit/end/quit, never terminates
+# the CLI), so an imperfect copy/paste with one extra trailing "!" cannot
+# silently leave configuration mode.
+_STRUCTURAL_BANG_EXIT_MODES = ("access_device", "access_jump_host", "access_info")
+
+
+def _apply_structural_bang(session: cfgmod.CliSession) -> None:
+    if session.mode in _STRUCTURAL_BANG_EXIT_MODES:
+        h_exit(session, {})
 
 
 class MaskingHistory(History):
@@ -121,9 +148,12 @@ class MaskingHistory(History):
             # Never store that raw block (it may contain a password on any
             # line) -- store each physical command line individually
             # instead, still excluding any password line, so Up/Down can
-            # still recall the non-sensitive pasted commands.
+            # still recall the non-sensitive pasted commands. A "!"
+            # separator is not itself a recallable command (see
+            # _apply_structural_bang()), so it is excluded here exactly
+            # like before this task's paste-round-trip fix.
             for line in _split_pasted_command_lines(string):
-                if not _is_password_command(line):
+                if line != "!" and not _is_password_command(line):
                     super().append_string(line)
             return
         if _is_password_command(string):
@@ -404,10 +434,20 @@ def _field_delta_lines(original_obj: dict, candidate_obj: dict, field_order: tup
 
 def _named_objects_delta(keyword: str, original_map: dict, candidate_map: dict, field_order: tuple[str, ...]) -> list[str]:
     """Render only the named objects (devices/jump-hosts) that actually
-    changed, each as its own ' <keyword> <name>' / field lines / ' !'
-    block -- a brand-new object (absent from original_map) is diffed
-    against {}, so all of its populated fields show up as "new"."""
+    changed: a whole object present in `original_map` but absent from
+    `candidate_map` (removed via `no <keyword> <name>`) as a single
+    ` no <keyword> <name>` line, in committed order; then, for every object
+    still in `candidate_map`, its own ' <keyword> <name>' / field lines /
+    ' !' block if any field actually differs -- a brand-new object (absent
+    from original_map) is diffed against {}, so all of its populated
+    fields show up as "new". A candidate-only object that nets out
+    identical to committed (e.g. removed then recreated identically, or
+    never existed and was removed again) contributes nothing, by
+    construction -- neither loop below renders it."""
     lines: list[str] = []
+    for name in original_map:
+        if name not in candidate_map:
+            lines.append(f" no {keyword} {name}")
     for name, candidate_obj in candidate_map.items():
         original_obj = original_map.get(name) or {}
         field_lines = _field_delta_lines(original_obj, candidate_obj or {}, field_order)
@@ -1483,16 +1523,26 @@ def execute_input_block(session: cfgmod.CliSession, text: str) -> None:
     """Execute one accepted REPL input, which is either a single manually
     typed command or a pasted multi-line configuration block (prompt_toolkit
     hands back pasted text as one string with embedded newlines). A
-    single-line input is executed exactly as before, unchanged. A multi-line
-    input is split into normalized physical command lines and executed
-    sequentially through execute_command_line(), stopping at the first
-    error -- lines already applied stay in the candidate (no rollback), and
-    nothing here or in execute_command_line() ever calls commit implicitly.
+    single-line input is executed exactly as before, unchanged -- a single
+    manually typed "!" is not special-cased here at all and reaches
+    execute_command_line()/grammar.parse() exactly as before this task. A
+    multi-line input is split into normalized physical command lines and
+    executed sequentially, stopping at the first error -- lines already
+    applied stay in the candidate (no rollback), and nothing here or in
+    execute_command_line() ever calls commit implicitly. A "!" physical
+    line is the one exception to "every line goes through
+    execute_command_line()": it is dispatched to
+    _apply_structural_bang() instead, per session.mode *at that point* in
+    the sequence -- same authoritative re-read-after-every-line model as
+    every other mode-changing line here.
 
     Propagates `_ExitCli` uncaught, so a pasted `exit`/`quit` at EXEC level
     unwinds the REPL loop exactly like a manually typed one."""
     if "\n" in _normalize_newlines(text):
         for line in _split_pasted_command_lines(text):
+            if line == "!":
+                _apply_structural_bang(session)
+                continue
             if not execute_command_line(session, line):
                 break
     else:

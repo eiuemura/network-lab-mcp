@@ -280,13 +280,28 @@ def test_topology_device_paste(lab_root):
 
 
 # ---- standalone "!" separators (as produced by show-configuration output) ----
+#
+# Step A gave access-info's own three modes (access_info/access_device/
+# access_jump_host) a narrow, explicit meaning for a pasted standalone "!"
+# (exactly one level up, mirroring render_access_info_block()'s own
+# block-closing convention -- see _apply_structural_bang() in main.py).
+# This test previously asserted the OLD, now-fixed behavior ("!" always
+# ignored, which is exactly Step A bug 0.3: a rendered access-info block
+# could not be pasted back). It has been rewritten to assert the new,
+# correct, spec-mandated behavior instead of being left encoding a bug.
+# Full dedicated coverage (both access-info paste round-trip and the
+# unrelated-mode/global/EXEC no-op safety) lives in
+# test_structural_bang_paste.py.
 
 
-def test_standalone_bang_separators_are_ignored_in_a_paste(lab_root):
+def test_standalone_bang_closes_access_device_block_then_noop_at_global(lab_root):
     session = _access_info_session(lab_root)
     block = "device R9\n type iosxr\n!\n exit\n!\n"
     climain.execute_input_block(session, block)
-    assert session.mode == "access_info"
+    # First "!" (still in access_device mode) closes R9's block back to
+    # access_info; explicit "exit" then goes to global; the trailing "!"
+    # at global is a safe no-op (see test_structural_bang_paste.py).
+    assert session.mode == "global"
     assert session.definition_candidate["devices"]["R9"]["type"] == "iosxr"
 
 
@@ -295,6 +310,20 @@ def test_bang_inside_a_password_value_is_not_treated_as_a_separator(lab_root):
     block = "device R9\n password Example!Password123\n!\n"
     climain.execute_input_block(session, block)
     assert session.definition_candidate["devices"]["R9"]["password"] == "Example!Password123"
+
+
+def test_standalone_bang_in_topology_paste_remains_a_noop(lab_root):
+    """Step A section 27: the new structural "!" meaning is deliberately
+    bounded to access-info's own three modes -- topology paste behavior
+    is unchanged (a standalone "!" is still just dropped/ignored there)."""
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.apply_topology_definition_plan(session.plan_topology_definition("sample_lab"))
+    session.enter_topology_device("R9")
+    block = "type iosxr\n!\n"
+    climain.execute_input_block(session, block)
+    assert session.mode == "device"  # unchanged: "!" did not exit the device submode
+    assert session.definition_candidate["devices"]["R9"]["type"] == "iosxr"
 
 
 # ---- mandatory: object-deletion combined with clear inside a paste ----

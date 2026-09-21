@@ -445,6 +445,125 @@ def test_no_jump_host_command_end_to_end(lab_root):
     assert "jump1" not in session.definition_candidate["jump_hosts"]
 
 
+# ==========================================================================
+# Step A candidate-integrity regressions (Step A section 37/DoD 4-14)
+#
+# One candidate SSOT per edited definition: an existing definition's
+# candidate starts as a complete deep copy of the committed definition,
+# and every submode (device/jump-host) is only a context pointer into
+# that SAME candidate -- never an independent one. This is the invariant
+# behind the reported "adding one device deletes all siblings on commit"
+# observation. Direct reproduction attempts (interactive-equivalent
+# sequences via CliSession/execute_command_line/execute_input_block, in
+# every plausible variation) did NOT reproduce data loss in this
+# codebase (1a1197a) -- see the Step A final report for details. These
+# tests lock in the correct, already-working behavior as a permanent
+# regression guard rather than "fix" a defect that could not be found.
+# ==========================================================================
+
+
+def test_new_device_candidate_includes_all_existing_siblings(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    assert sorted(session.definition_candidate["devices"]) == ["R1", "R2"]
+    session.enter_access_info_device("R5")
+    assert sorted(session.definition_candidate["devices"]) == ["R1", "R2", "R5"]
+
+
+def test_commit_from_nested_device_mode_preserves_sibling_devices(lab_root):
+    """Directly covers the reported data-loss scenario: commit issued from
+    inside a newly-created device's own submode must persist the complete
+    owning access-info candidate, not a scoped fragment."""
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R5")
+    session.set_device_field("type", "iosxr")
+    session.set_device_field("address", "192.0.2.55")
+    assert session.mode == "access_device"
+    session.commit()  # issued from R5's own nested submode
+    assert session.mode == "access_device"  # commit never changes mode
+    persisted = lab.load_access_info("sample_lab", lab_root)["devices"]
+    assert sorted(persisted) == ["R1", "R2", "R5"]
+    assert persisted["R1"]["address"] == "192.0.2.11"  # untouched
+    assert persisted["R2"]["address"] == "192.0.2.12"  # untouched
+
+
+def test_commit_from_nested_jump_host_mode_preserves_sibling_devices(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_jump_host("jump2")
+    session.set_jump_host_field("type", "host")
+    session.set_jump_host_field("address", "192.0.2.20")
+    session.set_jump_host_field("transport", "ssh")
+    assert session.mode == "access_jump_host"
+    session.commit()
+    persisted = lab.load_access_info("sample_lab", lab_root)
+    assert sorted(persisted["devices"]) == ["R1", "R2"]
+    assert sorted(persisted["jump_hosts"]) == ["jump1", "jump2"]
+
+
+def test_editing_one_device_preserves_all_siblings_and_unrelated_fields(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R1")
+    session.set_device_field("username", "brand-new-user")
+    session.commit()
+    persisted = lab.load_access_info("sample_lab", lab_root)
+    assert sorted(persisted["devices"]) == ["R1", "R2"]
+    assert persisted["devices"]["R1"]["username"] == "brand-new-user"
+    assert persisted["devices"]["R1"]["address"] == "192.0.2.11"  # unrelated field untouched
+    assert persisted["devices"]["R2"]["address"] == "192.0.2.12"  # sibling untouched
+    assert sorted(persisted["jump_hosts"]) == ["jump1"]  # unrelated jump host untouched
+
+
+def test_deleting_one_device_preserves_all_siblings(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.remove_device("R2")
+    session.commit()
+    persisted = lab.load_access_info("sample_lab", lab_root)
+    assert sorted(persisted["devices"]) == ["R1"]
+    assert sorted(persisted["jump_hosts"]) == ["jump1"]  # unrelated jump host untouched
+
+
+def test_recreate_device_after_delete_preserves_siblings_on_commit(lab_root):
+    """The 'recreating one device' variant of the reported scenario."""
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.remove_device("R2")
+    session.enter_access_info_device("R2")
+    session.set_device_field("type", "iosxr")
+    session.set_device_field("address", "192.0.2.200")
+    session.commit()
+    persisted = lab.load_access_info("sample_lab", lab_root)
+    assert sorted(persisted["devices"]) == ["R1", "R2"]
+    assert persisted["devices"]["R1"]["address"] == "192.0.2.11"
+    assert persisted["devices"]["R2"]["address"] == "192.0.2.200"
+
+
+def test_no_scoped_render_call_affects_committed_candidate_state(lab_root):
+    """Rendering (`show`/`show configuration`) must never be used as, or
+    influence, commit's source of truth -- calling the scoped renderer
+    several times before commit must not perturb the real candidate."""
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R5")
+    session.set_device_field("type", "iosxr")
+    for _ in range(3):
+        climain.render_configuration_candidate(session)
+        climain.render_committed_definition(session)
+    assert sorted(session.definition_candidate["devices"]) == ["R1", "R2", "R5"]
+    session.commit()
+    assert sorted(lab.load_access_info("sample_lab", lab_root)["devices"]) == ["R1", "R2", "R5"]
+
+
 def test_access_info_switch_guard_matches_topology_guard(lab_root):
     session = cfgmod.CliSession(lab_root)
     session.enter_configure()

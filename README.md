@@ -161,9 +161,14 @@ stdio protocol.
   copied from a `show` output) runs each physical line through the same
   grammar/handlers as manually typed input, in order, so mode-changing
   lines (`device`/`exit`/`root`/`end`/`clear`/`commit`/...) take effect
-  before the next line runs. Leading indentation and standalone `!`
-  separator lines are ignored; processing stops at the first invalid line,
-  with earlier lines left in the candidate. See
+  before the next line runs. Leading indentation is stripped; processing
+  stops at the first invalid line, with earlier lines left in the
+  candidate. A standalone `!` separator line has a narrow, explicit
+  meaning bounded to access-info's own three modes (exactly one level up,
+  mirroring the renderer's own block-closing convention, so a rendered
+  access-info block pastes back without manually inserting `exit`
+  between sibling blocks); everywhere else, including global
+  configuration mode and EXEC, it is a safe no-op. See
   [docs/cli_reference.md](docs/cli_reference.md#multi-line-configuration-paste).
 - **Fixed CLI keywords are case-insensitive**; **object identifiers —
   topology, scenario, reference, access-info, and device names — are

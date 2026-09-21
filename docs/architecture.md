@@ -500,6 +500,30 @@ definition that was only just created or edited in the very same commit,
 and that definition must already exist on disk by the time the selection
 referencing it is written.
 
+A nested submode (a topology/access-info device, or an access-info jump
+host) is only a context pointer (`current_device_name` /
+`current_jump_host_name`) into that one owning definition candidate — it
+never becomes, or is backed by, a second independent candidate. Entering
+`device R4` from an existing access-info definition adds `R4` to the
+*same* `definition_candidate["devices"]` dict that already holds every
+other committed device; `commit` issued from inside `R4`'s own submode
+persists that whole dict, siblings included, never a scoped fragment.
+`show`/`show configuration` inside a submode *is* scoped to just that one
+object (see cli_reference.md), but that is a rendering choice only — it
+must never be read as "this is the only object in the candidate," and it
+is never commit's source of truth (commit reads `definition_candidate`
+directly, never a renderer's output).
+
+`show configuration`'s delta for access-info devices/jump-hosts is
+computed against both the committed and candidate maps: an object
+present in committed but absent from the candidate (removed via `no
+device <name>` / `no jump-host <name>`) renders as a single ` no device
+<name>` / ` no jump-host <name>` line, not just silently absent — see
+cli_reference.md's "Uncommitted-changes-only `show configuration`" for
+the full rendering rules, including the access-info-only standalone `!`
+paste round-trip behavior (cli_reference.md's "Multi-line configuration
+paste").
+
 ### Command grammar as the single source of truth
 
 `cli/grammar.py` builds one trie per CLI mode (EXEC, global, running-config,

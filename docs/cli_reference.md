@@ -756,8 +756,28 @@ network-lab(config-access-device-R2)#
 - Leading indentation (as produced by `show`/`show running-config`) is
   stripped from each line; internal spacing, punctuation, and special
   characters in a value (e.g. `!` in a password) are preserved exactly.
-- Blank lines, and a standalone `!` line (a visual separator in
-  `show`/`show running-config` output), are ignored.
+- Blank lines are ignored.
+- A standalone `!` line (a visual block-closing separator in
+  `show`/`show running-config` output) has a narrow, explicit meaning
+  **only** inside a multi-line paste, and **only** in access-info's own
+  three modes:
+
+  | Current mode when the `!` line is reached | Effect |
+  |---|---|
+  | `config-access-device-<name>` | Exactly one level up, to `config-access-info-<definition>`. |
+  | `config-access-jump-host-<name>` | Exactly one level up, to `config-access-info-<definition>`. |
+  | `config-access-info-<definition>` | Exactly one level up, to `config` (global configuration). |
+  | anywhere else (`config`, EXEC, topology/scenario/reference modes, ...) | No-op: never `exit`/`end`/`quit`, never changes candidate state, never ends the paste, never terminates the CLI. |
+
+  This is what makes a rendered access-info block (device/jump-host
+  blocks each closed by their own `!`, and the whole block closed by a
+  final `!`) pasteable back without manually inserting `exit` between
+  every sibling block. It is deliberately **not** a generic `!` = `exit`
+  alias: topology/scenario/reference paste behavior is unchanged, and an
+  extra stray trailing `!` (an imperfect copy/paste) is always safe —
+  once the paste reaches global configuration mode or EXEC, further `!`
+  lines simply do nothing. A single manually typed `!` (not part of a
+  multi-line paste) is unaffected by any of this.
 - Processing stops at the first invalid or failing line — commands from
   earlier lines remain in the candidate (no automatic rollback); use
   `clear` to discard them if the paste didn't go as intended.
@@ -1080,7 +1100,14 @@ mathematically minimal generic recursive diff:
 
 - **Structured additions/removals** use the same set/`no` rendering, e.g.
   a newly-added `reference` shows as an addition, `no access-info` shows as
-  `no access-info`, `no reference sr_mpls` shows as that line.
+  `no access-info`, `no reference sr_mpls` shows as that line. A whole
+  access-info device/jump-host removed via `no device <name>` / `no
+  jump-host <name>` shows the same way, as a single ` no device <name>` /
+  ` no jump-host <name>` line (not the full block a *modified* object
+  gets) — e.g. removing a committed `R4` shows `no device R4`, while a
+  device that never existed in committed state and was removed again in
+  the same session (or removed and then recreated identically) shows no
+  diff at all, since the net effect against committed is nothing.
 
 - **Open/complex structures** without a direct CLI representation below
   the whole-document level (scenario/reference content — schema

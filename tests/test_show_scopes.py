@@ -289,3 +289,147 @@ def test_after_commit_running_config_shows_newly_committed_state(lab_root):
     session.set_topology_description("Just committed.")
     session.commit()
     assert "Just committed." in climain.render_committed_definition(session)
+
+
+# ==========================================================================
+# Step A bug 0.1: whole-object deletion was invisible in `show
+# configuration`. `_named_objects_delta()` only ever walked the candidate
+# map, so a device/jump-host removed via `no device <name>` / `no
+# jump-host <name>` never appeared in the delta at all, even though
+# `commit` correctly persisted the removal -- fixed to also walk the
+# committed map for names now absent from the candidate, rendered as a
+# single ` no <keyword> <name>` line (the same convention as
+# _running_config_delta_lines()'s `no reference <name>`).
+# ==========================================================================
+
+
+def test_deleted_device_appears_in_configuration_delta_as_no_device(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.remove_device("R2")
+    assert climain.render_configuration_candidate(session) == "access-info sample_lab\n no device R2\n!"
+    # Committed state is untouched before commit.
+    assert "R2" in lab.load_access_info("sample_lab", lab_root)["devices"]
+
+
+def test_deleted_jump_host_appears_in_configuration_delta_as_no_jump_host(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.remove_jump_host("jump1")
+    assert climain.render_configuration_candidate(session) == "access-info sample_lab\n no jump-host jump1\n!"
+
+
+def test_deletion_diff_disappears_after_commit(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.remove_device("R2")
+    session.commit()
+    assert climain.render_configuration_candidate(session) == ""
+    assert "R2" not in lab.load_access_info("sample_lab", lab_root)["devices"]
+
+
+def test_clear_after_deletion_restores_object_and_diff_disappears(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.remove_device("R2")
+    assert " no device R2" in climain.render_configuration_candidate(session)
+    session.clear()
+    assert "R2" in session.definition_candidate["devices"]
+    assert climain.render_configuration_candidate(session) == ""
+
+
+def test_deletion_diff_shown_alongside_addition(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.remove_device("R2")
+    session.enter_access_info_device("R5")
+    session.set_device_field("type", "iosxr")
+    climain.h_exit(session, {})  # back to access_info mode: whole-definition scope
+    text = climain.render_configuration_candidate(session)
+    assert " no device R2" in text
+    assert " device R5" in text
+    assert "  type iosxr" in text
+
+
+# ---- net-zero candidate changes never appear in the delta (Step A section 16) ----
+
+
+def test_add_then_delete_new_device_produces_no_net_diff(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R5")
+    session.set_device_field("type", "iosxr")
+    session.remove_device("R5")
+    assert climain.render_configuration_candidate(session) == ""
+
+
+def test_delete_then_restore_identical_device_produces_no_net_diff(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    original_r1 = dict(session.definition_candidate["devices"]["R1"])
+    session.remove_device("R1")
+    session.enter_access_info_device("R1")
+    for field_name, value in original_r1.items():
+        session.set_device_field(field_name, value)
+    assert session.definition_candidate["devices"]["R1"] == original_r1
+    assert climain.render_configuration_candidate(session) == ""
+
+
+def test_modify_then_restore_leaf_produces_no_net_diff(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R1")
+    session.set_device_field("address", "192.0.2.99")
+    session.set_device_field("address", "192.0.2.11")  # restore original
+    assert climain.render_configuration_candidate(session) == ""
+
+
+# ---- leaf deletion rendering (Step A section 13/39) ----
+
+
+def test_cleared_leaf_of_existing_object_renders_as_no_field(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R1")
+    session.clear_device_field("address")
+    assert climain.render_configuration_candidate(session) == "access-info sample_lab\n device R1\n  no address\n !\n!"
+
+
+def test_leaf_absent_from_committed_added_then_cleared_produces_no_diff(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R2")  # R2 has no committed username
+    session.set_device_field("username", "temp")
+    session.clear_device_field("username")
+    assert climain.render_configuration_candidate(session) == ""
+
+
+# ---- rendering scope is never commit scope (Step A section 41) ----
+
+
+def test_device_scoped_show_never_implies_it_is_the_only_candidate_object(lab_root):
+    """`show`/`show configuration` inside a device submode is scoped to
+    just that device (existing convention), but this must never be
+    confused with what `commit` actually persists -- see
+    test_commit_from_nested_device_mode_preserves_sibling_devices in
+    test_config.py for the commit-side proof."""
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R2")
+    session.set_device_field("address", "192.0.2.77")
+    scoped_text = climain.render_configuration_candidate(session)
+    assert scoped_text == "access-info sample_lab\n device R2\n  address 192.0.2.77\n !\n!"
+    assert "R1" not in scoped_text
+    # The full candidate, unlike the scoped view, still has R1.
+    assert "R1" in session.definition_candidate["devices"]

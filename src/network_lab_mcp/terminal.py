@@ -24,8 +24,11 @@ name and the launched command differ.
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import subprocess
+from datetime import datetime
+from pathlib import Path
 
 TMUX_SOCKET_NAME = "network-lab-mcp"
 
@@ -35,6 +38,16 @@ BOOTSTRAP_SESSION = "network-lab-bootstrap-initializer"
 
 HISTORY_LIMIT = 20000
 DEFAULT_READ_LINES = 100
+
+# Repo checkout root, computed the same way lab.find_lab_root() computes its
+# own repo-root-relative-to-this-file's-package-directory path -- kept
+# independent (no import of network_lab_mcp.lab) so this module never
+# depends on lab/ existing or being valid.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+LOGS_ROOT = _REPO_ROOT / "logs" / "terminal"
+
+_SESSION_START_FORMAT = "%Y%m%dT%H%M%S"
+_LOG_FILENAME_RE = re.compile(r"^\d{8}T\d{6}\.log$")
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
@@ -253,6 +266,86 @@ def _close_session(session_name: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Persistent terminal transcript logging (logs/terminal/<device-id>/*.log)
+#
+# tmux's own pipe-pane mechanism is the single source of truth for what
+# gets logged -- this module never re-renders or duplicates pane content
+# into a second log path. Logging is started once, right after a session
+# is newly created (never on reuse, since the pipe is already attached to
+# that pane for its whole lifetime); tmux pane state remains the runtime
+# session SSOT and terminal_read() is unchanged -- these logs are a
+# separate, persistent, write-only historical record.
+# --------------------------------------------------------------------------
+
+
+def _device_log_dir(device_name: str) -> Path:
+    _validate_identifier(device_name, "Device name")
+    return LOGS_ROOT / device_name
+
+
+def _session_start_timestamp() -> str:
+    return datetime.now().strftime(_SESSION_START_FORMAT)
+
+
+def _start_session_logging(session_name: str, device_name: str) -> Path:
+    log_dir = _device_log_dir(device_name)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{_session_start_timestamp()}.log"
+    # -o: only start piping if this pane isn't already being piped (a no-op
+    # on an already-logging pane, so this is safe to call unconditionally
+    # right after session creation).
+    _run(["pipe-pane", "-o", "-t", session_name, f"cat >> {shlex.quote(str(log_path))}"])
+    return log_path
+
+
+def list_logged_device_ids() -> list[str]:
+    """Device IDs that have at least one log directory under logs/terminal/."""
+    if not LOGS_ROOT.is_dir():
+        return []
+    return sorted(p.name for p in LOGS_ROOT.iterdir() if p.is_dir() and _NAME_RE.match(p.name))
+
+
+def list_device_logs(device_name: str) -> list[tuple[datetime, str]]:
+    """List (session_start, filename) pairs for one device, newest first.
+
+    Returns an empty list for an unknown device or one with no logs yet --
+    never raises for that; this is display-only, read-only data."""
+    if not _NAME_RE.match(device_name):
+        return []
+    log_dir = _device_log_dir(device_name)
+    if not log_dir.is_dir():
+        return []
+    entries = []
+    for path in log_dir.iterdir():
+        if not path.is_file() or not _LOG_FILENAME_RE.match(path.name):
+            continue
+        try:
+            started = datetime.strptime(path.stem, _SESSION_START_FORMAT)
+        except ValueError:
+            continue
+        entries.append((started, path.name))
+    entries.sort(key=lambda entry: entry[0], reverse=True)
+    return entries
+
+
+def read_device_log(device_name: str, filename: str) -> str:
+    """Read one device's log file by exact filename.
+
+    Fails closed (TerminalError, never a silent guess) unless `device_name`
+    is a valid identifier and `filename` is exactly one of that device's own
+    already-listed log files -- this rejects path traversal (`../`, an
+    absolute path, or any name not matching the fixed `<timestamp>.log`
+    format) without needing to special-case those forms individually."""
+    if not _NAME_RE.match(device_name):
+        raise TerminalError(f"Device '{device_name}' has no terminal logs.")
+    valid_filenames = {name for _, name in list_device_logs(device_name)}
+    if filename not in valid_filenames:
+        raise TerminalError(f"No log file '{filename}' for device '{device_name}'.")
+    log_path = _device_log_dir(device_name) / filename
+    return log_path.read_text(encoding="utf-8", errors="replace")
+
+
+# --------------------------------------------------------------------------
 # Transport command construction
 # --------------------------------------------------------------------------
 
@@ -313,6 +406,8 @@ def open_device_terminal(device_name: str, device_config: dict) -> dict:
     session_name = derive_production_session_name(device_name)
     transport, command = _build_transport_command(device_config)
     reused = _ensure_managed_session(session_name, command)
+    if not reused:
+        _start_session_logging(session_name, device_name)
     return {
         "device": device_name,
         "session_name": session_name,

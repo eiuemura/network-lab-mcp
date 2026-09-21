@@ -20,3 +20,8 @@ lab/topologies/*.yaml
 # user creates locally, e.g. via the CLI) stays untracked and ignored.
 lab/access-info/*.yaml
 !lab/access-info/sample.yaml
+
+# Persistent terminal session transcripts (logs/terminal/<device-id>/*.log)
+# are runtime artifacts, potentially containing full device output --
+# never committed.
+logs/

@@ -57,9 +57,21 @@ class CliContext:
     topology_candidate_device_names: tuple[str, ...] = ()
     access_info_candidate_device_names: tuple[str, ...] = ()
     access_info_candidate_jump_host_names: tuple[str, ...] = ()
+    # `show logging <device-id> <log-file>`: device IDs that have at least
+    # one terminal log, and each one's own log filenames -- keyed so the
+    # third-level argument's provider (which needs to know *which* device
+    # was already typed) can look up just that device's files.
+    log_device_ids: tuple[str, ...] = ()
+    log_files_by_device: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
-Provider = Callable[[CliContext, str], list[str]]
+# A provider receives the already-committed raw tokens of the command so
+# far (e.g. for `show logging R1 <partial>`, `committed` is
+# ("show", "logging", "R1")) in addition to the context and the partial
+# token being completed -- needed by a provider whose candidates depend on
+# an earlier argument in the *same* command (see provide_log_files) rather
+# than on session-wide context. Existing providers ignore it.
+Provider = Callable[[CliContext, str, tuple[str, ...]], list[str]]
 
 
 @dataclass(frozen=True)
@@ -141,56 +153,72 @@ def validate_port(value: str) -> ValidationOutcome:
 # --------------------------------------------------------------------------
 
 
-def provide_topology_names(ctx: CliContext, prefix: str) -> list[str]:
+def provide_topology_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     return [n for n in ctx.topology_names if n.startswith(prefix)]
 
 
-def provide_scenario_names(ctx: CliContext, prefix: str) -> list[str]:
+def provide_scenario_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     return [n for n in ctx.scenario_names if n.startswith(prefix)]
 
 
-def provide_reference_names(ctx: CliContext, prefix: str) -> list[str]:
+def provide_reference_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     return [n for n in ctx.reference_names if n.startswith(prefix)]
 
 
-def provide_access_info_names(ctx: CliContext, prefix: str) -> list[str]:
+def provide_access_info_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     return [n for n in ctx.access_info_names if n.startswith(prefix)]
 
 
-def provide_candidate_reference_names(ctx: CliContext, prefix: str) -> list[str]:
+def provide_candidate_reference_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     return [n for n in ctx.candidate_reference_names if n.startswith(prefix)]
 
 
-def provide_topology_device_names(ctx: CliContext, prefix: str) -> list[str]:
+def provide_topology_device_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     return [n for n in ctx.topology_candidate_device_names if n.startswith(prefix)]
 
 
-def provide_access_info_device_names(ctx: CliContext, prefix: str) -> list[str]:
+def provide_access_info_device_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     return [n for n in ctx.access_info_candidate_device_names if n.startswith(prefix)]
 
 
-def provide_transport_values(ctx: CliContext, prefix: str) -> list[str]:
+def provide_transport_values(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     lowered = prefix.lower()
     return [v for v in ("ssh", "telnet") if v.startswith(lowered)]
 
 
-def provide_device_types(ctx: CliContext, prefix: str) -> list[str]:
+def provide_device_types(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     lowered = prefix.lower()
     return [v for v in lab.DEVICE_TYPES if v.startswith(lowered)]
 
 
-def provide_jump_host_type_values(ctx: CliContext, prefix: str) -> list[str]:
+def provide_jump_host_type_values(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     lowered = prefix.lower()
     return [lab.JUMP_HOST_TYPE] if lab.JUMP_HOST_TYPE.startswith(lowered) else []
 
 
-def provide_jump_host_transport_values(ctx: CliContext, prefix: str) -> list[str]:
+def provide_jump_host_transport_values(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     lowered = prefix.lower()
     return ["ssh"] if "ssh".startswith(lowered) else []
 
 
-def provide_access_info_jump_host_names(ctx: CliContext, prefix: str) -> list[str]:
+def provide_access_info_jump_host_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     return [n for n in ctx.access_info_candidate_jump_host_names if n.startswith(prefix)]
+
+
+def provide_log_device_ids(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    return [n for n in ctx.log_device_ids if n.startswith(prefix)]
+
+
+def provide_log_files(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    """The log filenames available for `show logging <device-id> <file>`
+    depend on which device-id was already typed earlier in this same
+    command -- unlike every other provider here, this one reads
+    `committed` (the raw tokens so far: ("show", "logging", "<device-id>"))
+    instead of, or in addition to, session-wide context."""
+    if not committed:
+        return []
+    device_id = committed[-1]
+    return [n for n in ctx.log_files_by_device.get(device_id, ()) if n.startswith(prefix)]
 
 
 # `help <topic>` is Network Lab MCP's own Quick Start/usage help, distinct
@@ -218,7 +246,7 @@ def validate_help_topic(value: str) -> ValidationOutcome:
     return _fail(f"Invalid help topic '{value}'. Expected one of: {', '.join(sorted(HELP_TOPICS))}.")
 
 
-def provide_help_topics(ctx: CliContext, prefix: str) -> list[str]:
+def provide_help_topics(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     lowered = prefix.lower()
     return [t for t in HELP_TOPICS if t.startswith(lowered)]
 
@@ -292,6 +320,7 @@ def _add_show_subtree(
     include_configuration: bool,
     configuration_description: str = "Show candidate configuration",
     include_version: bool = False,
+    include_logging: bool = False,
     bare_show: bool = False,
     show_keyword_description: str = "Show information",
 ) -> None:
@@ -317,6 +346,38 @@ def _add_show_subtree(
         candidate.set_command(f"{mode}.show_configuration", configuration_description)
     if bare_show:
         show.set_command(f"{mode}.show_configuration", configuration_description)
+    if include_logging:
+        _add_logging_subtree(show, mode)
+
+
+def _add_logging_subtree(show_node: Node, mode: str) -> None:
+    """`show logging` (EXEC only): bare (all devices), `<device-id>` (one
+    device's logs), or `<device-id> <log-file>` (that log's contents).
+    Every level is itself a complete command (`<cr>`) as well as accepting
+    a further, more specific token -- the same "node carries both a
+    command and children" mechanism used by bare `show`/`help`."""
+    logging_node = show_node.add_literal("logging", "Display terminal session logs")
+    logging_node.set_command(f"{mode}.show_logging", "Display terminal session logs for all devices")
+
+    device_arg = Argument(
+        "device_id",
+        "Device terminal logs",
+        provider=provide_log_device_ids,
+        hint="<device-id>",
+        enumerate_when_empty=True,
+    )
+    device_next = logging_node.add_argument(device_arg)
+    device_next.set_command(f"{mode}.show_logging_device", "Display terminal logs for one device")
+
+    file_arg = Argument(
+        "log_file",
+        "Terminal log file",
+        provider=provide_log_files,
+        hint="<log-file>",
+        enumerate_when_empty=True,
+    )
+    file_next = device_next.add_argument(file_arg)
+    file_next.set_command(f"{mode}.show_logging_device_file", "Display the contents of one terminal log file")
 
 
 def _add_help_subtree(root: Node, mode: str) -> None:
@@ -381,6 +442,7 @@ def _build_exec_root() -> Node:
         running_config_description="Show committed MCP definition selection",
         include_configuration=False,
         include_version=True,
+        include_logging=True,
     )
     _add_help_subtree(root, "exec")
 
@@ -1064,7 +1126,7 @@ def complete(mode: str, text_before_cursor: str, ctx: CliContext) -> CompletionR
         argument = node.argument
         if argument.sensitive or argument.provider is None:
             return CompletionResult([], partial)
-        return CompletionResult(sorted(argument.provider(ctx, partial)), partial)
+        return CompletionResult(sorted(argument.provider(ctx, partial, tuple(committed))), partial)
 
     if node.literal_children:
         lowered = partial.lower()
@@ -1085,16 +1147,23 @@ def help(mode: str, text_before_cursor: str, ctx: CliContext) -> HelpResult:
         lines: list[HelpLine] = []
         if argument.sensitive:
             lines.append(HelpLine(argument.display_hint(), argument.description))
-        elif argument.enumerate_when_empty and partial == "":
+        elif argument.enumerate_when_empty and partial == "" and argument.value_help:
             for value, description in argument.value_help.items():
                 lines.append(HelpLine(value, description))
+        elif argument.enumerate_when_empty and partial == "" and argument.provider is not None:
+            # No static value_help (a fixed enum) -- enumerate dynamically
+            # instead, e.g. `show logging ?` listing currently-known device
+            # IDs. Unlike the `creatable` branch below, this never appends
+            # a "create" hint: these are select-only identifiers.
+            for value in sorted(argument.provider(ctx, "", tuple(committed))):
+                lines.append(HelpLine(value, argument.description))
         elif argument.creatable and partial == "" and argument.provider is not None:
-            for value in sorted(argument.provider(ctx, "")):
+            for value in sorted(argument.provider(ctx, "", tuple(committed))):
                 lines.append(HelpLine(value, argument.existing_label or argument.description))
             lines.append(HelpLine(argument.display_hint(), argument.create_label or argument.description))
         elif partial != "" and argument.provider is not None:
             label = argument.existing_label if argument.creatable else argument.description
-            for value in sorted(argument.provider(ctx, partial)):
+            for value in sorted(argument.provider(ctx, partial, tuple(committed))):
                 lines.append(HelpLine(value, label))
         else:
             lines.append(HelpLine(argument.display_hint(), argument.description))

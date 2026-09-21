@@ -34,6 +34,7 @@ from prompt_toolkit.key_binding import KeyBindings
 
 import network_lab_mcp
 from network_lab_mcp import lab
+from network_lab_mcp import terminal
 from network_lab_mcp.cli import config as cfgmod
 from network_lab_mcp.cli import editor
 from network_lab_mcp.cli import grammar
@@ -172,6 +173,11 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
         elif session.definition_kind == "access_info":
             access_info_device_names = tuple((session.definition_candidate.get("devices") or {}).keys())
             access_info_jump_host_names = tuple((session.definition_candidate.get("jump_hosts") or {}).keys())
+    log_device_ids = tuple(terminal.list_logged_device_ids())
+    log_files_by_device = {
+        device_id: tuple(filename for _, filename in terminal.list_device_logs(device_id))
+        for device_id in log_device_ids
+    }
     return grammar.CliContext(
         topology_names=tuple(lab.list_topology_names(lab_root)),
         scenario_names=tuple(lab.list_scenario_names(lab_root)),
@@ -181,6 +187,8 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
         topology_candidate_device_names=topology_device_names,
         access_info_candidate_device_names=access_info_device_names,
         access_info_candidate_jump_host_names=access_info_jump_host_names,
+        log_device_ids=log_device_ids,
+        log_files_by_device=log_files_by_device,
     )
 
 
@@ -785,6 +793,7 @@ def render_help_cli() -> str:
             "  end                   Return to EXEC (blocked while uncommitted changes exist)",
             "  clear                 Discard uncommitted configure-session changes",
             "  Ctrl-C                Cancel the current input line only",
+            "  show logging          (EXEC) List/view persistent terminal session logs",
             "",
             "Pasting a multi-line configuration block is supported: each line runs in",
             "order as if typed manually, stopping at the first invalid line.",
@@ -817,6 +826,55 @@ def h_help_topic(session: cfgmod.CliSession, args: dict) -> None:
 
 def h_show_version(session: cfgmod.CliSession, args: dict) -> None:
     print(render_version_info())
+
+
+# --------------------------------------------------------------------------
+# `show logging` (EXEC only) -- read-only terminal transcript log listing.
+# --------------------------------------------------------------------------
+
+
+def _render_log_table(columns: tuple[str, ...], rows: list[tuple[str, ...]]) -> str:
+    if not rows:
+        return "No terminal logs found."
+    widths = [
+        max(len(columns[i]), max((len(row[i]) for row in rows), default=0)) for i in range(len(columns))
+    ]
+    lines = [
+        "  ".join(columns[i].ljust(widths[i]) for i in range(len(columns))),
+        "  ".join("-" * widths[i] for i in range(len(columns))),
+    ]
+    for row in rows:
+        lines.append("  ".join(row[i].ljust(widths[i]) for i in range(len(columns))))
+    return "\n".join(lines)
+
+
+def _format_session_start(started) -> str:
+    return started.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def h_show_logging(session: cfgmod.CliSession, args: dict) -> None:
+    rows = [
+        (device_id, _format_session_start(started), filename)
+        for device_id in sorted(terminal.list_logged_device_ids())
+        for started, filename in terminal.list_device_logs(device_id)
+    ]
+    rows.sort(key=lambda row: row[1], reverse=True)
+    print(_render_log_table(("Device", "Session Start", "Log File"), rows))
+
+
+def h_show_logging_device(session: cfgmod.CliSession, args: dict) -> None:
+    device_id = args["device_id"]
+    rows = [(_format_session_start(started), filename) for started, filename in terminal.list_device_logs(device_id)]
+    if not rows:
+        print(f"No terminal logs found for device '{device_id}'.")
+        return
+    print(_render_log_table(("Session Start", "Log File"), rows))
+
+
+def h_show_logging_device_file(session: cfgmod.CliSession, args: dict) -> None:
+    content = terminal.read_device_log(args["device_id"], args["log_file"])
+    if content:
+        print(content, end="" if content.endswith("\n") else "\n")
 
 
 def h_commit(session: cfgmod.CliSession, args: dict) -> None:
@@ -1062,6 +1120,9 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "exec.configure": h_exec_configure,
     "exec.show_running_config": h_show_running_config,
     "exec.show_version": h_show_version,
+    "exec.show_logging": h_show_logging,
+    "exec.show_logging_device": h_show_logging_device,
+    "exec.show_logging_device_file": h_show_logging_device_file,
     "exec.help": h_help,
     "exec.help_topic": h_help_topic,
     "exec.exit": h_exec_exit,
@@ -1216,7 +1277,13 @@ def execute_command_line(session: cfgmod.CliSession, line: str) -> bool:
     handler = HANDLERS[result.action]
     try:
         handler(session, result.args or {})
-    except (cfgmod.ConfigError, cfgmod.CommitValidationError, lab.LabConfigError, editor.EditorError) as exc:
+    except (
+        cfgmod.ConfigError,
+        cfgmod.CommitValidationError,
+        lab.LabConfigError,
+        editor.EditorError,
+        terminal.TerminalError,
+    ) as exc:
         if isinstance(exc, cfgmod.CommitValidationError):
             for error in exc.errors:
                 print(f"% {error}")

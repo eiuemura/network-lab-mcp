@@ -458,11 +458,12 @@ def test_show_version_is_exec_only():
 
 def test_show_help_lists_version_only_in_exec():
     ctx = make_ctx()
-    assert [line.token for line in grammar.help("exec", "show ", ctx).lines] == ["running-config", "version"]
+    assert [line.token for line in grammar.help("exec", "show ", ctx).lines] == ["running-config", "version", "logging"]
 
     for mode in ("global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
         tokens = [line.token for line in grammar.help(mode, "show ", ctx).lines]
         assert "version" not in tokens, mode
+        assert "logging" not in tokens, mode
 
 
 def test_show_version_tab_completion_exec_only():

@@ -291,7 +291,7 @@ historical record at `logs/terminal/<device-id>/<session-start>.log`
 (`YYYYMMDDTHHMMSS`), which is gitignored. `show logging` (EXEC only, see
 below) is the only reader of these files.
 
-### Terminal log deletion (Step B / Step B.1)
+### Terminal log deletion (Step B / Step B.1 / Step B.1a)
 
 `delete logging all` / `delete logging <device-id> all` / `delete
 logging <device-id> <log-file>` (files only) and `delete logging all
@@ -302,6 +302,19 @@ through `terminal.py`'s deletion backend, is built on the exact same
 enumeration `show logging` reads (`list_logged_device_ids()` /
 `list_device_logs()`) -- a symlink (a log file, or a device directory
 itself) is excluded, never followed or treated as eligible.
+
+`show logging`'s own command surface briefly conflated two different
+views: Step B.1 changed bare `show logging` from its original flat
+per-file listing into the per-device eligible-log-count summary. Step
+B.1a split these back into two separate commands -- bare `show logging`
+is once again the original flat listing (`h_show_logging()` in
+cli/main.py, restored verbatim from the Step B implementation), and
+`show logging summary` (`h_show_logging_summary()`) is the count table,
+reachable as `logging`'s `summary` literal child living alongside its
+existing dynamic `<device-id>` argument -- the same "a node combines
+fixed literal children with a further dynamic argument" grammar shape
+Step B/B.1 already introduced for `delete logging`'s `all`/`directory`,
+reused here with no further grammar core changes.
 
 `terminal.DeletionPlan` is the shared unit of work: an immutable,
 comparable (`==`) snapshot of exactly which files and which device

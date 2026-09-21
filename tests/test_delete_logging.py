@@ -716,8 +716,31 @@ def test_delete_all_logs_globally_preserves_unrelated_files(isolated_logs, lab_r
 
 
 # ==========================================================================
-# `show logging` bare summary (Step B.1 sections 14/15/42-45/70-73)
+# `show logging` bare (restored, pre-Step-B.1 flat listing) vs. explicit
+# `show logging summary` (Step B.1's per-device count table, Step B.1a
+# sections 2-8/14/23-28/35/70-73)
 # ==========================================================================
+
+
+def test_bare_show_logging_matches_restored_step_b_behavior(isolated_logs, lab_root, capsys):
+    """Step B.1a section 23: bare `show logging` must match the exact
+    pre-Step-B.1 (commit 972046b) flat, per-file, newest-first listing --
+    not the Step B.1 summary table, which now lives at `show logging
+    summary` instead."""
+    _write_log(isolated_logs, "R1", "20260921T091500")
+    _write_log(isolated_logs, "R2", "20260921T091505")
+    _write_log(isolated_logs, "R1", "20260921T103210")
+    session = cfgmod.CliSession(lab_root)
+    climain.execute_command_line(session, "show logging")
+    out = capsys.readouterr().out
+    lines = out.strip().splitlines()
+    data_lines = lines[2:]  # skip header + dashes
+    assert [line.split()[0] for line in data_lines] == ["R1", "R2", "R1"]
+    assert "20260921T103210.log" in data_lines[0]
+    assert "20260921T091505.log" in data_lines[1]
+    assert "20260921T091500.log" in data_lines[2]
+    # Never the summary shape.
+    assert "Total" not in out
 
 
 def test_show_logging_summary_counts_and_total(isolated_logs, lab_root, capsys):
@@ -727,7 +750,7 @@ def test_show_logging_summary_counts_and_total(isolated_logs, lab_root, capsys):
     (isolated_logs / "SW2").mkdir(parents=True)  # empty, valid directory
 
     session = cfgmod.CliSession(lab_root)
-    climain.execute_command_line(session, "show logging")
+    climain.execute_command_line(session, "show logging summary")
     out = capsys.readouterr().out
     lines = out.strip().splitlines()
     # Semantic check, not exact spacing: one row per device with its
@@ -738,7 +761,7 @@ def test_show_logging_summary_counts_and_total(isolated_logs, lab_root, capsys):
     assert any(line.split()[:2] == ["Total", "3"] for line in lines)
 
 
-def test_show_logging_excludes_unknown_entries_from_count(isolated_logs, lab_root, capsys):
+def test_show_logging_summary_excludes_unknown_entries_from_count(isolated_logs, lab_root, capsys):
     device_dir = isolated_logs / "R1"
     device_dir.mkdir(parents=True)
     (device_dir / "20260921T090000.log").write_text("a")
@@ -746,7 +769,7 @@ def test_show_logging_excludes_unknown_entries_from_count(isolated_logs, lab_roo
     (device_dir / "nested").mkdir()
 
     session = cfgmod.CliSession(lab_root)
-    climain.execute_command_line(session, "show logging")
+    climain.execute_command_line(session, "show logging summary")
     out = capsys.readouterr().out
     lines = out.strip().splitlines()
     assert any(line.split()[:2] == ["R1", "1"] for line in lines)
@@ -754,40 +777,56 @@ def test_show_logging_excludes_unknown_entries_from_count(isolated_logs, lab_roo
     assert "notes.txt" not in out
 
 
-def test_show_logging_after_file_only_cleanup_shows_zero(isolated_logs, lab_root, monkeypatch, capsys):
+def test_show_logging_summary_after_file_only_cleanup_shows_zero(isolated_logs, lab_root, monkeypatch, capsys):
     _write_log(isolated_logs, "SW2", "20260921T090000", "a")
     _answer(monkeypatch, "y")
     session = cfgmod.CliSession(lab_root)
     climain.execute_command_line(session, "delete logging SW2 all")
     capsys.readouterr()
-    climain.execute_command_line(session, "show logging")
+    climain.execute_command_line(session, "show logging summary")
     lines = capsys.readouterr().out.strip().splitlines()
     assert any(line.split()[:2] == ["SW2", "0"] for line in lines)
 
 
-def test_show_logging_after_directory_cleanup_no_longer_lists_device(isolated_logs, lab_root, monkeypatch, capsys):
+def test_show_logging_summary_after_directory_cleanup_no_longer_lists_device(
+    isolated_logs, lab_root, monkeypatch, capsys
+):
     _write_log(isolated_logs, "SW2", "20260921T090000", "a")
     _answer(monkeypatch, "y")
     session = cfgmod.CliSession(lab_root)
     climain.execute_command_line(session, "delete logging SW2 directory")
     capsys.readouterr()
-    climain.execute_command_line(session, "show logging")
+    climain.execute_command_line(session, "show logging summary")
     out = capsys.readouterr().out
     assert "SW2" not in out
     assert out.strip() == "No terminal logs found."
 
 
-def test_show_logging_empty_root_is_safe(isolated_logs, lab_root, capsys):
+def test_show_logging_bare_empty_root_is_safe(isolated_logs, lab_root, capsys):
     session = cfgmod.CliSession(lab_root)
     climain.execute_command_line(session, "show logging")
     assert capsys.readouterr().out.strip() == "No terminal logs found."
     assert not isolated_logs.exists()  # `show logging` never creates directories
 
 
-def test_show_logging_missing_root_entirely_is_safe(isolated_logs, lab_root, capsys):
+def test_show_logging_bare_missing_root_entirely_is_safe(isolated_logs, lab_root, capsys):
     assert not isolated_logs.exists()
     session = cfgmod.CliSession(lab_root)
     climain.execute_command_line(session, "show logging")
+    assert capsys.readouterr().out.strip() == "No terminal logs found."
+
+
+def test_show_logging_summary_empty_root_is_safe(isolated_logs, lab_root, capsys):
+    session = cfgmod.CliSession(lab_root)
+    climain.execute_command_line(session, "show logging summary")
+    assert capsys.readouterr().out.strip() == "No terminal logs found."
+    assert not isolated_logs.exists()
+
+
+def test_show_logging_summary_missing_root_entirely_is_safe(isolated_logs, lab_root, capsys):
+    assert not isolated_logs.exists()
+    session = cfgmod.CliSession(lab_root)
+    climain.execute_command_line(session, "show logging summary")
     assert capsys.readouterr().out.strip() == "No terminal logs found."
 
 

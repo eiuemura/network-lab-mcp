@@ -983,15 +983,22 @@ committed active_access_info
   (`YYYYMMDDT HHMMSS` session-start timestamp), gitignored. tmux's pane
   remains the runtime session source of truth and `terminal_read()` is
   unchanged; the log is a separate, write-only historical record. Bare
-  `show logging` (EXEC only) summarizes every valid device logging
-  directory with its eligible log-file count (an empty directory counts
-  as `0` and is still shown); `show logging <device-id>` lists just that
+  `show logging` (EXEC only) lists every device's logs newest-first;
+  `show logging summary` summarizes every valid device logging directory
+  with its eligible log-file count instead (an empty directory counts as
+  `0` and is still shown); `show logging <device-id>` lists just one
   device's logs newest-first; `show logging <device-id> <log-file>` shows
-  one log's contents — all three are read-only and integrated through the
+  one log's contents — all four are read-only and integrated through the
   same grammar SSOT (`?`, `<cr>`, Tab completion).
 
   ```
   network-lab# show logging
+  Device  Session Start        Log File
+  ------  -------------------  --------------------
+  R1      2026-09-21 10:32:10  20260921T103210.log
+  R2      2026-09-21 10:31:55  20260921T103155.log
+
+  network-lab# show logging summary
   Device  Log Files
   ------  ---------
   R1             12

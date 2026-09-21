@@ -1001,6 +1001,21 @@ def _render_log_summary_table(counts: list[tuple[str, int]]) -> str:
 
 
 def h_show_logging(session: cfgmod.CliSession, args: dict) -> None:
+    """Bare `show logging` (Step B.1a: restored to its pre-Step-B.1
+    behavior -- see commit 972046b): a flat listing of every device's
+    persistent log files, newest first, exactly as `show logging` meant
+    before Step B.1 briefly overloaded it with the summary table now
+    available explicitly as `show logging summary`."""
+    rows = [
+        (device_id, _format_session_start(started), filename)
+        for device_id in sorted(terminal.list_logged_device_ids())
+        for started, filename in terminal.list_device_logs(device_id)
+    ]
+    rows.sort(key=lambda row: row[1], reverse=True)
+    print(_render_log_table(("Device", "Session Start", "Log File"), rows))
+
+
+def h_show_logging_summary(session: cfgmod.CliSession, args: dict) -> None:
     device_ids = sorted(terminal.list_logged_device_ids())
     if not device_ids:
         print("No terminal logs found.")
@@ -1513,6 +1528,7 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "exec.show_running_config_reference_name": h_show_running_config_reference_name,
     "exec.show_version": h_show_version,
     "exec.show_logging": h_show_logging,
+    "exec.show_logging_summary": h_show_logging_summary,
     "exec.show_logging_device": h_show_logging_device,
     "exec.show_logging_device_file": h_show_logging_device_file,
     "exec.delete_logging_all": h_delete_logging_all,

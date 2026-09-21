@@ -395,13 +395,24 @@ def _add_running_config_definition_views_subtree(running_node: Node, mode: str) 
 
 
 def _add_logging_subtree(show_node: Node, mode: str) -> None:
-    """`show logging` (EXEC only): bare (all devices), `<device-id>` (one
-    device's logs), or `<device-id> <log-file>` (that log's contents).
-    Every level is itself a complete command (`<cr>`) as well as accepting
-    a further, more specific token -- the same "node carries both a
-    command and children" mechanism used by bare `show`/`help`."""
+    """`show logging` (EXEC only): bare (Step B.1a: the original, flat,
+    per-file listing across every device -- restored to its pre-Step-B.1
+    behavior), `summary` (Step B.1's per-device eligible-log-count table,
+    moved here from bare `show logging`), `<device-id>` (one device's
+    logs), or `<device-id> <log-file>` (that log's contents). Every level
+    is itself a complete command (`<cr>`) as well as accepting a further,
+    more specific token -- the same "node carries both a command and
+    children" mechanism used by bare `show`/`help`. "summary" is a fixed
+    keyword living alongside the dynamic <device-id> argument at the very
+    same node -- see complete()/help()'s generic support (added for
+    Step B, reused as-is for Step B.1's `delete logging all`/`directory`)
+    for a node combining literal children with a further dynamic
+    argument."""
     logging_node = show_node.add_literal("logging", "Display terminal session logs")
     logging_node.set_command(f"{mode}.show_logging", "Display terminal session logs for all devices")
+
+    summary_node = logging_node.add_literal("summary", "Show terminal log summary")
+    summary_node.set_command(f"{mode}.show_logging_summary", "Show terminal log summary")
 
     device_arg = Argument(
         "device_id",

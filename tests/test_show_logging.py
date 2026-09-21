@@ -46,16 +46,16 @@ def test_show_logging_with_empty_log_directory(isolated_logs, lab_root, capsys):
 
 
 def test_show_logging_summarizes_device_counts_and_total(isolated_logs, lab_root, capsys):
-    """Step B.1: bare `show logging` was changed from a flat per-file
-    listing to a per-device count summary (with a Total row) -- this
-    test previously asserted the old flat-listing format, which is now
-    only `show logging <device-id>`'s own behavior (see
-    test_show_logging_device_multiple_sessions_newest_first below)."""
+    """Step B.1a: the Step B.1 per-device count summary (with a Total
+    row) is now the explicit `show logging summary` command -- bare
+    `show logging` was restored to the original flat per-file listing
+    (see test_show_logging_device_multiple_sessions_newest_first below,
+    that same shape, just scoped to one device)."""
     _write_log(isolated_logs, "R1", "20260921T091500")
     _write_log(isolated_logs, "R2", "20260921T091505")
     _write_log(isolated_logs, "R1", "20260921T103210")
     session = cfgmod.CliSession(lab_root)
-    climain.execute_command_line(session, "show logging")
+    climain.execute_command_line(session, "show logging summary")
     lines = capsys.readouterr().out.strip().splitlines()
     assert any(line.split()[:2] == ["R1", "2"] for line in lines)
     assert any(line.split()[:2] == ["R2", "1"] for line in lines)
@@ -141,10 +141,10 @@ def test_show_help_lists_logging_with_cr():
     assert "logging" in tokens
 
 
-def test_show_logging_help_lists_known_devices_and_cr():
+def test_show_logging_help_lists_summary_and_known_devices_and_cr():
     ctx = grammar.CliContext(log_device_ids=("R1", "R2"))
     result = grammar.help("exec", "show logging ", ctx)
-    assert [line.token for line in result.lines] == ["R1", "R2"]
+    assert [line.token for line in result.lines] == ["summary", "R1", "R2"]
     assert result.show_cr
 
 
@@ -166,6 +166,64 @@ def test_show_logging_tab_completion_devices_and_files():
     ctx = grammar.CliContext(log_device_ids=("R1", "R2"), log_files_by_device={"R1": ("20260921T091500.log",)})
     assert grammar.complete("exec", "show logging R", ctx).candidates == ["R1", "R2"]
     assert grammar.complete("exec", "show logging R1 ", ctx).candidates == ["20260921T091500.log"]
+
+
+# ---- h_show_logging_summary (Step B.1a: explicit summary command) ----
+
+
+def test_show_logging_summary_parses_in_exec():
+    result = grammar.parse("exec", "show logging summary")
+    assert result.ok
+    assert result.action == "exec.show_logging_summary"
+    assert result.args == {}
+
+
+def test_show_logging_summary_not_available_outside_exec():
+    for mode in ("global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
+        result = grammar.parse(mode, "show logging summary")
+        assert not result.ok, mode
+
+
+def test_show_logging_summary_inline_help_shows_cr():
+    ctx = grammar.CliContext(log_device_ids=("R1",))
+    result = grammar.help("exec", "show logging summary", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [
+        ("summary", "Show terminal log summary")
+    ]
+    assert result.show_cr
+
+
+def test_show_logging_summary_partial_resolves():
+    ctx = grammar.CliContext()
+    result = grammar.help("exec", "show logging sum", ctx)
+    assert [line.token for line in result.lines] == ["summary"]
+    assert result.show_cr is False
+
+
+def test_show_logging_summary_spaced_help_is_cr_only():
+    ctx = grammar.CliContext()
+    result = grammar.help("exec", "show logging summary ", ctx)
+    assert result.lines == []
+    assert result.show_cr
+
+
+def test_show_logging_summary_tab_completion():
+    ctx = grammar.CliContext(log_device_ids=("R1", "R2"))
+    assert grammar.complete("exec", "show logging sum", ctx).candidates == ["summary"]
+    assert set(grammar.complete("exec", "show logging ", ctx).candidates) == {"summary", "R1", "R2"}
+
+
+def test_show_logging_bare_still_shows_cr():
+    """`show logging?` (exact, no space) must still show `<cr>` -- bare
+    `show logging` remains executable after gaining the `summary` child,
+    the same "node carries both a command and children" mechanism bare
+    `show`/`help` already use."""
+    ctx = grammar.CliContext()
+    result = grammar.help("exec", "show logging", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [
+        ("logging", "Display terminal session logs")
+    ]
+    assert result.show_cr
 
 
 # ---- collision-suffixed filenames stay compatible with show logging ----

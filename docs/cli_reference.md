@@ -151,8 +151,9 @@ network-lab(config)# show version
 | `show running-config reference` | Show the committed content of *every* active reference, in committed `active_references` order. |
 | `show running-config reference <name>` | Show the committed content of just one active reference. `<name>` must already be active; Tab/`?` only complete active reference names. |
 | `show version` | Show Network Lab MCP's own version/license/runtime information — see "`show version`" above. |
-| `show logging` | Summarize every valid device logging directory with its eligible log-file count, plus a Total row — see "`show logging`" below. EXEC only, like `show version`. |
-| `show logging <device-id>` | List just that device's logs, newest first (unchanged, flat per-file listing). `<device-id>` Tab/`?`-completes from devices that currently have a valid logging directory. |
+| `show logging` | List every device's persistent terminal session logs (`logs/terminal/<device-id>/<session-start>.log`), newest first — see "`show logging`" below. EXEC only, like `show version`. |
+| `show logging summary` | Summarize every valid device logging directory with its eligible log-file count, plus a Total row. |
+| `show logging <device-id>` | List just that device's logs, newest first. `<device-id>` Tab/`?`-completes from devices that currently have a valid logging directory. |
 | `show logging <device-id> <log-file>` | Show one log file's raw contents. Read-only; never modifies/deletes/rotates. `<log-file>` Tab/`?`-completes from that device's own log filenames only — an unknown device or filename is rejected, never a path-traversal attempt (`../`, an absolute path). |
 | `delete logging all` | Delete every eligible stored terminal log, across every device, leaving device logging directories in place — see "`delete logging`" below. Requires `[y/N]` confirmation. |
 | `delete logging all directory` | Same, and additionally remove every valid (now-empty) device logging directory. `logs/terminal/` itself is never removed. Requires confirmation. |
@@ -164,14 +165,21 @@ network-lab(config)# show version
 
 ### `show logging`
 
-Bare `show logging` is a per-device summary — one row per valid device
-logging directory with its eligible log-file count (an empty directory,
-e.g. left behind by `delete logging <device-id> all`, is still shown,
-with `0`, since it remains a meaningful `delete logging <device-id>
-directory` target), plus a Total row:
+Bare `show logging` lists every device's persistent logs newest-first
+(unchanged since Step B); `show logging summary` is the explicit,
+separate per-device eligible-log-count view (added in Step B.1, briefly
+the behavior of *bare* `show logging` in that one release, then split
+back out in Step B.1a once it was clear the two views serve different
+purposes and shouldn't share one command):
 
 ```
 network-lab# show logging
+Device  Session Start        Log File
+------  -------------------  --------------------
+R1      2026-09-21 10:32:10  20260921T103210.log
+R2      2026-09-21 10:31:55  20260921T103155.log
+
+network-lab# show logging summary
 Device  Log Files
 ------  ---------
 R1             12
@@ -189,14 +197,20 @@ network-lab# show logging R1 20260921T103210.log
 <terminal transcript>
 ```
 
-`show logging <device-id>` and `show logging <device-id> <log-file>` are
-unchanged from Step B: the former is still a flat, newest-first per-file
-listing for one device; only bare `show logging` changed shape. No valid
-device logging directories at all prints `No terminal logs found.`
-(never a traceback, never creates `logs/terminal/`). `show logging` (in
-any of its three forms) is EXEC-only, like `show version` — configuration
-mode `show` semantics remain exactly `show`/`show configuration`/`show
-running-config`.
+`show logging summary` shows one row per valid device logging directory
+with its eligible log-file count — an empty directory (e.g. left behind
+by `delete logging <device-id> all`) is still shown, with `0`, since it
+remains a meaningful `delete logging <device-id> directory` target —
+plus a Total row (the sum of eligible logs, never a directory count). A
+symlink is never a valid device logging directory and never appears in
+either view; an unknown/non-log file inside a device directory is never
+counted. `show logging <device-id>` and `show logging <device-id>
+<log-file>` are unchanged from Step B. No logs/no valid device logging
+directories at all prints `No terminal logs found.` for either bare
+`show logging` or `show logging summary` (never a traceback, never
+creates `logs/terminal/`). `show logging` (in any of its four forms) is
+EXEC-only, like `show version` — configuration mode `show` semantics
+remain exactly `show`/`show configuration`/`show running-config`.
 
 ### `delete logging`
 
@@ -295,9 +309,9 @@ Safety, in order of how the implementation actually enforces it:
   under `logs/terminal/` is never touched either.
 - **`all` and `directory` are a deliberate distinction.** `delete logging
   all` / `delete logging <device-id> all` delete eligible log *files*
-  only and always leave the device directory behind (so `show logging`
-  keeps showing that device, with `0`); `directory` additionally removes
-  the now-empty directory itself. A directory removed this way is
+  only and always leave the device directory behind (so `show logging
+  summary` keeps showing that device, with `0`); `directory` additionally
+  removes the now-empty directory itself. A directory removed this way is
   recreated automatically the next time normal logging starts for that
   device (session creation always ensures its own log directory exists).
 - **No session side effects.** Deletion never closes a terminal session,

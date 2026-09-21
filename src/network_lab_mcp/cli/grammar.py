@@ -751,6 +751,35 @@ def _build_access_info_root() -> Node:
     jump_host_next = jump_host_node.add_argument(jump_host_arg)
     jump_host_next.set_command("access_info.jump_host", "Create or edit a jump host")
 
+    # `no device <name>` / `no jump-host <name>`: remove the whole object
+    # from the candidate. Unlike the create/edit arguments above, these are
+    # deliberately not `creatable` -- deletion only ever targets an object
+    # already present in the *current candidate* (reusing the exact same
+    # candidate-sourced providers), never one that does not yet exist.
+    no_node = root.add_literal("no", "Remove a device or jump host")
+
+    no_device_arg = Argument(
+        "name",
+        "Existing device name",
+        provider=provide_access_info_device_names,
+        hint="<name>",
+        enumerate_when_empty=True,
+    )
+    no_device_node = no_node.add_literal("device", "Remove a device")
+    no_device_next = no_device_node.add_argument(no_device_arg)
+    no_device_next.set_command("access_info.remove_device", "Remove a device")
+
+    no_jump_host_arg = Argument(
+        "name",
+        "Existing jump host name",
+        provider=provide_access_info_jump_host_names,
+        hint="<name>",
+        enumerate_when_empty=True,
+    )
+    no_jump_host_node = no_node.add_literal("jump-host", "Remove a jump host")
+    no_jump_host_next = no_jump_host_node.add_argument(no_jump_host_arg)
+    no_jump_host_next.set_command("access_info.remove_jump_host", "Remove a jump host")
+
     _add_show_subtree(
         root,
         "access_info",
@@ -840,6 +869,9 @@ def _build_access_device_root() -> Node:
 
     no_node = root.add_literal("no", "Negate a device field")
     for keyword, action, description in (
+        ("type", "access_device.clear_type", "Clear the device type"),
+        ("address", "access_device.clear_address", "Clear the device address"),
+        ("transport", "access_device.clear_transport", "Clear the device transport"),
         ("username", "access_device.clear_username", "Clear the device username"),
         ("password", "access_device.clear_password", "Clear the device password"),
         ("port", "access_device.clear_port", "Clear the device port"),
@@ -935,6 +967,9 @@ def _build_access_jump_host_root() -> Node:
 
     no_node = root.add_literal("no", "Negate a jump-host field")
     for keyword, action, description in (
+        ("type", "access_jump_host.clear_type", "Clear the jump-host type"),
+        ("address", "access_jump_host.clear_address", "Clear the jump-host address"),
+        ("transport", "access_jump_host.clear_transport", "Clear the jump-host transport"),
         ("username", "access_jump_host.clear_username", "Clear the jump-host username"),
         ("password", "access_jump_host.clear_password", "Clear the jump-host password"),
         ("port", "access_jump_host.clear_port", "Clear the jump-host port"),

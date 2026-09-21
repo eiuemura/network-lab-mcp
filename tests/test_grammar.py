@@ -565,3 +565,188 @@ def test_help_available_in_every_mode():
         topic_result = grammar.parse(mode, "help cli")
         assert topic_result.ok, mode
         assert topic_result.action == f"{mode}.help_topic"
+
+
+# ==========================================================================
+# `no` command symmetry for access-info (object deletion + leaf clearing)
+# ==========================================================================
+
+
+# ---- access-info: no device / no jump-host (whole-object candidate deletion) ----
+
+
+def test_no_device_parses():
+    result = grammar.parse("access_info", "no device R4")
+    assert result.ok
+    assert result.action == "access_info.remove_device"
+    assert result.args == {"name": "R4"}
+
+
+def test_no_jump_host_parses():
+    result = grammar.parse("access_info", "no jump-host jump1")
+    assert result.ok
+    assert result.action == "access_info.remove_jump_host"
+    assert result.args == {"name": "jump1"}
+
+
+def test_no_device_not_reachable_from_device_submode():
+    # Scope containment: object deletion only exists at access-info root,
+    # never inside the device/jump-host submode grammar.
+    result = grammar.parse("access_device", "no device R1")
+    assert not result.ok
+    result2 = grammar.parse("access_jump_host", "no jump-host jump1")
+    assert not result2.ok
+
+
+def test_no_device_completion_uses_candidate_device_names():
+    ctx = make_ctx(access_info_candidate_device_names=("R1", "R5"))
+    result = grammar.complete("access_info", "no device ", ctx)
+    assert set(result.candidates) == {"R1", "R5"}
+
+
+def test_no_jump_host_completion_uses_candidate_jump_host_names():
+    ctx = make_ctx(access_info_candidate_jump_host_names=("jump1", "jump_temp"))
+    result = grammar.complete("access_info", "no jump-host ", ctx)
+    assert set(result.candidates) == {"jump1", "jump_temp"}
+
+
+def test_no_node_help_lists_device_and_jump_host():
+    ctx = make_ctx()
+    result = grammar.help("access_info", "no ", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [
+        ("device", "Remove a device"),
+        ("jump-host", "Remove a jump host"),
+    ]
+
+
+def test_access_info_root_help_lists_no_among_top_level_keywords():
+    ctx = make_ctx()
+    tokens = [line.token for line in grammar.help("access_info", "", ctx).lines]
+    for expected in ("device", "jump-host", "no", "show", "clear", "commit", "root", "exit", "end", "help"):
+        assert expected in tokens, expected
+
+
+def test_no_device_bare_help_enumerates_candidate_device_names():
+    ctx = make_ctx(access_info_candidate_device_names=("R1", "R5"))
+    result = grammar.help("access_info", "no device ", ctx)
+    assert sorted(line.token for line in result.lines) == ["R1", "R5"]
+
+
+def test_no_jump_host_bare_help_enumerates_candidate_jump_host_names():
+    ctx = make_ctx(access_info_candidate_jump_host_names=("jump1",))
+    result = grammar.help("access_info", "no jump-host ", ctx)
+    assert [line.token for line in result.lines] == ["jump1"]
+
+
+def test_no_device_exact_match_inline_help_shows_cr_and_spaced_shows_cr_only():
+    ctx = make_ctx(access_info_candidate_device_names=("R4",))
+    inline = grammar.help("access_info", "no device R4", ctx)
+    assert [line.token for line in inline.lines] == ["R4"]
+    assert inline.show_cr is True
+
+    spaced = grammar.help("access_info", "no device R4 ", ctx)
+    assert spaced.lines == []
+    assert spaced.show_cr is True
+
+
+def test_no_device_partial_inline_help_has_no_cr():
+    ctx = make_ctx(access_info_candidate_device_names=("R40",))
+    result = grammar.help("access_info", "no device R4", ctx)
+    assert [line.token for line in result.lines] == ["R40"]
+    assert result.show_cr is False
+
+
+def test_no_device_help_for_nonexistent_name_produces_nothing():
+    ctx = make_ctx(access_info_candidate_device_names=("R1",))
+    result = grammar.help("access_info", "no device R9", ctx)
+    assert result.lines == []
+    assert result.show_cr is False
+
+
+def test_no_jump_host_exact_match_inline_help_shows_cr():
+    ctx = make_ctx(access_info_candidate_jump_host_names=("jump1",))
+    inline = grammar.help("access_info", "no jump-host jump1", ctx)
+    assert [line.token for line in inline.lines] == ["jump1"]
+    assert inline.show_cr is True
+
+
+# ---- device / jump-host submode: full leaf `no` symmetry ----
+
+
+def test_access_device_no_leaf_parses():
+    for keyword, action in (
+        ("type", "access_device.clear_type"),
+        ("address", "access_device.clear_address"),
+        ("transport", "access_device.clear_transport"),
+        ("username", "access_device.clear_username"),
+        ("password", "access_device.clear_password"),
+        ("port", "access_device.clear_port"),
+        ("jump-host", "access_device.clear_jump_host"),
+    ):
+        result = grammar.parse("access_device", f"no {keyword}")
+        assert result.ok, keyword
+        assert result.action == action
+
+
+def test_access_jump_host_no_leaf_parses():
+    for keyword, action in (
+        ("type", "access_jump_host.clear_type"),
+        ("address", "access_jump_host.clear_address"),
+        ("transport", "access_jump_host.clear_transport"),
+        ("username", "access_jump_host.clear_username"),
+        ("password", "access_jump_host.clear_password"),
+        ("port", "access_jump_host.clear_port"),
+    ):
+        result = grammar.parse("access_jump_host", f"no {keyword}")
+        assert result.ok, keyword
+        assert result.action == action
+
+
+def test_access_device_no_help_lists_all_seven_leaves():
+    ctx = make_ctx()
+    result = grammar.help("access_device", "no ", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [
+        ("type", "Clear the device type"),
+        ("address", "Clear the device address"),
+        ("transport", "Clear the device transport"),
+        ("username", "Clear the device username"),
+        ("password", "Clear the device password"),
+        ("port", "Clear the device port"),
+        ("jump-host", "Clear the device jump-host reference"),
+    ]
+
+
+def test_access_jump_host_no_help_lists_all_six_leaves():
+    ctx = make_ctx()
+    result = grammar.help("access_jump_host", "no ", ctx)
+    assert [(line.token, line.description) for line in result.lines] == [
+        ("type", "Clear the jump-host type"),
+        ("address", "Clear the jump-host address"),
+        ("transport", "Clear the jump-host transport"),
+        ("username", "Clear the jump-host username"),
+        ("password", "Clear the jump-host password"),
+        ("port", "Clear the jump-host port"),
+    ]
+
+
+# ---- drift guard: configurable-leaf set must always equal no-exposed-leaf set ----
+
+_RESERVED_SUBMODE_KEYWORDS = {"no", "show", "clear", "commit", "root", "end", "exit", "help"}
+
+
+def test_access_device_no_leaf_set_matches_configurable_leaf_set():
+    root = grammar.MODE_ROOTS["access_device"]
+    configurable = set(root.literal_children) - _RESERVED_SUBMODE_KEYWORDS
+    removable = set(root.literal_children["no"].literal_children)
+    assert configurable == removable == {
+        "type", "address", "transport", "port", "username", "password", "jump-host",
+    }
+
+
+def test_access_jump_host_no_leaf_set_matches_configurable_leaf_set():
+    root = grammar.MODE_ROOTS["access_jump_host"]
+    configurable = set(root.literal_children) - _RESERVED_SUBMODE_KEYWORDS
+    removable = set(root.literal_children["no"].literal_children)
+    assert configurable == removable == {
+        "type", "address", "transport", "port", "username", "password",
+    }

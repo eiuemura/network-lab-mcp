@@ -336,6 +336,8 @@ access-info device mode instead, since topology is exposed to Claude via
 |---------|--------|
 | `device <name>` | Create or edit a device's private connection data (case-sensitive); enters access-info device mode. |
 | `jump-host <name>` | Create or edit a reusable single-hop OpenSSH ProxyJump endpoint (case-sensitive); enters access-info jump-host mode. See ["Single-hop SSH jump hosts"](../README.md#single-hop-ssh-jump-hosts-proxyjump). |
+| `no device <name>` | Remove a device entirely from the candidate (Tab/`?` complete only names present in the *current candidate*, including ones created but not yet committed in this same session). Does not touch committed YAML until `commit`; does not cascade to topology or any other definition. Removing a nonexistent name is a clear error, not a silent no-op. |
+| `no jump-host <name>` | Remove a jump host entirely from the candidate, the same way. Does not cascade: a device still referencing the removed jump host is left as-is, and `commit` will then fail with a dangling-reference error until the reference is fixed or cleared (`no jump-host` inside that device's own mode) or the jump host is restored. |
 | `show running-config` | This access-info definition's own **full committed** state, re-read fresh from disk — empty if it has never been committed. **Not** the MCP running-config selection. Passwords in **clear text** (see "Password display policy" below). |
 | `show` / `show configuration` | This access-info definition's **uncommitted changes only**: only the devices/jump hosts with at least one changed field, and within each only the changed fields. Passwords in clear text. |
 | `commit` | Validate and persist; stays in access-info definition mode. |
@@ -357,7 +359,7 @@ access-info has no `edit` command in this phase — see
 | `username <value>` | Device username. |
 | `password <value>` | Device password. Stored in plain text like Step 1 (this is a lab tool, not a secret manager); never completed or retained in history (see "Password safety" below) — but shown in **clear text** by this mode's own `show`/`show configuration`/`show running-config` (see "Password display policy"). |
 | `jump-host <name>` | Reference a jump host (by name, within this same access-info definition) for a single-hop OpenSSH ProxyJump connection. Tab/`?` complete existing jump-host names in this definition; the name is validated to exist, and this device's `transport` to be `ssh`, at commit time. |
-| `no username` / `no password` / `no port` / `no jump-host` | Clear the corresponding field. |
+| `no type` / `no address` / `no transport` / `no username` / `no password` / `no port` / `no jump-host` | Clear the corresponding field from the candidate only. Every settable field has a matching `no` command (see "Candidate may be temporarily incomplete" below). |
 | `show running-config` | Just *this device's* full committed block from the access-info definition above — empty if this device (or the whole definition) has never been committed. |
 | `show` / `show configuration` | Just this device's changed field(s) only. |
 | `commit` | Validate and persist; stays in this device's mode. |
@@ -375,13 +377,30 @@ access-info has no `edit` command in this phase — see
 | `port <1-65535>` | Jump-host port. |
 | `username <value>` | Jump-host username. |
 | `password <value>` | Jump-host password. Same plain-text-storage/clear-text-local-display policy as a device password; kept entirely separate from any device's own credentials. |
-| `no username` / `no password` / `no port` | Clear the corresponding field. |
+| `no type` / `no address` / `no transport` / `no username` / `no password` / `no port` | Clear the corresponding field from the candidate only. Every settable field has a matching `no` command, same as device mode. |
 | `show running-config` | Just *this jump host's* full committed block — empty if it (or the whole access-info definition) has never been committed. |
 | `show` / `show configuration` | Just this jump host's changed field(s) only. |
 | `commit` | Validate and persist; stays in this jump host's mode. |
 | `root` | Jump to global configuration mode, candidate preserved. |
 | `clear` / `end` / `help` | As above. |
 | `exit` | Return one level up, to access-info definition mode. |
+
+### Candidate may be temporarily incomplete
+
+Every device/jump-host field that can be `set` can also be `no`-cleared, and
+clearing a field never invents an implicit default (`no port` does not
+become `port 22`; `no transport` does not become `transport ssh`) — the
+field is simply absent from the candidate, exactly as `show configuration`
+reports it, until something sets it again or `commit`/`clear` resolves the
+session. `type`/`address`/`transport` are no exception: the candidate may
+carry a device missing any of them while it is being edited interactively.
+`commit` is unchanged and remains the only gate — it validates the
+candidate with the same rules as always (`network_lab_mcp.lab`'s existing
+validators), so a device that violates one of those rules still fails to
+commit. Note that today's validators do not themselves require
+`type`/`address`/`transport` to be present (a missing `type`, in
+particular, has been explicitly allowed since Step 1); this document
+describes that existing, unchanged policy rather than a new one.
 
 ## Scenario / reference definition mode commands
 

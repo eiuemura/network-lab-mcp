@@ -788,6 +788,15 @@ type/address/transport/port/username/password fields as a device), and
 with Tab/`?` completion over the access-info definition's own jump host
 names) and `no jump-host`.
 
+`access-info <name>` mode also has `no device <name>` / `no jump-host
+<name>`, removing the whole object from the candidate (never committed YAML
+directly, never auto-committed). Deletion is not cascading: removing a
+jump host that a device still references leaves that reference dangling in
+the candidate, and `commit` fails on it, the same way it fails on any other
+invalid candidate, until the reference is fixed (`no jump-host` inside the
+device's own mode) or the jump host is restored. See
+[docs/cli_reference.md](docs/cli_reference.md) for the full command table.
+
 ### Topology/access-info device.type consistency
 
 Topology and access-info are independent, separately authored definitions,

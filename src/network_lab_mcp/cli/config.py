@@ -357,6 +357,15 @@ class CliSession:
     def clear_device_field(self, field_name: str) -> None:
         self._device().pop(field_name, None)
 
+    def remove_device(self, name: str) -> None:
+        """`no device <name>`: remove the whole device object from the
+        candidate only. Never cascades to topology, tmux, Discovery, or any
+        other definition -- access-info and topology are separate models."""
+        devices = self.definition_candidate.get("devices") or {}
+        if name not in devices:
+            raise ConfigError(f"Device '{name}' does not exist.")
+        del devices[name]
+
     # ---- jump-host sub-editing (access-info only: a reusable single-hop
     # OpenSSH ProxyJump endpoint, referenced by name from a device's own
     # optional 'jump_host' field) ----
@@ -376,6 +385,18 @@ class CliSession:
 
     def clear_jump_host_field(self, field_name: str) -> None:
         self._jump_host().pop(field_name, None)
+
+    def remove_jump_host(self, name: str) -> None:
+        """`no jump-host <name>`: remove the whole jump-host object from the
+        candidate only. Deliberately does not cascade -- a device still
+        referencing this jump host is left as-is (a dangling reference for
+        commit's existing validate_device_jump_host_references() to catch);
+        fixing that reference is the operator's explicit next step, never
+        an automatic side effect of this command."""
+        jump_hosts = self.definition_candidate.get("jump_hosts") or {}
+        if name not in jump_hosts:
+            raise ConfigError(f"Jump host '{name}' does not exist.")
+        del jump_hosts[name]
 
     # ---- running-config selection (topology/scenario/references MCP uses) ----
 

@@ -1169,6 +1169,14 @@ def h_access_info_jump_host(session: cfgmod.CliSession, args: dict) -> None:
     session.enter_access_info_jump_host(args["name"])
 
 
+def h_access_info_remove_device(session: cfgmod.CliSession, args: dict) -> None:
+    session.remove_device(args["name"])
+
+
+def h_access_info_remove_jump_host(session: cfgmod.CliSession, args: dict) -> None:
+    session.remove_jump_host(args["name"])
+
+
 # ---- access-info device submode (private connection fields) ----
 
 
@@ -1194,6 +1202,18 @@ def h_access_device_set_username(session: cfgmod.CliSession, args: dict) -> None
 
 def h_access_device_set_password(session: cfgmod.CliSession, args: dict) -> None:
     session.set_device_field("password", args["value"])
+
+
+def h_access_device_clear_type(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_device_field("type")
+
+
+def h_access_device_clear_address(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_device_field("address")
+
+
+def h_access_device_clear_transport(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_device_field("transport")
 
 
 def h_access_device_clear_username(session: cfgmod.CliSession, args: dict) -> None:
@@ -1243,6 +1263,18 @@ def h_access_jump_host_set_password(session: cfgmod.CliSession, args: dict) -> N
     session.set_jump_host_field("password", args["value"])
 
 
+def h_access_jump_host_clear_type(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_jump_host_field("type")
+
+
+def h_access_jump_host_clear_address(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_jump_host_field("address")
+
+
+def h_access_jump_host_clear_transport(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_jump_host_field("transport")
+
+
 def h_access_jump_host_clear_username(session: cfgmod.CliSession, args: dict) -> None:
     session.clear_jump_host_field("username")
 
@@ -1290,6 +1322,8 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "device.set_type": h_device_set_type,
     "access_info.device": h_access_info_device,
     "access_info.jump_host": h_access_info_jump_host,
+    "access_info.remove_device": h_access_info_remove_device,
+    "access_info.remove_jump_host": h_access_info_remove_jump_host,
     "access_device.set_type": h_access_device_set_type,
     "access_device.set_address": h_access_device_set_address,
     "access_device.set_transport": h_access_device_set_transport,
@@ -1297,6 +1331,9 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "access_device.set_username": h_access_device_set_username,
     "access_device.set_password": h_access_device_set_password,
     "access_device.set_jump_host": h_access_device_set_jump_host,
+    "access_device.clear_type": h_access_device_clear_type,
+    "access_device.clear_address": h_access_device_clear_address,
+    "access_device.clear_transport": h_access_device_clear_transport,
     "access_device.clear_username": h_access_device_clear_username,
     "access_device.clear_password": h_access_device_clear_password,
     "access_device.clear_port": h_access_device_clear_port,
@@ -1307,6 +1344,9 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "access_jump_host.set_port": h_access_jump_host_set_port,
     "access_jump_host.set_username": h_access_jump_host_set_username,
     "access_jump_host.set_password": h_access_jump_host_set_password,
+    "access_jump_host.clear_type": h_access_jump_host_clear_type,
+    "access_jump_host.clear_address": h_access_jump_host_clear_address,
+    "access_jump_host.clear_transport": h_access_jump_host_clear_transport,
     "access_jump_host.clear_username": h_access_jump_host_clear_username,
     "access_jump_host.clear_password": h_access_jump_host_clear_password,
     "access_jump_host.clear_port": h_access_jump_host_clear_port,

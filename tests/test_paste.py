@@ -297,6 +297,66 @@ def test_bang_inside_a_password_value_is_not_treated_as_a_separator(lab_root):
     assert session.definition_candidate["devices"]["R9"]["password"] == "Example!Password123"
 
 
+# ---- mandatory: object-deletion combined with clear inside a paste ----
+
+
+def test_device_create_delete_clear_create_paste_sequence(lab_root):
+    """R5 is created mid-paste, removed via `no device R5` (resolving
+    against that same uncommitted candidate), then `clear` restores the
+    committed candidate -- the paste loop must continue afterward with a
+    freshly re-read authoritative mode, and R6 must land in access_device
+    mode for the *new* object with no stale R5 state surviving."""
+    session = _access_info_session(lab_root)
+    block = (
+        "device R5\n"
+        " type iosxr\n"
+        " exit\n"
+        "no device R5\n"
+        "clear\n"
+        "device R6\n"
+        " type iosxr\n"
+        " exit\n"
+    )
+    climain.execute_input_block(session, block)
+
+    assert session.mode == "access_info"
+    devices = session.definition_candidate["devices"]
+    assert "R5" not in devices
+    assert set(devices) == {"R1", "R2", "R6"}
+    assert devices["R6"]["type"] == "iosxr"
+    on_disk = lab.load_access_info("sample_lab", lab_root)
+    assert "R5" not in on_disk.get("devices", {})
+    assert "R6" not in on_disk.get("devices", {})  # never committed
+
+
+def test_jump_host_create_delete_clear_create_paste_sequence(lab_root):
+    """Same interaction as above, for jump hosts, using the real jump-host
+    schema (type/address/transport, no `jump-host` field of its own)."""
+    session = _access_info_session(lab_root)
+    block = (
+        "jump-host jump_temp\n"
+        " type host\n"
+        " address 192.0.2.200\n"
+        " transport ssh\n"
+        " exit\n"
+        "no jump-host jump_temp\n"
+        "clear\n"
+        "jump-host jump_after_clear\n"
+        " type host\n"
+        " exit\n"
+    )
+    climain.execute_input_block(session, block)
+
+    assert session.mode == "access_info"
+    jump_hosts = session.definition_candidate["jump_hosts"]
+    assert "jump_temp" not in jump_hosts
+    assert set(jump_hosts) == {"jump1", "jump_after_clear"}
+    assert jump_hosts["jump_after_clear"]["type"] == "host"
+    on_disk = lab.load_access_info("sample_lab", lab_root)
+    assert "jump_temp" not in on_disk.get("jump_hosts", {})
+    assert "jump_after_clear" not in on_disk.get("jump_hosts", {})  # never committed
+
+
 # ---- single-line input is untouched ----
 
 

@@ -236,6 +236,215 @@ def test_access_info_device_mode_sets_full_field_set(lab_root):
     assert "password" not in session.definition_candidate["devices"]["R1"]
 
 
+# ---- access-info object deletion (`no device` / `no jump-host`) ----
+#
+# Phase A investigation established that type/address/transport are NOT
+# required at commit time by any existing validator -- see
+# validate_device_types()'s own docstring ("A missing/empty 'type' is not
+# itself an error here") and pre-existing regression tests such as
+# test_get_device_allows_type_missing_on_either_side. The original task
+# spec assumed these fields were (or should become) required at commit;
+# that assumption was incorrect, and no new required-field validation is
+# introduced here -- commit continues to follow the existing validators
+# exactly as before.
+
+
+def test_remove_device_removes_from_candidate_only(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.remove_device("R2")
+    assert "R2" not in session.definition_candidate["devices"]
+    assert "R2" in lab.load_access_info("sample_lab", lab_root)["devices"]  # committed state untouched
+
+
+def test_remove_device_nonexistent_raises(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    with pytest.raises(cfgmod.ConfigError, match="does not exist"):
+        session.remove_device("NOPE")
+
+
+def test_remove_device_commit_persists_deletion(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.remove_device("R2")
+    session.commit()
+    assert "R2" not in lab.load_access_info("sample_lab", lab_root)["devices"]
+
+
+def test_remove_device_clear_restores_it(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.remove_device("R2")
+    session.clear()
+    assert "R2" in session.definition_candidate["devices"]
+
+
+def test_remove_newly_created_candidate_device_never_reaches_disk(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R5")
+    session.set_device_field("type", "iosxr")
+    assert "R5" in session.definition_candidate["devices"]  # created mid-session, still uncommitted
+    session.remove_device("R5")
+    assert "R5" not in session.definition_candidate["devices"]
+    session.commit()
+    assert "R5" not in lab.load_access_info("sample_lab", lab_root)["devices"]
+
+
+def test_remove_jump_host_removes_from_candidate_only(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.remove_jump_host("jump1")
+    assert "jump1" not in session.definition_candidate["jump_hosts"]
+    assert "jump1" in lab.load_access_info("sample_lab", lab_root)["jump_hosts"]
+
+
+def test_remove_jump_host_nonexistent_raises(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    with pytest.raises(cfgmod.ConfigError, match="does not exist"):
+        session.remove_jump_host("NOPE")
+
+
+def test_remove_jump_host_dangling_reference_fails_commit_then_fix_succeeds(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R1")
+    session.set_device_field("jump_host", "jump1")
+
+    session.remove_jump_host("jump1")
+    # No cascade: R1's reference is left dangling, not auto-cleared.
+    assert session.definition_candidate["devices"]["R1"]["jump_host"] == "jump1"
+    with pytest.raises(cfgmod.CommitValidationError, match="unknown jump host"):
+        session.commit()
+    assert lab.load_access_info("sample_lab", lab_root)["jump_hosts"]  # disk unchanged after failed commit
+
+    session.clear_device_field("jump_host")
+    session.commit()
+    persisted = lab.load_access_info("sample_lab", lab_root)
+    assert "jump_host" not in persisted["devices"]["R1"]
+    assert "jump1" not in persisted.get("jump_hosts", {})
+
+
+# ---- device / jump-host leaf `no` symmetry ----
+
+
+@pytest.mark.parametrize(
+    "field_name,value",
+    [
+        ("type", "nxos"),
+        ("address", "192.0.2.77"),
+        ("transport", "telnet"),
+        ("port", 2222),
+        ("username", "u2"),
+        ("password", "p2"),
+        ("jump_host", "jump1"),
+    ],
+)
+def test_device_field_set_then_clear_round_trip_does_not_touch_disk(lab_root, field_name, value):
+    before = lab.load_access_info("sample_lab", lab_root)
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R2")
+    session.set_device_field(field_name, value)
+    assert session.definition_candidate["devices"]["R2"][field_name] == value
+    session.clear_device_field(field_name)
+    assert field_name not in session.definition_candidate["devices"]["R2"]
+    assert lab.load_access_info("sample_lab", lab_root) == before
+
+
+@pytest.mark.parametrize(
+    "field_name,value",
+    [
+        ("type", "host"),
+        ("address", "192.0.2.88"),
+        ("transport", "ssh"),
+        ("port", 2200),
+        ("username", "ju"),
+        ("password", "jp"),
+    ],
+)
+def test_jump_host_field_set_then_clear_round_trip_does_not_touch_disk(lab_root, field_name, value):
+    before = lab.load_access_info("sample_lab", lab_root)
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_jump_host("jump1")
+    session.set_jump_host_field(field_name, value)
+    assert session.definition_candidate["jump_hosts"]["jump1"][field_name] == value
+    session.clear_jump_host_field(field_name)
+    assert field_name not in session.definition_candidate["jump_hosts"]["jump1"]
+    assert lab.load_access_info("sample_lab", lab_root) == before
+
+
+def test_clear_address_restore_and_commit_succeeds(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R1")
+    session.clear_device_field("address")
+    session.set_device_field("address", "192.0.2.44")
+    session.commit()
+    assert lab.load_access_info("sample_lab", lab_root)["devices"]["R1"]["address"] == "192.0.2.44"
+
+
+def test_clearing_type_address_transport_still_commits_successfully(lab_root):
+    """Pins down that no new required-field commit validation was
+    introduced: the original task spec assumed type/address/transport were
+    required at commit time, but Phase A investigation proved otherwise
+    (see module docstring above and lab.validate_device_types()). Clearing
+    all three from an already-valid candidate device must still commit."""
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    session.enter_access_info_device("R1")
+    session.clear_device_field("type")
+    session.clear_device_field("address")
+    session.clear_device_field("transport")
+    session.commit()
+    persisted = lab.load_access_info("sample_lab", lab_root)["devices"]["R1"]
+    assert "type" not in persisted
+    assert "address" not in persisted
+    assert "transport" not in persisted
+
+
+def test_no_device_command_end_to_end(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    ok = climain.execute_command_line(session, "no device R2")
+    assert ok
+    assert "R2" not in session.definition_candidate["devices"]
+
+
+def test_no_device_nonexistent_end_to_end_prints_error(lab_root, capsys):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    ok = climain.execute_command_line(session, "no device NOPE")
+    assert not ok
+    assert "does not exist" in capsys.readouterr().out
+
+
+def test_no_jump_host_command_end_to_end(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("sample_lab")
+    ok = climain.execute_command_line(session, "no jump-host jump1")
+    assert ok
+    assert "jump1" not in session.definition_candidate["jump_hosts"]
+
+
 def test_access_info_switch_guard_matches_topology_guard(lab_root):
     session = cfgmod.CliSession(lab_root)
     session.enter_configure()

@@ -195,3 +195,120 @@ def parse_lldp_neighbors(raw_text: str, local_device_id: str) -> list[LldpObserv
         )
     return observations
 
+
+# --------------------------------------------------------------------------
+# Identity resolution + link reconciliation
+# --------------------------------------------------------------------------
+
+
+def resolve_remote_identity(remote_device_id_raw: str, identity_map: dict[str, str]) -> str | None:
+    """Resolve an LLDP remote Device ID to a logical managed device ID, or
+    None if unresolved/ambiguous (fail closed -- never a guess).
+
+    `identity_map` maps logical_device_id -> observed_hostname. Matching
+    order, each step requiring a *unique* match:
+      1. exact observed-hostname match
+      2. case-normalized exact match
+      3. short-name/FQDN-style alias match (the raw ID's segment before its
+         first '.', compared case-insensitively against each hostname)
+
+    No substring search, no fuzzy matching, and no inference from the
+    logical device ID itself (e.g. never "R2" in device_id)."""
+
+    def _unique(matches: list[str]) -> str | None:
+        return matches[0] if len(matches) == 1 else None
+
+    exact = [logical for logical, hostname in identity_map.items() if hostname == remote_device_id_raw]
+    result = _unique(exact)
+    if result is not None or len(exact) > 1:
+        return result
+
+    lowered = remote_device_id_raw.lower()
+    case_insensitive = [logical for logical, hostname in identity_map.items() if hostname.lower() == lowered]
+    result = _unique(case_insensitive)
+    if result is not None or len(case_insensitive) > 1:
+        return result
+
+    short_name = remote_device_id_raw.split(".", 1)[0].lower()
+    alias = [logical for logical, hostname in identity_map.items() if hostname.lower() == short_name]
+    return _unique(alias)
+
+
+@dataclass(frozen=True)
+class ManagedLink:
+    a_device: str
+    a_interface: str
+    b_device: str
+    b_interface: str
+
+
+@dataclass(frozen=True)
+class LinkConflict:
+    endpoint_a: tuple[str, str]
+    endpoint_b: tuple[str, str]
+    observation_a: LldpObservation
+    observation_b: LldpObservation
+
+
+@dataclass(frozen=True)
+class UnresolvedNeighbor:
+    remote_device_id_raw: str
+    local_device_id: str
+    local_interface: str
+    remote_port_id: str
+    capabilities: tuple[str, ...]
+
+
+def reconcile_links(
+    resolved_observations: list[tuple[LldpObservation, str]],
+) -> tuple[list[ManagedLink], list[LinkConflict]]:
+    """Deduplicate reciprocal LLDP observations into physical links.
+
+    `resolved_observations` is a list of (observation, resolved_remote_id)
+    pairs, already filtered to observations whose remote resolved uniquely
+    to a managed device (see resolve_remote_identity()). A physical link is
+    keyed by its unordered pair of (device, interface) endpoints, so two
+    parallel links between the same router pair on different interfaces
+    stay distinct (section 46). A reciprocal pair that disagrees about the
+    interface mapping is reported as a conflict instead of silently
+    picking one side; this only detects disagreement between two *managed,
+    resolved* observations of each other, not a one-sided observation
+    versus an unrelated/unresolved one on the same local interface."""
+    by_local_endpoint: dict[tuple[str, str], tuple[LldpObservation, str]] = {}
+    for obs, remote_id in resolved_observations:
+        by_local_endpoint[(obs.local_device_id, obs.local_interface)] = (obs, remote_id)
+
+    links: list[ManagedLink] = []
+    conflicts: list[LinkConflict] = []
+    # Endpoints are consumed by their own dict key (local_dev, local_intf),
+    # never by a "canonical pair" derived from a claimed remote port --
+    # in a conflict the two sides claim *different* remote ports, so only
+    # marking each side's own key reliably prevents processing the same
+    # physical endpoint twice.
+    seen_endpoints: set[tuple[str, str]] = set()
+
+    for (local_dev, local_intf), (obs, remote_id) in by_local_endpoint.items():
+        endpoint_a = (local_dev, local_intf)
+        if endpoint_a in seen_endpoints:
+            continue
+
+        remote_intf = obs.remote_port_id
+        endpoint_b = (remote_id, remote_intf)
+
+        reverse = by_local_endpoint.get(endpoint_b)
+        if reverse is None:
+            # One-sided LLDP observation -- still a valid managed link.
+            links.append(ManagedLink(local_dev, local_intf, remote_id, remote_intf))
+            seen_endpoints.add(endpoint_a)
+            continue
+
+        reverse_obs, reverse_remote_id = reverse
+        if reverse_remote_id == local_dev and reverse_obs.remote_port_id == local_intf:
+            links.append(ManagedLink(local_dev, local_intf, remote_id, remote_intf))
+        else:
+            conflicts.append(LinkConflict(endpoint_a, endpoint_b, obs, reverse_obs))
+        seen_endpoints.add(endpoint_a)
+        seen_endpoints.add(endpoint_b)
+
+    return links, conflicts
+

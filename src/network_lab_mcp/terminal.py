@@ -49,7 +49,9 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LOGS_ROOT = _REPO_ROOT / "logs" / "terminal"
 
 _SESSION_START_FORMAT = "%Y%m%dT%H%M%S"
-_LOG_FILENAME_RE = re.compile(r"^\d{8}T\d{6}\.log$")
+# Group 1: the session-start timestamp prefix. Group 2 (optional): a
+# same-second collision suffix (see _unique_log_path()).
+_LOG_FILENAME_RE = re.compile(r"^(\d{8}T\d{6})(?:_(\d+))?\.log$")
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
@@ -175,6 +177,20 @@ def _create_session(session_name: str, command: list[str]) -> None:
     _run(["new-session", "-d", "-s", session_name, "-x", "220", "-y", "50", *command])
 
 
+def _create_logged_session(session_name: str, device_name: str, command: list[str]) -> None:
+    """Like _create_session(), but attaches persistent pipe-pane logging
+    (see _start_session_logging()) *before* `command` (the ssh/telnet
+    transport) starts running in the pane, instead of after -- so the
+    earliest output (login banner, host-key message, the very first
+    password prompt) is never lost to the log. The pane starts with a
+    neutral shell (no command), which is what gives logging a moment to
+    attach before `command` is typed into it and executed."""
+    _run(["new-session", "-d", "-s", session_name, "-x", "220", "-y", "50"])
+    _start_session_logging(session_name, device_name)
+    _send_literal_text(session_name, shlex.join(command))
+    _send_enter(session_name)
+
+
 def _kill_session_if_exists(session_name: str) -> None:
     if _session_exists(session_name):
         _run(["kill-session", "-t", session_name], check=False)
@@ -201,16 +217,24 @@ def _ensure_tmux_environment() -> bool:
     return bootstrap_created
 
 
-def _ensure_managed_session(session_name: str, command: list[str]) -> bool:
+def _ensure_managed_session(session_name: str, command: list[str], *, log_device_name: str | None = None) -> bool:
     """Ensure a managed session exists, creating it with `command` if needed.
 
     Returns True if an existing session was reused, False if a new one was
     created. Existing sessions are never destroyed to reapply configuration.
-    """
+
+    `log_device_name`, when given, creates the session via
+    _create_logged_session() instead of _create_session() -- logging
+    attached before `command` starts, rather than after. Reuse never
+    touches logging either way (a reused session is already logging from
+    when it was first created)."""
     bootstrap_created = _ensure_tmux_environment()
     reused = _session_exists(session_name)
     if not reused:
-        _create_session(session_name, command)
+        if log_device_name is not None:
+            _create_logged_session(session_name, log_device_name, command)
+        else:
+            _create_session(session_name, command)
     if bootstrap_created and session_name != BOOTSTRAP_SESSION:
         _kill_session_if_exists(BOOTSTRAP_SESSION)
     return reused
@@ -339,10 +363,24 @@ def _session_start_timestamp() -> str:
     return datetime.now().strftime(_SESSION_START_FORMAT)
 
 
+def _unique_log_path(log_dir: Path, timestamp: str) -> Path:
+    """The normal filename is `<timestamp>.log`. If two sessions for the
+    same device start within the same second, that name would already
+    exist -- append the smallest `_2`, `_3`, ... suffix that doesn't,
+    rather than silently overwriting/appending to the earlier session's
+    log."""
+    candidate = log_dir / f"{timestamp}.log"
+    suffix = 2
+    while candidate.exists():
+        candidate = log_dir / f"{timestamp}_{suffix}.log"
+        suffix += 1
+    return candidate
+
+
 def _start_session_logging(session_name: str, device_name: str) -> Path:
     log_dir = _device_log_dir(device_name)
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{_session_start_timestamp()}.log"
+    log_path = _unique_log_path(log_dir, _session_start_timestamp())
     # -o: only start piping if this pane isn't already being piped (a no-op
     # on an already-logging pane, so this is safe to call unconditionally
     # right after session creation).
@@ -361,7 +399,11 @@ def list_device_logs(device_name: str) -> list[tuple[datetime, str]]:
     """List (session_start, filename) pairs for one device, newest first.
 
     Returns an empty list for an unknown device or one with no logs yet --
-    never raises for that; this is display-only, read-only data."""
+    never raises for that; this is display-only, read-only data. Session
+    Start is always derived from the `<timestamp>` prefix, even for a
+    collision-suffixed filename (`<timestamp>_2.log`, ...) -- a same-
+    second collision is broken by the numeric suffix (higher = later),
+    not by filename string order."""
     if not _NAME_RE.match(device_name):
         return []
     log_dir = _device_log_dir(device_name)
@@ -369,15 +411,19 @@ def list_device_logs(device_name: str) -> list[tuple[datetime, str]]:
         return []
     entries = []
     for path in log_dir.iterdir():
-        if not path.is_file() or not _LOG_FILENAME_RE.match(path.name):
+        if not path.is_file():
+            continue
+        match = _LOG_FILENAME_RE.match(path.name)
+        if not match:
             continue
         try:
-            started = datetime.strptime(path.stem, _SESSION_START_FORMAT)
+            started = datetime.strptime(match.group(1), _SESSION_START_FORMAT)
         except ValueError:
             continue
-        entries.append((started, path.name))
-    entries.sort(key=lambda entry: entry[0], reverse=True)
-    return entries
+        collision_suffix = int(match.group(2)) if match.group(2) else 0
+        entries.append((started, collision_suffix, path.name))
+    entries.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
+    return [(started, name) for started, _collision_suffix, name in entries]
 
 
 def read_device_log(device_name: str, filename: str) -> str:
@@ -467,9 +513,7 @@ def open_device_terminal(device_name: str, device_config: dict) -> dict:
     """Open (or reuse) the production terminal session for an active-topology device."""
     session_name = derive_production_session_name(device_name)
     transport, command = _build_transport_command(device_config)
-    reused = _ensure_managed_session(session_name, command)
-    if not reused:
-        _start_session_logging(session_name, device_name)
+    reused = _ensure_managed_session(session_name, command, log_device_name=device_name)
     return {
         "device": device_name,
         "session_name": session_name,
@@ -539,8 +583,7 @@ def open_bootstrap_terminal(device_name: str, device_config: dict) -> dict:
     session_name = derive_discovery_session_name(device_name)
     _close_session(session_name)  # never reuse a stale bootstrap session
     transport, command = _build_transport_command(device_config, accept_new_host_keys=True)
-    _ensure_managed_session(session_name, command)
-    _start_session_logging(session_name, device_name)
+    _ensure_managed_session(session_name, command, log_device_name=device_name)
     return {"device": device_name, "session_name": session_name, "transport": transport}
 
 

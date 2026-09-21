@@ -163,3 +163,32 @@ def test_show_logging_tab_completion_devices_and_files():
     ctx = grammar.CliContext(log_device_ids=("R1", "R2"), log_files_by_device={"R1": ("20260921T091500.log",)})
     assert grammar.complete("exec", "show logging R", ctx).candidates == ["R1", "R2"]
     assert grammar.complete("exec", "show logging R1 ", ctx).candidates == ["20260921T091500.log"]
+
+
+# ---- collision-suffixed filenames stay compatible with show logging ----
+
+
+def test_show_logging_lists_collision_suffixed_files(isolated_logs, lab_root, capsys):
+    _write_log(isolated_logs, "R1", "20260921T091500")
+    device_dir = isolated_logs / "R1"
+    (device_dir / "20260921T091500_2.log").write_text("second session\n")
+    session = cfgmod.CliSession(lab_root)
+    climain.execute_command_line(session, "show logging R1")
+    lines = capsys.readouterr().out.strip().splitlines()
+    filenames = {line.split()[-1] for line in lines[2:]}
+    assert filenames == {"20260921T091500.log", "20260921T091500_2.log"}
+
+
+def test_show_logging_device_file_reads_collision_suffixed_filename(isolated_logs, lab_root, capsys):
+    device_dir = isolated_logs / "R1"
+    device_dir.mkdir(parents=True)
+    (device_dir / "20260921T091500_2.log").write_text("collision transcript\n")
+    session = cfgmod.CliSession(lab_root)
+    climain.execute_command_line(session, "show logging R1 20260921T091500_2.log")
+    assert capsys.readouterr().out == "collision transcript\n"
+
+
+def test_show_logging_tab_completion_includes_collision_suffixed_filenames():
+    ctx = grammar.CliContext(log_files_by_device={"R1": ("20260921T091500.log", "20260921T091500_2.log")})
+    candidates = grammar.complete("exec", "show logging R1 ", ctx).candidates
+    assert set(candidates) == {"20260921T091500.log", "20260921T091500_2.log"}

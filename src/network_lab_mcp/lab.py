@@ -235,6 +235,55 @@ def validate_topology_no_access_fields(topology_name: str, devices: dict) -> Non
             )
 
 
+def validate_topology_links(topology_name: str, devices: dict, links: Any) -> None:
+    """Validate the optional `links` list against the schema already used
+    by the topology renderer and Discovery's link builder (each entry: 'a'
+    /'b' endpoint device IDs, plus an optional 'a_interface'/'b_interface').
+
+    `links` omitted entirely is valid (None is not the same as an invalid
+    container type). When present it must be a list; each entry must be a
+    mapping whose 'a'/'b' are non-empty strings naming an existing device
+    in this same topology, and whose 'a_interface'/'b_interface' -- when
+    present -- are non-empty strings. An exact duplicate link (the same
+    unordered pair of (device, interface) endpoints) is rejected; Discovery
+    reconciliation already avoids creating one, but a hand-edited or
+    external-editor duplicate is equally invalid."""
+    if links is None:
+        return
+    if not isinstance(links, list):
+        raise LabConfigError(f"Topology '{topology_name}' has an invalid 'links' section; expected a list.")
+    seen_keys = set()
+    for index, link in enumerate(links):
+        if not isinstance(link, dict):
+            raise LabConfigError(f"Topology '{topology_name}' link #{index + 1} must be a mapping.")
+        endpoint_keys = {}
+        for side in ("a", "b"):
+            value = link.get(side)
+            if not isinstance(value, str) or not value.strip():
+                raise LabConfigError(
+                    f"Topology '{topology_name}' link #{index + 1} is missing a non-empty '{side}'."
+                )
+            if value not in devices:
+                raise LabConfigError(
+                    f"Topology '{topology_name}' link #{index + 1} references unknown device "
+                    f"'{value}' in '{side}'."
+                )
+            interface_field = f"{side}_interface"
+            interface_value = link.get(interface_field)
+            if interface_value is not None and (
+                not isinstance(interface_value, str) or not interface_value.strip()
+            ):
+                raise LabConfigError(
+                    f"Topology '{topology_name}' link #{index + 1} has an invalid '{interface_field}'; "
+                    "expected a non-empty string."
+                )
+            endpoint_keys[side] = (value, interface_value)
+        key = tuple(sorted((endpoint_keys["a"], endpoint_keys["b"])))
+        if key in seen_keys:
+            raise LabConfigError(f"Topology '{topology_name}' link #{index + 1} duplicates an earlier link.")
+        seen_keys.add(key)
+
+
 def validate_topology_data(name: str, data: Any) -> None:
     """Validate an in-memory topology mapping using the same rules `load_topology()`
     applies to a freshly loaded file.
@@ -249,6 +298,7 @@ def validate_topology_data(name: str, data: Any) -> None:
     validate_topology_device_names(name, devices)
     validate_topology_no_access_fields(name, devices)
     validate_device_types(f"Topology '{name}'", devices)
+    validate_topology_links(name, devices, data.get("links"))
 
 
 def load_topology(name: str, lab_root: Path | None = None) -> dict:

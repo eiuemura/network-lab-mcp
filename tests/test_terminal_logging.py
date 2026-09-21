@@ -89,6 +89,87 @@ def test_reused_session_does_not_start_a_second_log_file(isolated_logs, monkeypa
     terminal.close_device_terminal("R9")
 
 
+# ---- logging attaches before the transport command's earliest output
+# (see terminal._create_logged_session()) ----
+
+
+def test_logging_attached_before_earliest_immediate_output(isolated_logs, monkeypatch):
+    # No startup delay at all -- the banner is echoed the instant the
+    # pane's process runs, stress-testing the exact race this guards
+    # against (pipe-pane must already be attached before this line runs).
+    monkeypatch.setattr(
+        terminal, "_build_transport_command", lambda config, **kw: ("ssh", ["echo", "IMMEDIATE-BANNER"])
+    )
+    terminal.open_device_terminal("R9", {"transport": "ssh", "address": "192.0.2.1"})
+
+    log_dir = isolated_logs / "R9"
+    assert _wait_until(lambda: log_dir.is_dir() and any(log_dir.iterdir()))
+    files = list(log_dir.iterdir())
+    assert len(files) == 1
+    assert _wait_until(lambda: "IMMEDIATE-BANNER" in files[0].read_text())
+
+    terminal.close_device_terminal("R9")
+
+
+def test_later_output_still_reaches_the_log_after_the_banner(isolated_logs, monkeypatch):
+    monkeypatch.setattr(
+        terminal,
+        "_build_transport_command",
+        lambda config, **kw: ("ssh", ["bash", "-c", "echo BANNER; sleep 0.3; echo LATER-OUTPUT"]),
+    )
+    terminal.open_device_terminal("R9", {"transport": "ssh", "address": "192.0.2.1"})
+
+    log_dir = isolated_logs / "R9"
+    assert _wait_until(lambda: log_dir.is_dir() and any(log_dir.iterdir()))
+    log_file = next(iter(log_dir.iterdir()))
+    assert _wait_until(lambda: "BANNER" in log_file.read_text())
+    assert _wait_until(lambda: "LATER-OUTPUT" in log_file.read_text())
+
+    terminal.close_device_terminal("R9")
+
+
+def test_discovery_bootstrap_logging_also_attaches_before_earliest_output(isolated_logs, monkeypatch):
+    monkeypatch.setattr(
+        terminal, "_build_transport_command", lambda config, **kw: ("ssh", ["echo", "BOOTSTRAP-IMMEDIATE"])
+    )
+    terminal.open_bootstrap_terminal("R9", {"transport": "ssh", "address": "192.0.2.1"})
+
+    log_dir = isolated_logs / "R9"
+    assert _wait_until(lambda: log_dir.is_dir() and any(log_dir.iterdir()))
+    files = list(log_dir.iterdir())
+    assert len(files) == 1
+    assert _wait_until(lambda: "BOOTSTRAP-IMMEDIATE" in files[0].read_text())
+
+    terminal.close_bootstrap_terminal("R9")
+
+
+def test_normal_terminal_session_still_works_end_to_end(isolated_logs, monkeypatch):
+    """Public terminal_open()/terminal_send()/terminal_read() behavior is
+    unaffected by the neutral-shell-then-typed-command logging change."""
+    monkeypatch.setattr(terminal, "_build_transport_command", lambda config, **kw: ("ssh", ["cat"]))
+    result = terminal.open_device_terminal("R9", {"transport": "ssh", "address": "192.0.2.1"})
+    assert result["reused"] is False
+
+    terminal.send_to_device("R9", "hello-from-test", None, True)
+    assert _wait_until(lambda: "hello-from-test" in terminal.read_device("R9")["content"])
+
+    terminal.close_device_terminal("R9")
+
+
+def test_failed_connection_cleanup_remains_correct(isolated_logs, monkeypatch):
+    """A transport that exits immediately (simulating a failed connection)
+    must not leave a broken session/log state; close_device_terminal()
+    still cleanly reports closed=True."""
+    monkeypatch.setattr(terminal, "_build_transport_command", lambda config, **kw: ("ssh", ["false"]))
+    terminal.open_device_terminal("R9", {"transport": "ssh", "address": "192.0.2.1"})
+
+    log_dir = isolated_logs / "R9"
+    assert _wait_until(lambda: log_dir.is_dir() and any(log_dir.iterdir()))
+
+    result = terminal.close_device_terminal("R9")
+    assert result["closed"] is True
+
+
 def test_terminal_read_behavior_is_unaffected_by_logging(isolated_logs):
     session_name = _open_validation("logtest-read", "cat")
     terminal._start_session_logging(session_name, "R9")
@@ -171,3 +252,82 @@ def test_read_device_log_rejects_path_traversal(isolated_logs, traversal):
 def test_read_device_log_rejects_invalid_device_name(isolated_logs):
     with pytest.raises(terminal.TerminalError):
         terminal.read_device_log("../etc", "20260101T090000.log")
+
+
+# ---- same-second logfile collision (terminal._unique_log_path()) ----
+
+
+def test_unique_log_path_returns_base_name_when_no_collision(tmp_path):
+    log_dir = tmp_path / "R9"
+    log_dir.mkdir()
+    path = terminal._unique_log_path(log_dir, "20260921T091500")
+    assert path.name == "20260921T091500.log"
+
+
+def test_unique_log_path_appends_suffix_on_first_collision(tmp_path):
+    log_dir = tmp_path / "R9"
+    log_dir.mkdir()
+    (log_dir / "20260921T091500.log").write_text("first session\n")
+    path = terminal._unique_log_path(log_dir, "20260921T091500")
+    assert path.name == "20260921T091500_2.log"
+
+
+def test_unique_log_path_increments_suffix_for_repeated_collisions(tmp_path):
+    log_dir = tmp_path / "R9"
+    log_dir.mkdir()
+    (log_dir / "20260921T091500.log").write_text("x")
+    (log_dir / "20260921T091500_2.log").write_text("x")
+    (log_dir / "20260921T091500_3.log").write_text("x")
+    path = terminal._unique_log_path(log_dir, "20260921T091500")
+    assert path.name == "20260921T091500_4.log"
+
+
+def test_two_sessions_starting_in_the_same_second_get_separate_log_files(isolated_logs, monkeypatch):
+    monkeypatch.setattr(terminal, "_session_start_timestamp", lambda: "20260921T091500")
+    monkeypatch.setattr(terminal, "_build_transport_command", lambda config, **kw: ("ssh", ["cat"]))
+
+    terminal.open_device_terminal("R9", {"transport": "ssh", "address": "192.0.2.1"})
+    terminal.close_device_terminal("R9")
+    terminal.open_device_terminal("R9", {"transport": "ssh", "address": "192.0.2.1"})
+
+    log_dir = isolated_logs / "R9"
+    assert _wait_until(lambda: len(list(log_dir.glob("*.log"))) == 2)
+    names = sorted(p.name for p in log_dir.glob("*.log"))
+    assert names == ["20260921T091500.log", "20260921T091500_2.log"]
+
+    terminal.close_device_terminal("R9")
+
+
+def test_list_device_logs_derives_session_start_from_prefix_for_collision_files(isolated_logs):
+    log_dir = isolated_logs / "R9"
+    log_dir.mkdir(parents=True)
+    (log_dir / "20260921T091500.log").write_text("first\n")
+    (log_dir / "20260921T091500_2.log").write_text("second\n")
+
+    entries = terminal.list_device_logs("R9")
+    assert {name for _, name in entries} == {"20260921T091500.log", "20260921T091500_2.log"}
+    for started, _name in entries:
+        assert started.strftime(terminal._SESSION_START_FORMAT) == "20260921T091500"
+
+
+def test_list_device_logs_orders_same_second_collisions_newest_suffix_first(isolated_logs):
+    log_dir = isolated_logs / "R9"
+    log_dir.mkdir(parents=True)
+    (log_dir / "20260921T091500.log").write_text("first\n")
+    (log_dir / "20260921T091500_2.log").write_text("second\n")
+    (log_dir / "20260921T091500_3.log").write_text("third\n")
+
+    entries = terminal.list_device_logs("R9")
+    assert [name for _, name in entries] == [
+        "20260921T091500_3.log",
+        "20260921T091500_2.log",
+        "20260921T091500.log",
+    ]
+
+
+def test_read_device_log_works_for_collision_suffixed_filename(isolated_logs):
+    log_dir = isolated_logs / "R9"
+    log_dir.mkdir(parents=True)
+    (log_dir / "20260921T091500_2.log").write_text("collision content\n")
+
+    assert terminal.read_device_log("R9", "20260921T091500_2.log") == "collision content\n"

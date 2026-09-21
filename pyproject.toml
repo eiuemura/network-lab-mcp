@@ -27,3 +27,8 @@ network-lab-mcp = "network_lab_mcp.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "real_lab: requires real IOS XR lab hardware; opt-in via NETWORK_LAB_REAL_TESTS=1 (skipped by default).",
+]

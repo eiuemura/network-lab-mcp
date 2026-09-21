@@ -27,6 +27,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +35,7 @@ TMUX_SOCKET_NAME = "network-lab-mcp"
 
 PRODUCTION_PREFIX = "network-lab-device-"
 VALIDATION_PREFIX = "network-lab-validation-"
+DISCOVERY_PREFIX = "network-lab-discovery-"
 BOOTSTRAP_SESSION = "network-lab-bootstrap-initializer"
 
 HISTORY_LIMIT = 20000
@@ -98,12 +100,27 @@ def derive_validation_session_name(validation_id: str) -> str:
     return f"{VALIDATION_PREFIX}{validation_id}"
 
 
+def derive_discovery_session_name(device_name: str) -> str:
+    """Derive the private, temporary Discovery bootstrap tmux session name.
+
+    Structurally separate from both the production and validation
+    namespaces (see module docstring) -- never exposed through any public
+    MCP tool, and never confused with a topology device's production
+    session even when discovering a device outside the active topology."""
+    _validate_identifier(device_name, "Device name")
+    return f"{DISCOVERY_PREFIX}{device_name}"
+
+
 def is_production_session(session_name: str) -> bool:
     return session_name.startswith(PRODUCTION_PREFIX)
 
 
 def is_validation_session(session_name: str) -> bool:
     return session_name.startswith(VALIDATION_PREFIX)
+
+
+def is_discovery_session(session_name: str) -> bool:
+    return session_name.startswith(DISCOVERY_PREFIX)
 
 
 def production_device_name(session_name: str) -> str:
@@ -265,6 +282,25 @@ def _close_session(session_name: str) -> bool:
     return True
 
 
+def _wait_for_pattern(session_name: str, pattern: "re.Pattern[str]", timeout: float, poll_interval: float = 0.3) -> str:
+    """Poll pane content until `pattern` matches the tail of the captured
+    text, or raise TerminalError on timeout. Returns the full captured pane
+    text at the moment of the match. Used only by the private Discovery
+    bootstrap path (see discovery.py) -- terminal_read()/terminal_send()
+    remain a simple, unattended capture/send with no waiting loop."""
+    deadline = time.monotonic() + timeout
+    last_text = ""
+    while time.monotonic() < deadline:
+        last_text = _capture_pane(session_name, HISTORY_LIMIT)
+        tail = "\n".join(last_text.splitlines()[-5:])
+        if pattern.search(tail):
+            return last_text
+        time.sleep(poll_interval)
+    raise TerminalError(
+        f"Timed out after {timeout:.0f}s waiting for expected output on session '{session_name}'."
+    )
+
+
 # --------------------------------------------------------------------------
 # Persistent terminal transcript logging (logs/terminal/<device-id>/*.log)
 #
@@ -365,7 +401,14 @@ def _ssh_target(config: dict, default_port: int) -> tuple[str, int]:
     return target, port
 
 
-def _build_transport_command(device_config: dict) -> tuple[str, list[str]]:
+def _build_transport_command(device_config: dict, *, accept_new_host_keys: bool = False) -> tuple[str, list[str]]:
+    """`accept_new_host_keys` is used only by the private Discovery bootstrap
+    path (see discovery.py): Discovery is an unattended flow with no human
+    to answer an interactive host-key confirmation prompt, so it passes
+    `-o StrictHostKeyChecking=accept-new` (still verifies/records the key,
+    it just never blocks on a fresh one) instead of automating that prompt.
+    terminal_open() (human/Claude-driven) never sets this -- its behavior is
+    completely unchanged."""
     transport = device_config.get("transport")
     address = device_config.get("address")
     if not address:
@@ -374,7 +417,10 @@ def _build_transport_command(device_config: dict) -> tuple[str, list[str]]:
     if transport == "ssh":
         _require_binary("ssh")
         target, port = _ssh_target(device_config, 22)
-        command = ["ssh", "-p", str(port), target]
+        host_key_opts = (
+            ["-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=no"] if accept_new_host_keys else []
+        )
+        command = ["ssh", *host_key_opts, "-p", str(port), target]
 
         jump_host = device_config.get("jump_host_config")
         if jump_host is not None:
@@ -384,7 +430,7 @@ def _build_transport_command(device_config: dict) -> tuple[str, list[str]]:
             # sees one interactive session to read/send against, exactly
             # like a direct connection.
             jump_target, jump_port = _ssh_target(jump_host, 22)
-            command = ["ssh", "-J", f"{jump_target}:{jump_port}", "-p", str(port), target]
+            command = ["ssh", *host_key_opts, "-J", f"{jump_target}:{jump_port}", "-p", str(port), target]
 
         return transport, command
 
@@ -454,6 +500,56 @@ def close_device_terminal(device_name: str) -> dict:
     session_name = derive_production_session_name(device_name)
     closed = _close_session(session_name)
     return {"device": device_name, "session_name": session_name, "closed": closed}
+
+
+# --------------------------------------------------------------------------
+# Private Discovery bootstrap connectivity (see discovery.py)
+#
+# Not exposed as an MCP tool and not reachable through terminal_open()'s
+# public device-namespace/active-topology restriction, which stays
+# completely unchanged. This reuses the exact same session primitives and
+# _build_transport_command() (direct SSH and single-hop ProxyJump alike) as
+# production, in a structurally separate namespace so a Discovery session
+# can never be mistaken for, list alongside, or be closed by any public
+# terminal_* tool call.
+# --------------------------------------------------------------------------
+
+
+def open_bootstrap_terminal(device_name: str, device_config: dict) -> dict:
+    """Open a private, temporary session for Discovery only. Always creates
+    a fresh session (Discovery never reuses a prior bootstrap session -- see
+    close_bootstrap_terminal(), which callers must use once collection for
+    that device finishes)."""
+    session_name = derive_discovery_session_name(device_name)
+    _close_session(session_name)  # never reuse a stale bootstrap session
+    transport, command = _build_transport_command(device_config, accept_new_host_keys=True)
+    _ensure_managed_session(session_name, command)
+    _start_session_logging(session_name, device_name)
+    return {"device": device_name, "session_name": session_name, "transport": transport}
+
+
+def send_to_bootstrap(device_name: str, text: str | None, keys: list[str] | None, enter: bool) -> None:
+    session_name = derive_discovery_session_name(device_name)
+    if text:
+        _send_literal_text(session_name, text)
+    if keys:
+        _send_special_keys(session_name, keys)
+    if enter:
+        _send_enter(session_name)
+
+
+def wait_for_bootstrap_pattern(device_name: str, pattern: "re.Pattern[str]", timeout: float) -> str:
+    session_name = derive_discovery_session_name(device_name)
+    return _wait_for_pattern(session_name, pattern, timeout)
+
+
+def read_bootstrap(device_name: str, lines: int = HISTORY_LIMIT) -> str:
+    session_name = derive_discovery_session_name(device_name)
+    return _capture_pane(session_name, lines)
+
+
+def close_bootstrap_terminal(device_name: str) -> bool:
+    return _close_session(derive_discovery_session_name(device_name))
 
 
 # --------------------------------------------------------------------------

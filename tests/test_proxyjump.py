@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from network_lab_mcp import lab, terminal
+from network_lab_mcp import discovery, lab, terminal
 
 
 # ---- jump_hosts schema / validation ----
@@ -134,7 +134,7 @@ def test_get_device_attaches_resolved_jump_host_config(lab_root, monkeypatch):
         "jump_hosts": {
             "jump1": {
                 "type": "host",
-                "address": "192.168.1.10",
+                "address": "192.0.2.10",
                 "transport": "ssh",
                 "port": 22,
                 "username": "jump-user",
@@ -144,7 +144,7 @@ def test_get_device_attaches_resolved_jump_host_config(lab_root, monkeypatch):
         "devices": {
             "R1": {
                 "type": "iosxr",
-                "address": "192.168.70.159",
+                "address": "192.0.2.11",
                 "transport": "ssh",
                 "port": 22,
                 "username": "target-user",
@@ -157,7 +157,7 @@ def test_get_device_attaches_resolved_jump_host_config(lab_root, monkeypatch):
     lab.write_access_info("sample_lab", access_data, lab_root)
 
     _, resolved = lab.get_device("R1")
-    assert resolved["jump_host_config"]["address"] == "192.168.1.10"
+    assert resolved["jump_host_config"]["address"] == "192.0.2.10"
     assert resolved["jump_host_config"]["username"] == "jump-user"
     assert resolved["jump_host_config"]["password"] == "jump-pass"
 
@@ -187,18 +187,18 @@ def test_proxyjump_ssh_argv_has_native_dash_j_option():
     transport, command = terminal._build_transport_command(
         {
             "transport": "ssh",
-            "address": "192.168.70.159",
+            "address": "192.0.2.11",
             "port": 22,
             "username": "cisco",
             "jump_host_config": {
-                "address": "192.168.1.10",
+                "address": "192.0.2.10",
                 "port": 22,
                 "username": "jump-user",
             },
         }
     )
     assert transport == "ssh"
-    assert command == ["ssh", "-J", "jump-user@192.168.1.10:22", "-p", "22", "cisco@192.168.70.159"]
+    assert command == ["ssh", "-J", "jump-user@192.0.2.10:22", "-p", "22", "cisco@192.0.2.11"]
 
 
 def test_proxyjump_preserves_non_default_ports():
@@ -218,10 +218,10 @@ def test_proxyjump_argv_never_contains_passwords():
     _, command = terminal._build_transport_command(
         {
             "transport": "ssh",
-            "address": "192.168.70.159",
+            "address": "192.0.2.11",
             "username": "cisco",
             "password": "target-secret",
-            "jump_host_config": {"address": "192.168.1.10", "username": "jump-user", "password": "jump-secret"},
+            "jump_host_config": {"address": "192.0.2.10", "username": "jump-user", "password": "jump-secret"},
         }
     )
     joined = " ".join(command)
@@ -237,3 +237,88 @@ def test_telnet_transport_unaffected_by_jump_host_key_presence():
     transport, command = terminal._build_transport_command({"transport": "telnet", "address": "192.0.2.1", "port": 23})
     assert transport == "telnet"
     assert command == ["telnet", "192.0.2.1", "23"]
+
+
+# ---- Discovery's automated login must never send the wrong hop's
+# password (see discovery._resolve_login_password()) -- this is a
+# Discovery-only fix; terminal_open() never automates password entry at
+# all (see the regression tests at the end of this section), so it is
+# untouched. ----
+
+_TARGET_CONFIG = {
+    "transport": "ssh",
+    "address": "192.0.2.11",
+    "username": "target-user",
+    "password": "target-secret",
+    "jump_host_config": {"address": "192.0.2.10", "username": "jump-user", "password": "jump-secret"},
+}
+
+_DIRECT_CONFIG = {"transport": "ssh", "address": "192.0.2.11", "username": "target-user", "password": "target-secret"}
+
+
+def test_login_password_direct_ssh_uses_target_password():
+    password = discovery._resolve_login_password("R1", _DIRECT_CONFIG, "target-user@192.0.2.11's password: ")
+    assert password == "target-secret"
+
+
+def test_login_password_proxyjump_prompt_matching_target_uses_target_password():
+    password = discovery._resolve_login_password("R1", _TARGET_CONFIG, "target-user@192.0.2.11's password: ")
+    assert password == "target-secret"
+
+
+def test_login_password_proxyjump_prompt_matching_jump_host_fails_closed():
+    with pytest.raises(discovery.DiscoveryError, match="jump host prompted"):
+        discovery._resolve_login_password("R1", _TARGET_CONFIG, "jump-user@192.0.2.10's password: ")
+
+
+def test_login_password_proxyjump_unrecognized_prompt_format_fails_closed():
+    with pytest.raises(discovery.DiscoveryError, match="could not safely determine"):
+        discovery._resolve_login_password("R1", _TARGET_CONFIG, "Password: ")
+
+
+def test_login_password_never_guesses_target_password_for_jump_prompt():
+    # The specific bug this guards against: target-secret must never be
+    # the value returned for a prompt that is actually the jump host's.
+    with pytest.raises(discovery.DiscoveryError):
+        password = discovery._resolve_login_password("R1", _TARGET_CONFIG, "jump-user@192.0.2.10's password: ")
+        assert password != "target-secret"  # unreachable if it raised, kept for clarity
+
+
+# ---- normal terminal_open() ProxyJump path remains fully unaffected ----
+
+
+def test_terminal_open_proxyjump_argv_construction_unaffected_by_discovery_login_fix():
+    """discovery._resolve_login_password() is never consulted by the
+    production terminal_open() path -- it is only called from
+    discovery._login(). Confirm terminal_open()'s own argv construction
+    still produces the correct native ProxyJump command with distinct
+    jump/target credentials, exactly as before this fix."""
+    transport, command = terminal._build_transport_command(_TARGET_CONFIG)
+    assert transport == "ssh"
+    assert command == ["ssh", "-J", "jump-user@192.0.2.10:22", "-p", "22", "target-user@192.0.2.11"]
+    joined = " ".join(command)
+    assert "target-secret" not in joined
+    assert "jump-secret" not in joined
+
+
+def test_terminal_open_never_reads_or_sends_a_password_at_all(monkeypatch):
+    """terminal_open() (human/Claude-interactive) has no password
+    automation of any kind -- confirmed structurally by proving it works
+    identically whether or not `password` is present in device_config,
+    and that no text is ever sent on the caller's behalf."""
+    sent = []
+    monkeypatch.setattr(terminal, "_send_literal_text", lambda *a, **k: sent.append(a))
+    monkeypatch.setattr(terminal, "_ensure_managed_session", lambda *a, **k: False)
+    monkeypatch.setattr(terminal, "_start_session_logging", lambda *a, **k: None)
+
+    config_with_password = dict(_TARGET_CONFIG)
+    config_without_password = {k: v for k, v in _TARGET_CONFIG.items() if k != "password"}
+    config_without_password["jump_host_config"] = {
+        k: v for k, v in _TARGET_CONFIG["jump_host_config"].items() if k != "password"
+    }
+
+    result_with = terminal.open_device_terminal("R1", config_with_password)
+    result_without = terminal.open_device_terminal("R1", config_without_password)
+
+    assert result_with["transport"] == result_without["transport"] == "ssh"
+    assert sent == []  # open_device_terminal never sends anything itself

@@ -611,7 +611,7 @@ network-lab(config-access-device-R1)# show running-config
 access-info test_lab
  device R1
   type iosxr
-  address 192.168.70.159
+  address 192.0.2.11
   transport ssh
   port 22
   username cisco
@@ -726,7 +726,7 @@ name: test_lab
 jump_hosts:
   jump1:
     type: host
-    address: 192.168.1.10
+    address: 192.0.2.10
     transport: ssh
     port: 22
     username: cisco
@@ -735,7 +735,7 @@ jump_hosts:
 devices:
   R1:
     type: iosxr
-    address: 192.168.70.159
+    address: 192.0.2.11
     transport: ssh
     port: 22
     username: cisco
@@ -746,7 +746,7 @@ devices:
 A device's optional `jump_host` field references one jump host by name
 within the *same* access-info definition. When resolving `R1` above,
 `terminal_open()` launches native OpenSSH with `-J` (conceptually `ssh -J
-cisco@192.168.1.10:22 -p 22 cisco@192.168.70.159`) instead of connecting
+cisco@192.0.2.10:22 -p 22 cisco@192.0.2.11`) instead of connecting
 directly — there is no shell-hop automation (no "SSH to the jump host,
 wait for its shell prompt, then SSH again"), just OpenSSH's own ProxyJump
 handling one SSH connection tunneled through another. The tmux pane still

@@ -270,3 +270,46 @@ def test_device_scoped_view_does_not_leak_other_devices_via_links(lab_root, monk
     climain.execute_command_line(session, "show")
     out = capsys.readouterr().out
     assert "R2" not in out
+
+
+# ---- LLDP parse failure fails Discovery closed, without touching the ----
+# ---- prior candidate (see test_discovery_lldp_parser.py for the parser ----
+# ---- fail-closed contract itself) ----
+
+
+def test_lldp_parse_failure_fails_discovery_without_touching_prior_candidate(lab_root, monkeypatch):
+    def _fake_bootstrap_collect(device_id, device_config):
+        if device_id == "R1":
+            return {
+                "hostname": "HOST-R1",
+                "show_version": "Cisco IOS XR Software",
+                "show_running_config": "hostname HOST-R1",
+                "show_lldp_neighbors": "% Invalid input detected at '^' marker.\n",
+            }
+        return {
+            "hostname": "HOST-R2",
+            "show_version": "Cisco IOS XR Software",
+            "show_running_config": "hostname HOST-R2",
+            "show_lldp_neighbors": "Device ID       Local Intf                      Hold-time  Capability      Port ID\nTotal entries displayed: 0\n",
+        }
+
+    monkeypatch.setattr(discovery, "_bootstrap_collect", _fake_bootstrap_collect)
+
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    candidate_before = session.definition_candidate
+    mode_before = session.mode
+    committed_before = lab.load_topology("sample_lab", lab_root)
+
+    with pytest.raises(discovery.DiscoveryError):
+        discovery.discover_topology(lab_root)
+
+    # discover_topology() itself never touches the CLI session/candidate --
+    # it only ever returns a DiscoveryResult or raises. Confirm the
+    # candidate-application step (session.apply_discovery_result) was never
+    # reached by asserting the session is exactly as it was before.
+    assert session.definition_candidate == candidate_before
+    assert session.mode == mode_before
+    # The real committed topology this run would have merged into is also
+    # completely untouched -- discover_topology() never writes to disk.
+    assert lab.load_topology("sample_lab", lab_root) == committed_before

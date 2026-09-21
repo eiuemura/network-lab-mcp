@@ -58,6 +58,52 @@ def _last_nonblank_line(text: str) -> str:
     return ""
 
 
+# OpenSSH's own interactive password prompt is always exactly
+# "<user>@<host>'s password: " for whichever hop is currently
+# authenticating -- stable, well-documented client-side text (not the
+# remote device's own banner), used below to tell a jump-host prompt
+# apart from the target device's own prompt without guessing.
+_SSH_HOP_PASSWORD_PROMPT_RE = re.compile(r"(?P<hop_user>[^\s@]+)@(?P<hop_host>[^\s']+)'s password:\s*$")
+
+
+def _resolve_login_password(device_id: str, device_config: dict, prompt_line: str) -> str:
+    """Which password answers the current prompt.
+
+    Direct SSH (no jump_host_config) is unambiguous: the one password
+    prompt that can appear is always the target device's own.
+
+    ProxyJump can show *two* separate password prompts in sequence (one
+    per hop), and sending the wrong one to the wrong hop must never
+    happen. This reads the prompting hop's own address out of OpenSSH's
+    prompt text and only answers when it confidently matches the target
+    device's own address; a prompt that matches the jump host's address,
+    or that cannot be confidently attributed to either hop, fails closed
+    (DiscoveryError) instead of guessing -- see "Bounded ProxyJump
+    limitation" in docs/architecture.md. This is a deliberately bounded,
+    Discovery-only limitation: it does not touch, and does not need to
+    touch, terminal_open()'s shared connection-building code, since that
+    path never automates password entry at all."""
+    jump_host_config = device_config.get("jump_host_config")
+    if not jump_host_config:
+        return device_config.get("password") or ""
+
+    hop_match = _SSH_HOP_PASSWORD_PROMPT_RE.search(prompt_line)
+    hop_host = hop_match.group("hop_host") if hop_match else None
+    if hop_host is not None and hop_host == str(device_config.get("address")):
+        return device_config.get("password") or ""
+    if hop_host is not None and hop_host == str(jump_host_config.get("address")):
+        raise DiscoveryError(
+            f"Device '{device_id}': the jump host prompted for an interactive password, which "
+            "Discovery's automated bootstrap login does not support. Configure key/agent-based "
+            "(non-interactive) SSH authentication for the jump host, or use direct SSH for Discovery."
+        )
+    raise DiscoveryError(
+        f"Device '{device_id}': could not safely determine whether the password prompt belongs to the "
+        "jump host or the target device; refusing to guess which credential to send. Configure "
+        "key/agent-based (non-interactive) SSH authentication for the jump host."
+    )
+
+
 def _login(device_id: str, device_config: dict) -> str:
     """Open the bootstrap session, answer at most one password prompt, and
     return the resolved hostname once the IOS XR prompt is seen. Does not
@@ -66,8 +112,9 @@ def _login(device_id: str, device_config: dict) -> str:
     avoids that prompt outright instead)."""
     terminal.open_bootstrap_terminal(device_id, device_config)
     text = terminal.wait_for_bootstrap_pattern(device_id, _LOGIN_WAIT_RE, LOGIN_TIMEOUT_SECONDS)
-    if _PASSWORD_PROMPT_RE.search(_last_nonblank_line(text)):
-        password = device_config.get("password") or ""
+    last_line = _last_nonblank_line(text)
+    if _PASSWORD_PROMPT_RE.search(last_line):
+        password = _resolve_login_password(device_id, device_config, last_line)
         terminal.send_to_bootstrap(device_id, password, None, True)
         text = terminal.wait_for_bootstrap_pattern(device_id, _IOSXR_PROMPT_RE, LOGIN_TIMEOUT_SECONDS)
     match = _IOSXR_PROMPT_RE.search(_last_nonblank_line(text))
@@ -94,8 +141,16 @@ def _extract_command_output(full_text: str, command_text: str) -> str:
 
 
 def _run_command(device_id: str, command_text: str, timeout: float = COMMAND_TIMEOUT_SECONDS) -> str:
+    """Send one command line and wait for the IOS XR prompt to return.
+
+    Captures the pane *before* sending so wait_for_bootstrap_pattern() can
+    require the pane to have actually changed before accepting a prompt
+    match -- otherwise a prompt already sitting in the pane from the
+    *previous* command could satisfy the wait immediately, before this
+    command produced any output at all (a stale-prompt race)."""
+    baseline = terminal.read_bootstrap(device_id)
     terminal.send_to_bootstrap(device_id, command_text, None, True)
-    full_text = terminal.wait_for_bootstrap_pattern(device_id, _IOSXR_PROMPT_RE, timeout)
+    full_text = terminal.wait_for_bootstrap_pattern(device_id, _IOSXR_PROMPT_RE, timeout, baseline_text=baseline)
     return _extract_command_output(full_text, command_text)
 
 
@@ -149,9 +204,20 @@ _CAPABILITY_CODES = {
     "O": "other",
 }
 
+_TOTAL_ENTRIES_RE = re.compile(r"total entries displayed:\s*(\d+)", re.IGNORECASE)
+
 
 def _normalize_capabilities(raw: str) -> tuple[str, ...]:
     return tuple(_CAPABILITY_CODES.get(ch, ch) for ch in raw.strip() if ch.strip())
+
+
+class LldpParseError(Exception):
+    """Raised when `show lldp neighbors` output cannot be recognized as
+    valid IOS XR LLDP structure, or when its own declared entry count
+    disagrees with what was actually parsed -- this is the fail-closed
+    signal that keeps a failed/unrecognized command (e.g. "% Invalid input
+    detected...") from ever being silently treated as a legitimate
+    zero-neighbor response."""
 
 
 def parse_lldp_neighbors(raw_text: str, local_device_id: str) -> list[LldpObservation]:
@@ -165,9 +231,22 @@ def parse_lldp_neighbors(raw_text: str, local_device_id: str) -> list[LldpObserv
     split into exactly the 5 expected fields is skipped rather than raising
     -- this parser only ever produces raw observations, never resolves a
     remote Device ID to a logical managed device (see
-    resolve_remote_identity() for that separate stage)."""
+    resolve_remote_identity() for that separate stage).
+
+    Raises LldpParseError (never returns a misleading empty list) when:
+    - the "Device ID ... Local Intf ..." table header is never recognized
+      at all (e.g. invalid/unrecognized command output such as
+      "% Invalid input detected..." -- structurally indistinguishable from
+      a legitimate zero-neighbor response unless this is checked); or
+    - a "Total entries displayed: N" line is present and disagrees with
+      the number of rows actually parsed.
+
+    A legitimate zero-neighbor response (header present, no data rows, and
+    either no "Total entries displayed" line or one that says 0) still
+    returns an empty list successfully."""
     observations: list[LldpObservation] = []
     in_table = False
+    declared_total: int | None = None
     for raw_line in raw_text.splitlines():
         line = raw_line.strip()
         if not in_table:
@@ -176,7 +255,9 @@ def parse_lldp_neighbors(raw_text: str, local_device_id: str) -> list[LldpObserv
             continue
         if not line:
             break
-        if line.lower().startswith("total entries displayed"):
+        total_match = _TOTAL_ENTRIES_RE.match(line)
+        if total_match:
+            declared_total = int(total_match.group(1))
             break
         if _IOSXR_PROMPT_RE.search(line):
             break
@@ -192,6 +273,16 @@ def parse_lldp_neighbors(raw_text: str, local_device_id: str) -> list[LldpObserv
                 remote_port_id=port_id,
                 capabilities=_normalize_capabilities(capability_raw),
             )
+        )
+    if not in_table:
+        raise LldpParseError(
+            f"Device '{local_device_id}': 'show lldp neighbors' output was not recognized as valid "
+            "IOS XR LLDP structure (no 'Device ID ... Local Intf' table header found)."
+        )
+    if declared_total is not None and declared_total != len(observations):
+        raise LldpParseError(
+            f"Device '{local_device_id}': 'Total entries displayed: {declared_total}' does not match "
+            f"{len(observations)} parsed neighbor row(s)."
         )
     return observations
 
@@ -393,7 +484,10 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
     unresolved: list[UnresolvedNeighbor] = []
     observation_count = 0
     for device_id, info in collected.items():
-        observations = parse_lldp_neighbors(info["show_lldp_neighbors"], device_id)
+        try:
+            observations = parse_lldp_neighbors(info["show_lldp_neighbors"], device_id)
+        except LldpParseError as exc:
+            raise DiscoveryError(str(exc)) from exc
         observation_count += len(observations)
         for obs in observations:
             remote_id = resolve_remote_identity(obs.remote_device_id_raw, identity_map)

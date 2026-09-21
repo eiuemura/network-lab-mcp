@@ -282,19 +282,35 @@ def _close_session(session_name: str) -> bool:
     return True
 
 
-def _wait_for_pattern(session_name: str, pattern: "re.Pattern[str]", timeout: float, poll_interval: float = 0.3) -> str:
+def _wait_for_pattern(
+    session_name: str,
+    pattern: "re.Pattern[str]",
+    timeout: float,
+    poll_interval: float = 0.3,
+    baseline_text: str | None = None,
+) -> str:
     """Poll pane content until `pattern` matches the tail of the captured
     text, or raise TerminalError on timeout. Returns the full captured pane
     text at the moment of the match. Used only by the private Discovery
     bootstrap path (see discovery.py) -- terminal_read()/terminal_send()
-    remain a simple, unattended capture/send with no waiting loop."""
+    remain a simple, unattended capture/send with no waiting loop.
+
+    `baseline_text`, when given, is the pane content captured *before* the
+    command that's now being waited on was sent. A match is only accepted
+    once the captured text has actually changed from that baseline --
+    otherwise a prompt already sitting in the pane from a *previous*
+    command could satisfy `pattern` immediately, before the newly sent
+    command has produced any output at all (a stale-prompt race). Omit it
+    (the default) only when there is genuinely nothing prior to be stale
+    relative to, e.g. a session that was just freshly created."""
     deadline = time.monotonic() + timeout
-    last_text = ""
+    last_text = baseline_text or ""
     while time.monotonic() < deadline:
         last_text = _capture_pane(session_name, HISTORY_LIMIT)
-        tail = "\n".join(last_text.splitlines()[-5:])
-        if pattern.search(tail):
-            return last_text
+        if baseline_text is None or last_text != baseline_text:
+            tail = "\n".join(last_text.splitlines()[-5:])
+            if pattern.search(tail):
+                return last_text
         time.sleep(poll_interval)
     raise TerminalError(
         f"Timed out after {timeout:.0f}s waiting for expected output on session '{session_name}'."
@@ -538,9 +554,11 @@ def send_to_bootstrap(device_name: str, text: str | None, keys: list[str] | None
         _send_enter(session_name)
 
 
-def wait_for_bootstrap_pattern(device_name: str, pattern: "re.Pattern[str]", timeout: float) -> str:
+def wait_for_bootstrap_pattern(
+    device_name: str, pattern: "re.Pattern[str]", timeout: float, baseline_text: str | None = None
+) -> str:
     session_name = derive_discovery_session_name(device_name)
-    return _wait_for_pattern(session_name, pattern, timeout)
+    return _wait_for_pattern(session_name, pattern, timeout, baseline_text=baseline_text)
 
 
 def read_bootstrap(device_name: str, lines: int = HISTORY_LIMIT) -> str:

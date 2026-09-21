@@ -4,13 +4,19 @@ Uses the sanitized real-lab-derived fixtures under tests/fixtures/lldp/ --
 no access-info, credentials, or private addresses. The parser only ever
 produces raw normalized observations; it never resolves a remote Device ID
 to a logical managed device (see test_discovery_identity.py for that
-separate stage)."""
+separate stage).
+
+Fail-closed contract: the parser must never represent invalid/
+unrecognized command output (e.g. "% Invalid input detected...") as an
+empty, "zero neighbors" result -- see the LldpParseError tests below."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from network_lab_mcp.discovery import parse_lldp_neighbors
+import pytest
+
+from network_lab_mcp.discovery import LldpParseError, parse_lldp_neighbors
 
 FIXTURES = Path(__file__).parent / "fixtures" / "lldp"
 
@@ -47,6 +53,20 @@ def test_asr9001_observation_preserves_raw_evidence():
     assert asr.local_interface == "GigabitEthernet0/0/0/10"
     assert asr.remote_port_id == "GigabitEthernet0/0/0/0"
     assert asr.capabilities == ("router",)
+
+
+def test_r3_fixture_parses_two_observations():
+    text = _read("r3_show_lldp_neighbors.txt")
+    observations = parse_lldp_neighbors(text, "R3")
+    assert len(observations) == 2
+    assert {o.remote_device_id_raw for o in observations} == {"APJC_JP_OSK_R1.cisco"}
+
+
+def test_r4_fixture_parses_two_observations():
+    text = _read("r4_show_lldp_neighbors.txt")
+    observations = parse_lldp_neighbors(text, "R4")
+    assert len(observations) == 2
+    assert {o.remote_device_id_raw for o in observations} == {"APJC_JP_OSK_R2.cisco"}
 
 
 # ---- robustness (section 66) ----
@@ -115,6 +135,61 @@ def test_parser_tolerates_spacing_variation():
     assert observations[0].local_interface == "Gi0/0/0/1"
 
 
-def test_parser_returns_empty_list_for_missing_header():
+# ---- fail-closed: invalid/unrecognized output must never become [] ----
+
+
+def test_invalid_input_error_raises_instead_of_empty_list():
     text = "% Invalid input detected at '^' marker.\n"
-    assert parse_lldp_neighbors(text, "R1") == []
+    with pytest.raises(LldpParseError):
+        parse_lldp_neighbors(text, "R1")
+
+
+def test_missing_table_header_raises():
+    text = "RP/0/RP0/CPU0:R1#show lldp neighbors\nSun Sep 20 19:07:12.895 JST\n\nRP/0/RP0/CPU0:R1#"
+    with pytest.raises(LldpParseError):
+        parse_lldp_neighbors(text, "R1")
+
+
+def test_completely_empty_output_raises():
+    with pytest.raises(LldpParseError):
+        parse_lldp_neighbors("", "R1")
+
+
+def test_total_entries_mismatch_raises():
+    # Header recognized and one row parsed, but the device's own declared
+    # count disagrees -- must not silently succeed with the wrong count.
+    text = f"{_HEADER}\nNEIGH.cisco Gi0/0/0/1 120 R Gi0/0/0/1\nTotal entries displayed: 2\n"
+    with pytest.raises(LldpParseError):
+        parse_lldp_neighbors(text, "R1")
+
+
+def test_total_entries_match_succeeds():
+    text = f"{_HEADER}\nNEIGH.cisco Gi0/0/0/1 120 R Gi0/0/0/1\nTotal entries displayed: 1\n"
+    observations = parse_lldp_neighbors(text, "R1")
+    assert len(observations) == 1
+
+
+# ---- valid zero-neighbor output remains a successful parse ----
+
+
+def test_valid_zero_neighbor_output_with_matching_total_succeeds():
+    text = f"{_HEADER}\nTotal entries displayed: 0\n"
+    observations = parse_lldp_neighbors(text, "R1")
+    assert observations == []
+
+
+def test_valid_zero_neighbor_output_without_total_line_succeeds():
+    text = f"{_HEADER}\n\n"
+    observations = parse_lldp_neighbors(text, "R1")
+    assert observations == []
+
+
+# ---- malformed rows are tolerated (skipped), not fatal, when the table
+# header itself was genuinely recognized ----
+
+
+def test_malformed_row_is_skipped_not_fatal():
+    text = f"{_HEADER}\nNEIGH.cisco Gi0/0/0/1 120 R Gi0/0/0/1\ntruncated-row-missing-fields\n"
+    observations = parse_lldp_neighbors(text, "R1")
+    assert len(observations) == 1
+    assert observations[0].remote_device_id_raw == "NEIGH.cisco"

@@ -331,7 +331,7 @@ network-lab(config-topology-srv6_lab)# exit
 network-lab(config)# access-info srv6_lab
 network-lab(config-access-info-srv6_lab)# device R1
 network-lab(config-access-device-R1)# type iosxr
-network-lab(config-access-device-R1)# address 192.168.1.11
+network-lab(config-access-device-R1)# address 192.0.2.11
 network-lab(config-access-device-R1)# tra ssh
 network-lab(config-access-device-R1)# port 22
 network-lab(config-access-device-R1)# username cisco
@@ -340,7 +340,7 @@ network-lab(config-access-device-R1)# root
 network-lab(config)# access-info srv6_lab
 network-lab(config-access-info-srv6_lab)# jump-host jump1
 network-lab(config-access-jump-host-jump1)# type host
-network-lab(config-access-jump-host-jump1)# address 192.168.1.10
+network-lab(config-access-jump-host-jump1)# address 192.0.2.10
 network-lab(config-access-jump-host-jump1)# transport ssh
 network-lab(config-access-jump-host-jump1)# username jumpuser
 network-lab(config-access-jump-host-jump1)# password jumppass
@@ -998,7 +998,7 @@ network-lab(config-access-device-R1)# show running-config
 access-info test_lab
  device R1
   type iosxr
-  address 192.168.70.159
+  address 192.0.2.11
   transport ssh
   port 22
   username cisco

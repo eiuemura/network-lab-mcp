@@ -65,6 +65,29 @@ from) to store evidence, configurations, and reports, organized however the
 task requires. Network Lab MCP has no `runtime/` directory and keeps no
 records of what Claude Code produces.
 
+### running-config cardinality
+
+`running-config` answers *which* committed definitions are currently
+active -- never their content. Each definition type has a different
+cardinality, and the CLI's `show running-config <definition-type>`
+views (see [cli_reference.md](cli_reference.md#show-running-config-definition-type))
+follow it exactly:
+
+| Definition type | Cardinality | `show running-config <type>` |
+|---|---|---|
+| `access_info` | zero or one | no `<name>`; zero is a legitimate, non-error state |
+| `topology` | exactly one, in a valid running state | no `<name>`; missing/invalid is a broken state (fails) |
+| `scenario` | exactly one, in a valid running state | no `<name>`; missing/invalid is a broken state (fails) |
+| `references` | ordered list -- zero, one, or many | multi-select: bare = all, in committed order; `<name>` = one *active* member only |
+
+These views are a read-only dereference of committed state, never a
+general definition-name browser: `access-info`/`topology`/`scenario`
+never take a `<name>` (there is at most one active definition to
+dereference), and `reference <name>` only accepts a name that is
+currently in committed `active_references` -- a reference that exists on
+disk but isn't selected is rejected, exactly like it isn't part of
+running-config anywhere else in this project.
+
 ## Request path
 
 ```

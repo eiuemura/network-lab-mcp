@@ -179,6 +179,10 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
         device_id: tuple(filename for _, filename in terminal.list_device_logs(device_id))
         for device_id in log_device_ids
     }
+    try:
+        committed_active_reference_names = tuple(lab.get_active_reference_names(lab.read_settings(lab_root)))
+    except lab.LabConfigError:
+        committed_active_reference_names = ()
     return grammar.CliContext(
         topology_names=tuple(lab.list_topology_names(lab_root)),
         scenario_names=tuple(lab.list_scenario_names(lab_root)),
@@ -190,6 +194,7 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
         access_info_candidate_jump_host_names=access_info_jump_host_names,
         log_device_ids=log_device_ids,
         log_files_by_device=log_files_by_device,
+        committed_active_reference_names=committed_active_reference_names,
     )
 
 
@@ -618,6 +623,64 @@ def h_show_running_config(session: cfgmod.CliSession, args: dict) -> None:
     text = render_committed_definition(session)
     if text:
         print(text)
+
+
+# --------------------------------------------------------------------------
+# `show running-config <definition-type>` (EXEC only) -- a read-only
+# dereference of one committed active-definition selection. Always reads
+# committed running-config + the committed definition fresh from disk
+# (never the in-memory candidate), and always reuses the same renderers
+# definition mode's own `show running-config` uses -- there is no second
+# rendering system.
+# --------------------------------------------------------------------------
+
+
+def h_show_running_config_access_info(session: cfgmod.CliSession, args: dict) -> None:
+    settings = lab.read_settings(session.lab_root)
+    name = lab.get_active_access_info_name(settings)
+    if not name:
+        print("% No active access-info is configured.")
+        return
+    data = lab.load_access_info(name, session.lab_root)
+    print("\n".join(render_access_info_block(data)))
+
+
+def h_show_running_config_topology(session: cfgmod.CliSession, args: dict) -> None:
+    settings = lab.read_settings(session.lab_root)
+    name = lab.get_active_topology_name(settings)
+    data = lab.load_topology(name, session.lab_root)
+    print("\n".join(render_topology_block(data)))
+
+
+def h_show_running_config_scenario(session: cfgmod.CliSession, args: dict) -> None:
+    settings = lab.read_settings(session.lab_root)
+    name = lab.get_active_scenario_name(settings)
+    data = lab.load_scenario(name, session.lab_root)
+    print(render_generic_definition(data))
+
+
+def h_show_running_config_reference(session: cfgmod.CliSession, args: dict) -> None:
+    settings = lab.read_settings(session.lab_root)
+    names = lab.get_active_reference_names(settings)
+    if not names:
+        print("% No active references are configured.")
+        return
+    # Fail-closed and atomic: load_references() loads every name in
+    # committed order and raises immediately if any one fails, before any
+    # reference block is ever rendered -- never a partial view.
+    references = lab.load_references(names, session.lab_root)
+    print("\n!\n".join(render_generic_definition(reference) for reference in references))
+
+
+def h_show_running_config_reference_name(session: cfgmod.CliSession, args: dict) -> None:
+    name = args["name"]
+    settings = lab.read_settings(session.lab_root)
+    active_names = lab.get_active_reference_names(settings)
+    if name not in active_names:
+        print(f"% Reference '{name}' is not active in running-config.")
+        return
+    data = lab.load_reference(name, session.lab_root)
+    print(render_generic_definition(data))
 
 
 def h_show_configuration(session: cfgmod.CliSession, args: dict) -> None:
@@ -1195,6 +1258,11 @@ def h_access_jump_host_clear_port(session: cfgmod.CliSession, args: dict) -> Non
 HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "exec.configure": h_exec_configure,
     "exec.show_running_config": h_show_running_config,
+    "exec.show_running_config_access_info": h_show_running_config_access_info,
+    "exec.show_running_config_topology": h_show_running_config_topology,
+    "exec.show_running_config_scenario": h_show_running_config_scenario,
+    "exec.show_running_config_reference": h_show_running_config_reference,
+    "exec.show_running_config_reference_name": h_show_running_config_reference_name,
     "exec.show_version": h_show_version,
     "exec.show_logging": h_show_logging,
     "exec.show_logging_device": h_show_logging_device,

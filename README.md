@@ -253,6 +253,20 @@ for the full reference, including the field-level delta rules for
 structured scalar configuration and the bounded whole-document fallback
 used for scenario/reference.
 
+### `show running-config <definition-type>` (EXEC only)
+
+A convenience read-only dereference of the active selections bare `show
+running-config` already lists, built on the exact same committed
+renderers as definition mode: `show running-config access-info` /
+`topology` / `scenario` show that one active definition's committed
+content (no `<name>` -- each has at most one active definition). `show
+running-config reference` shows *every* active reference in committed
+order (multi-select, unlike the other three); `show running-config
+reference <name>` shows just one, and only if it is currently active --
+a reference stored on disk but not selected is rejected, not looked up.
+See [docs/cli_reference.md](docs/cli_reference.md#show-running-config-definition-type)
+for the full reference.
+
 ## Architecture overview
 
 ```

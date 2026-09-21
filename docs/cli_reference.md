@@ -145,6 +145,11 @@ network-lab(config)# show version
 |---------|--------|
 | `configure` (alias: `configure terminal`) | Enter global configuration mode; initializes a running-config candidate (see "Candidate model" below). |
 | `show running-config` | Show the committed MCP definition selection (access-info/topology/scenario/reference names) — never a definition's own content. Also the meaning in global/`running` mode; a definition mode (topology/access-info/scenario/reference) scopes this to that object's own committed state instead — see "`show running-config` vs. `show configuration`". |
+| `show running-config access-info` | Show the committed *content* of the active access-info definition (clear-text passwords, same policy as definition-mode `show running-config`) — see "`show running-config <definition-type>`" below. |
+| `show running-config topology` | Show the committed content of the active topology definition. |
+| `show running-config scenario` | Show the committed content of the active scenario definition. |
+| `show running-config reference` | Show the committed content of *every* active reference, in committed `active_references` order. |
+| `show running-config reference <name>` | Show the committed content of just one active reference. `<name>` must already be active; Tab/`?` only complete active reference names. |
 | `show version` | Show Network Lab MCP's own version/license/runtime information — see "`show version`" above. |
 | `show logging` | List every device's persistent terminal session logs (`logs/terminal/<device-id>/<session-start>.log`), newest first — see "`show logging`" below. EXEC only, like `show version`. |
 | `show logging <device-id>` | List just that device's logs, newest first. `<device-id>` Tab/`?`-completes from devices that currently have at least one log. |
@@ -175,6 +180,80 @@ No logs yet (missing `logs/terminal/` or an empty/unknown device) prints
 raising or fabricating a row. `show logging` (in any of its three forms)
 is EXEC-only, like `show version` — configuration mode `show` semantics
 remain exactly `show`/`show configuration`/`show running-config`.
+
+### `show running-config <definition-type>`
+
+Bare `show running-config` shows *which* definitions are active — it is
+unchanged. These EXEC-only commands are a read-only dereference of one of
+those active selections: they read committed running-config, resolve the
+active name, load *that* committed definition, and render it with the
+exact same renderer definition-mode `show running-config` uses. They
+never read the in-memory candidate, and never scan `lab/` for anything
+other than the one resolved name.
+
+```
+network-lab# show running-config access-info
+access-info test_lab
+ device R1
+  type iosxr
+  address 192.0.2.11
+  ...
+!
+
+network-lab# show running-config topology
+topology sample
+ device R1
+  type iosxr
+ !
+!
+
+network-lab# show running-config scenario
+name: sample
+...
+
+network-lab# show running-config reference
+name: iosxr_basics
+...
+!
+name: sr_mpls
+...
+
+network-lab# show running-config reference sr_mpls
+name: sr_mpls
+...
+```
+
+`access-info`/`topology`/`scenario` are **single-selection**: running-config
+has at most one active definition of each, so there is nothing to name --
+`show running-config access-info test_lab` is rejected the same way an
+unexpected extra argument anywhere else is. `access-info` is the one
+exception that can legitimately have *zero* active definitions (`% No
+active access-info is configured.`); a missing/invalid active topology or
+scenario is a broken running state and fails the same way loading it
+anywhere else would.
+
+`reference` is **multi-select** — `active_references` is an ordered list,
+so:
+
+- bare `show running-config reference` renders *every* active reference,
+  in committed order (never sorted, never merged), separated by a single
+  `!` between blocks — for exactly one active reference this is identical
+  to `show running-config reference <that-name>` (no extra wrapper);
+- `show running-config reference <name>` renders just that one reference,
+  but only when `<name>` is currently active. A reference that exists as
+  a file under `lab/references/` but is *not* in committed
+  `active_references` is rejected (`% Reference '<name>' is not active in
+  running-config.`) -- this command is not a general reference-file
+  lookup, and `<name>` is a case-sensitive object identifier like
+  everywhere else in this CLI (no fuzzy/prefix matching). Tab/`?` only
+  ever complete currently-active reference names.
+- loading is fail-closed and atomic: if any active reference fails to
+  load/validate, the whole multi-reference view fails before anything is
+  printed -- never a partial list.
+
+`show running-config access-info` follows the existing password display
+policy (clear text, same as definition-mode `show running-config` for
+access-info) — it does not change what MCP tools, logs, or errors expose.
 
 ## Global configuration mode commands
 

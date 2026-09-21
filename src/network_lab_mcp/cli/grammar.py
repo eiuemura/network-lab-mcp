@@ -63,6 +63,10 @@ class CliContext:
     # was already typed) can look up just that device's files.
     log_device_ids: tuple[str, ...] = ()
     log_files_by_device: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # `show running-config reference [<name>]` (EXEC only): committed
+    # active_references, in committed order -- never candidate state and
+    # never every stored reference file.
+    committed_active_reference_names: tuple[str, ...] = ()
 
 
 # A provider receives the already-committed raw tokens of the command so
@@ -221,6 +225,10 @@ def provide_log_files(ctx: CliContext, prefix: str, committed: tuple[str, ...] =
     return [n for n in ctx.log_files_by_device.get(device_id, ()) if n.startswith(prefix)]
 
 
+def provide_committed_active_reference_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    return [n for n in ctx.committed_active_reference_names if n.startswith(prefix)]
+
+
 # `help <topic>` is Network Lab MCP's own Quick Start/usage help, distinct
 # from the IOS XR-style `?` context-sensitive syntax help -- see cli/main.py
 # render_quick_start()/render_help_*() for the actual topic content. This
@@ -321,6 +329,7 @@ def _add_show_subtree(
     configuration_description: str = "Show candidate configuration",
     include_version: bool = False,
     include_logging: bool = False,
+    include_running_config_definition_views: bool = False,
     bare_show: bool = False,
     show_keyword_description: str = "Show information",
 ) -> None:
@@ -338,6 +347,8 @@ def _add_show_subtree(
     show = root.add_literal("show", show_keyword_description)
     running = show.add_literal("running-config", running_config_description)
     running.set_command(f"{mode}.show_running_config", running_config_description)
+    if include_running_config_definition_views:
+        _add_running_config_definition_views_subtree(running, mode)
     if include_version:
         version = show.add_literal("version", "Show Network Lab MCP version information")
         version.set_command(f"{mode}.show_version", "Show Network Lab MCP version information")
@@ -348,6 +359,39 @@ def _add_show_subtree(
         show.set_command(f"{mode}.show_configuration", configuration_description)
     if include_logging:
         _add_logging_subtree(show, mode)
+
+
+def _add_running_config_definition_views_subtree(running_node: Node, mode: str) -> None:
+    """`show running-config <definition-type>` (EXEC only): a read-only
+    dereference of one committed active-definition selection -- never
+    candidate state, never a directory listing. `access-info`/`topology`/
+    `scenario` are single-selection (no further argument: there is at
+    most one active definition of each, so there is nothing to select
+    between). `reference` is multi-select (an ordered list), so it is
+    itself a complete command (all active references, in committed
+    order) *and* accepts a further `<name>` naming one of them -- the
+    same "node carries both a command and children" mechanism used by
+    bare `show`/`help`/`show logging`."""
+    for kind in ("access-info", "topology", "scenario"):
+        action = kind.replace("-", "_")
+        node = running_node.add_literal(kind, f"Committed active {kind} definition")
+        node.set_command(f"{mode}.show_running_config_{action}", f"Committed active {kind} definition")
+
+    reference_node = running_node.add_literal("reference", "Committed active reference definition(s)")
+    reference_node.set_command(
+        f"{mode}.show_running_config_reference", "All committed active reference definitions, in order"
+    )
+    reference_arg = Argument(
+        "name",
+        "Committed active reference name",
+        provider=provide_committed_active_reference_names,
+        hint="<name>",
+        enumerate_when_empty=True,
+    )
+    reference_next = reference_node.add_argument(reference_arg)
+    reference_next.set_command(
+        f"{mode}.show_running_config_reference_name", "One committed active reference definition"
+    )
 
 
 def _add_logging_subtree(show_node: Node, mode: str) -> None:
@@ -443,6 +487,7 @@ def _build_exec_root() -> Node:
         include_configuration=False,
         include_version=True,
         include_logging=True,
+        include_running_config_definition_views=True,
     )
     _add_help_subtree(root, "exec")
 

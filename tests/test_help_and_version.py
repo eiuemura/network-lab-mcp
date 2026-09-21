@@ -49,6 +49,8 @@ def test_help_claude_mentions_seven_tools_and_privacy_boundary():
         assert tool in text
     assert "password" in text.lower()
     assert "access-info" in text
+    assert "jump" in text.lower()  # ProxyJump resolution is internal to MCP
+    assert "logical device id" in text.lower()
     # Reuses the exact, already-verified registration command from
     # README.md rather than inventing a new one.
     assert "claude mcp add --scope user --transport stdio network-lab -- network-lab-mcp" in text
@@ -62,7 +64,7 @@ def test_help_claude_command_matches_readme():
 
 def test_help_workflow_lists_ordered_steps_and_mentions_discovery_deferred():
     text = climain.render_help_workflow()
-    assert "1. Configure access-info." in text
+    assert "1. Configure access-info" in text
     assert "8. Use Claude Code." in text
     assert "discovery" in text.lower()
     assert "not implemented yet" in text.lower()
@@ -82,6 +84,12 @@ def test_help_cli_is_short_and_does_not_duplicate_full_reference():
     assert "?" in text
     assert "clear" in text
     assert "commit" in text
+    assert "root" in text
+    assert "end" in text
+    assert "exit" in text
+    assert "show configuration" in text
+    assert "show running-config" in text
+    assert "stays in the current mode" in text.lower()
     # Concise: much shorter than the full cli_reference.md.
     with open("docs/cli_reference.md", encoding="utf-8") as handle:
         full_reference = handle.read()

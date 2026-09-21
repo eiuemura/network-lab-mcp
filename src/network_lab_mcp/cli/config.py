@@ -82,7 +82,8 @@ def new_reference_data(name: str) -> dict:
     return {"name": name, "description": "", "guidance": []}
 
 
-DEVICE_FIELD_ORDER = ("type", "address", "transport", "port", "username", "password")
+DEVICE_FIELD_ORDER = ("type", "address", "transport", "port", "username", "password", "jump_host")
+JUMP_HOST_FIELD_ORDER = ("type", "address", "transport", "port", "username", "password")
 
 # Which config mode "exit" moves up to. Only "global" is missing here --
 # its exit/end is a guarded jump straight to EXEC, handled separately.
@@ -94,6 +95,7 @@ _EXIT_PARENT_MODE = {
     "reference": "global",
     "device": "topology",
     "access_device": "access_info",
+    "access_jump_host": "access_info",
 }
 
 _DEFINITION_LOADERS: dict[str, tuple[Callable, Callable, Callable]] = {
@@ -150,6 +152,7 @@ class CliSession:
         self.definition_original: Optional[dict] = None  # None => new/unsaved
         self.definition_candidate: Optional[dict] = None
         self.current_device_name: Optional[str] = None
+        self.current_jump_host_name: Optional[str] = None
 
     # ---- scoped dirty state ----
 
@@ -176,6 +179,7 @@ class CliSession:
         self.definition_original = None
         self.definition_candidate = None
         self.current_device_name = None
+        self.current_jump_host_name = None
         self.mode = "global"
 
     def reset_to_exec(self) -> None:
@@ -189,6 +193,7 @@ class CliSession:
         self.definition_original = None
         self.definition_candidate = None
         self.current_device_name = None
+        self.current_jump_host_name = None
 
     def clear(self) -> None:
         """Discard every uncommitted change in the current configure
@@ -204,23 +209,39 @@ class CliSession:
                 self.definition_name = None
                 self.definition_candidate = None
                 self.current_device_name = None
+                self.current_jump_host_name = None
             else:
                 self.definition_candidate = copy.deepcopy(self.definition_original)
                 if self.current_device_name is not None:
                     devices = self.definition_candidate.get("devices") or {}
                     if self.current_device_name not in devices:
                         self.current_device_name = None
+                if self.current_jump_host_name is not None:
+                    jump_hosts = self.definition_candidate.get("jump_hosts") or {}
+                    if self.current_jump_host_name not in jump_hosts:
+                        self.current_jump_host_name = None
         self._reconcile_mode_after_clear()
 
     def _reconcile_mode_after_clear(self) -> None:
         """After clear(), fall back to the nearest still-valid parent mode
         instead of lingering in a submode whose target no longer exists."""
-        if self.definition_kind is None and self.mode in ("topology", "device", "access_info", "access_device", "scenario", "reference"):
+        if self.definition_kind is None and self.mode in (
+            "topology",
+            "device",
+            "access_info",
+            "access_device",
+            "access_jump_host",
+            "scenario",
+            "reference",
+        ):
             self.mode = "global"
             self.current_device_name = None
+            self.current_jump_host_name = None
             return
         if self.mode in ("device", "access_device") and self.current_device_name is None:
             self.mode = "topology" if self.mode == "device" else "access_info"
+        if self.mode == "access_jump_host" and self.current_jump_host_name is None:
+            self.mode = "access_info"
 
     # ---- definition switching guard (shared by topology/access-info/scenario/reference) ----
 
@@ -288,6 +309,14 @@ class CliSession:
     def set_topology_description(self, text: str) -> None:
         self.definition_candidate["description"] = text
 
+    # ---- navigation: `root` jumps straight to global config, preserving
+    # candidate state (never commits, never clears) ----
+
+    def go_to_global(self) -> None:
+        self.current_device_name = None
+        self.current_jump_host_name = None
+        self.mode = "global"
+
     # ---- device sub-editing, shared by topology (safe fields only) and
     # access-info (private connection fields) ----
 
@@ -314,6 +343,26 @@ class CliSession:
     def clear_device_field(self, field_name: str) -> None:
         self._device().pop(field_name, None)
 
+    # ---- jump-host sub-editing (access-info only: a reusable single-hop
+    # OpenSSH ProxyJump endpoint, referenced by name from a device's own
+    # optional 'jump_host' field) ----
+
+    def enter_access_info_jump_host(self, name: str) -> None:
+        jump_hosts = self.definition_candidate.setdefault("jump_hosts", {})
+        if name not in jump_hosts:
+            jump_hosts[name] = {}
+        self.current_jump_host_name = name
+        self.mode = "access_jump_host"
+
+    def _jump_host(self) -> dict:
+        return self.definition_candidate["jump_hosts"][self.current_jump_host_name]
+
+    def set_jump_host_field(self, field_name: str, value) -> None:
+        self._jump_host()[field_name] = value
+
+    def clear_jump_host_field(self, field_name: str) -> None:
+        self._jump_host().pop(field_name, None)
+
     # ---- running-config selection (topology/scenario/references MCP uses) ----
 
     def _definition_will_exist(self, kind: str, exists_fn: Callable, name: str) -> bool:
@@ -323,6 +372,17 @@ class CliSession:
         committed) is allowed, since running-config and definition editing
         are independent candidate scopes that can be open at once."""
         return bool(exists_fn(name, self.lab_root) or (self.definition_kind == kind and self.definition_name == name))
+
+    def select_access_info(self, name: str) -> None:
+        if not self._definition_will_exist("access_info", lab.access_info_exists, name):
+            raise ConfigError(f"Access information '{name}' does not exist.")
+        self.settings_candidate["active_access_info"] = name
+
+    def clear_access_info_selection(self) -> None:
+        """`no access-info`: remove the selection from the candidate
+        (omission, not a sentinel value like "none"/"disabled") -- a
+        legitimate fail-closed state once committed, not an error."""
+        self.settings_candidate.pop("active_access_info", None)
 
     def select_topology(self, name: str) -> None:
         if not self._definition_will_exist("topology", lab.topology_exists, name):
@@ -378,6 +438,10 @@ class CliSession:
             return definition_being_written and self.definition_kind == kind and self.definition_name == name
 
         settings = self.settings_candidate
+        access_info_name = settings.get("active_access_info")
+        if access_info_name and not _will_exist("access_info", lab.access_info_exists, access_info_name):
+            errors.append(f"Access information '{access_info_name}' does not exist.")
+
         target_topology = settings.get("active_topology")
         if not target_topology:
             errors.append("Running configuration is missing a valid active topology.")

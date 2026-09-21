@@ -25,7 +25,7 @@ summary):
 Human
   |
   +--> running-config
-  |      topology / scenario / references selected for MCP
+  |      access-info / topology / scenario / references selected for MCP
   |      (lab/settings.yaml -- a SELECTION, not a definition)
   |
   +--> access-info
@@ -101,47 +101,80 @@ private access fields at all.
 Claude / terminal_open("R1")
   |
   v
+MCP reads committed running-config, resolves active topology
+  |
+  v
 MCP verifies R1 exists in active topology
   |
   v
 MCP private access resolver
   |
-  +--> search committed access-info definitions for R1
+  +--> resolve running-config's selected access-info (active_access_info)
   |
-  +--> no match       -> fail closed
-  +--> multiple match -> fail closed
-  +--> one match      -> continue
+  +--> none selected           -> fail closed
+  +--> selected file missing   -> fail closed
+  |
+  +--> load ONLY that access-info definition, look up R1
+  |
+  +--> not present in it       -> fail closed  (no other file is searched)
   |
   +--> compare topology/access-info device type
   |       mismatch -> fail closed
   |
-  v
-tmux / ssh / telnet
+  +--> device has a jump_host reference?
+  |       yes -> resolve it within the same access-info definition
+  |              -> attach as jump_host_config (fails closed if the
+  |                 referenced jump host is somehow absent)
+  |       no  -> nothing to attach
   |
   v
-Device
+tmux / native OpenSSH (direct, or -J ProxyJump if jump_host_config is set) / telnet
+  |
+  v
+Device (optionally via one jump host)
 ```
 
-This lookup is implemented by `lab.resolve_device_access()` (a plain search
-loop over `lab/access-info/*.yaml`, not a cross-file framework) and
-`lab.get_device()` (which adds the topology-membership check and the
-type-consistency check). No credential value ever appears in a "not found",
-"ambiguous", or "type mismatch" error.
+This is implemented by `lab.get_device()`: it reads
+`get_active_access_info_name(settings)` (running-config's
+`active_access_info` — a missing field means "none selected", not an
+error), loads *only* that one access-info definition, looks up the device
+in it, and (if the device references a `jump_host`) resolves that jump
+host within the same definition. No credential value ever appears in a
+"no access-info selected", "does not exist", "not present", "type
+mismatch", or "unknown jump host" error.
 
-### Temporary limitation: topology-scoped association is deferred
+### Access-info lookup is no longer global
 
-This lookup is deliberately **not yet scoped by topology** — it searches
-every committed access-info definition, globally, for an exact device-ID
-match. A device identifier reused across two different access-info
-definitions is therefore ambiguous regardless of which topology is active,
-and neither a matching filename, edit recency, nor alphabetical order is
-used to break the tie. This is a temporary, explicit Step 2.5 constraint,
-not an oversight: topology-scoped access-info association (letting a
-topology declare which access-info definition(s) its devices resolve
-against) is deferred to Step 3, alongside topology discovery. See
-README.md's
-["Temporary limitation: global device-ID uniqueness"](../README.md#temporary-limitation-global-device-id-uniqueness)
-for the user-facing version of this constraint.
+An earlier version of this resolver searched every committed
+`lab/access-info/*.yaml` file for a matching device ID and failed closed
+on ambiguity if more than one file contained it — a temporary, unscoped
+lookup used before running-config could explicitly select one access-info
+definition. That global search is now removed entirely (not bypassed): only
+the definition named by `active_access_info` is ever read. The same device
+ID may safely appear in other, unselected access-info files; selecting a
+different access-info in running-config (see `cli/config.py`'s
+`select_access_info()`/`clear_access_info_selection()`) is what changes
+which one resolves a given device.
+
+### Single-hop OpenSSH ProxyJump
+
+A device's optional `jump_host` field names one jump host, within the same
+access-info definition, that `terminal.py` connects through using native
+OpenSSH's own `-J` option (`ssh -J jump-user@jump-host:jump-port -p
+port user@target`) instead of a direct connection —
+`terminal._build_transport_command()` builds this argv (list-based, never
+`shell=True`, never a password) purely from the resolved device/jump-host
+dicts, with no shell-hop automation: OpenSSH itself tunnels the second SSH
+connection through the first, and the tmux pane still only ever shows the
+one resulting interactive session that `terminal_read()`/`terminal_send()`
+already know how to drive. `lab.validate_access_info_data()` (via
+`validate_jump_hosts()`/`validate_device_jump_host_references()`) is the
+single validation primitive enforcing "jump host type is always `host`",
+"jump host transport is always `ssh`", "a device using `jump_host` must
+itself use `transport: ssh`", and "the referenced jump host exists" —
+applied identically whether the data came from a CLI commit or a manually
+edited file. Nesting one jump host behind another is not represented in
+the schema at all, so multi-hop chains cannot occur even by mistake.
 
 ## Installation model and lab root ownership
 
@@ -341,6 +374,17 @@ was merely opened is never rewritten, a running-config-only change never
 touches definition YAML, and a fully clean commit writes nothing. Writes are
 atomic (write to a sibling `.tmp` file, flush, `os.replace()`).
 
+`commit()` itself never changes `cli/config.CliSession.mode` — `cli/main.py`
+never sets it after a `_do_commit()` call, success or no-op. Navigating
+between modes is `root` (jump straight to global configuration mode from
+any nested submode, preserving candidate state, driven by
+`CliSession.go_to_global()`), `exit` (exactly one level up, via the
+`_EXIT_PARENT_MODE` table below), and `end` (a guarded jump to EXEC,
+`overall_dirty`-gated, unchanged from earlier Step 2 behavior) — none of
+which ever commits or clears. `cli/config._EXIT_PARENT_MODE` is the single
+source of truth for "exit"'s per-mode destination; `cli/main.py`'s generic
+`h_exit()` handler reads it instead of hard-coding one function per mode.
+
 ### External YAML editor (topology / scenario / reference)
 
 `cli/editor.py` resolves an external editor ($VISUAL, then $EDITOR, then a
@@ -355,7 +399,8 @@ uses. A non-zero editor exit, invalid YAML, or a non-mapping root leaves the
 candidate untouched and reports a safe error (no raw editor content, no
 credentials). The temporary file is always removed, on every path including
 exceptions. access-info does not offer `edit` in this phase — its private,
-masking-aware fields stay on the structured CLI path.
+private fields stay on the structured CLI path (see README.md's
+"Password display policy" for how those fields are rendered).
 
 ### Committed-only MCP boundary
 
@@ -375,21 +420,24 @@ tool call, with no MCP server restart.
 To keep the MCP layer thin and the scope tight, this repository still
 deliberately excludes:
 
-- Topology discovery (CDP/LLDP), `discover topology`, and topology-scoped
-  access-info association — this is Step 3.
+- Topology discovery (CDP/LLDP) and `discover topology` — this is Step 3.
 - An HTTP MCP server, containerization, or an MCP-owned runtime/session
   database.
 - A public local-shell transport (local processes are used only inside the
   internal validation helpers described above).
 - External-editor support for access-info (structured CLI editing only in
   this phase).
+- Multi-hop SSH jump chains: a jump host cannot itself reference another
+  jump host; single-hop OpenSSH ProxyJump only.
+- A shell-hop automation/state machine for ProxyJump: OpenSSH's own `-J`
+  option is used directly, so there is nothing to automate.
 - A generic cross-file consistency framework: the topology/access-info
   `device.type` check is a narrow, single-purpose comparison at resolution
   time, not a general validation framework.
 - A persistent candidate journal or crash-recovery database: candidate
   configuration is memory-only and intentionally does not survive an abrupt
   CLI process termination (SIGKILL, crash, terminal destruction). Normal
-  exit paths (`exit`, `end`, `clear`, Ctrl-D) never lose a candidate
+  exit paths (`root`, `exit`, `end`, `clear`, Ctrl-D) never lose a candidate
   unexpectedly; that guarantee does not extend to a killed process.
 
 These are candidates for later steps, not for this repository's current

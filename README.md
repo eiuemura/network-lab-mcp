@@ -13,8 +13,12 @@ This repository includes **Step 1** (the MCP server and terminal
 foundation), **Step 2** (an IOS XR-compatible human-facing CLI, launched via
 `./run_cli.sh`, for creating/editing lab definitions through a
 candidate/commit model), and **Step 2.5** (separating private device access
-from safe topology data, and reworking the CLI's configuration model around
-that separation — see [Configuration model](#configuration-model) below).
+from safe topology data, reworking the CLI's configuration model around
+that separation — see [Configuration model](#configuration-model) below —
+completing the IOS XR-style navigation model (`root`/`exit`/`end`, `commit`
+staying in the current mode, uncommitted-changes-only `show
+configuration`), explicitly selecting access-info in running-config, and
+adding single-hop OpenSSH ProxyJump support via access-info `jump_hosts`).
 Topology discovery (CDP/LLDP) and a `discover topology` command are still
 not implemented — that is Step 3. See
 [Current limitations](#current-limitations) and [Future steps](#future-steps).
@@ -152,6 +156,14 @@ stdio protocol.
   line) / Ctrl-D (EOF; blocked while uncommitted changes exist) behavior.
   Repeated `?` leaves a `prompt + buffer + ?` transcript line in scrollback
   before each help block, matching a real terminal.
+- **Multi-line configuration paste**: pasting a multi-line block (e.g.
+  copied from a `show` output) runs each physical line through the same
+  grammar/handlers as manually typed input, in order, so mode-changing
+  lines (`device`/`exit`/`root`/`end`/`clear`/`commit`/...) take effect
+  before the next line runs. Leading indentation and standalone `!`
+  separator lines are ignored; processing stops at the first invalid line,
+  with earlier lines left in the candidate. See
+  [docs/cli_reference.md](docs/cli_reference.md#multi-line-configuration-paste).
 - **Fixed CLI keywords are case-insensitive**; **object identifiers —
   topology, scenario, reference, access-info, and device names — are
   case-sensitive** and are never silently case-folded, including in dynamic
@@ -171,16 +183,74 @@ stdio protocol.
   running-config selection may point at a definition just created in the
   same commit); an unchanged definition that was merely opened is never
   rewritten, and a no-op commit writes nothing at all.
+- **Commit stays in the current mode**: `commit` only saves the candidate;
+  IOS XR-style navigation (`root`, `exit`, `end`) is what moves you between
+  modes. `root` jumps straight to global configuration mode from any nested
+  submode, preserving candidate state (never commits, never clears); `exit`
+  moves exactly one configuration level up; `end` is a guarded jump to
+  EXEC, blocked while any candidate scope is dirty, exactly like `exit`/`end`
+  always were.
+- **`show`/`show configuration` inside a configuration mode display
+  uncommitted changes only** — a bounded, pragmatic delta (field-level for
+  structured scalar fields such as access-info/device/jump-host fields,
+  the whole small document for open-schema scenario/reference content),
+  never a full dump of the candidate. Bare `show` (no argument) is the same
+  command as `show configuration` there; entering a brand-new, still-empty
+  object produces no output. `show running-config` is unaffected: it always
+  shows the full current committed state for the current context (see
+  ["Configuration show semantics"](#configuration-show-semantics) below).
 - **Password safety**: passwords are stored in access-info YAML in plain
-  text (this is a lab tool, not a secret manager) but are never shown by
-  `show configuration`/`show running-config`, never offered as a completion
-  candidate, and never retained in this process's in-memory history.
+  text (this is a lab tool, not a secret manager). Explicit local CLI
+  display (`show`/`show configuration`/`show running-config` for an
+  access-info device or jump host) shows the password in clear text —
+  see ["Password display policy"](#password-display-policy) — but it is
+  never offered as a completion candidate, never retained in this
+  process's in-memory history, and never reaches MCP tool results, logs,
+  or error messages.
 - **Committed-state boundary**: the MCP server only ever reads committed
   `lab/settings.yaml`, `lab/topologies/*.yaml`, and (indirectly, for
   terminal access) `lab/access-info/*.yaml`; candidate configuration is
   memory-only and invisible to Claude Code until `commit` succeeds, at which
   point it becomes visible on the very next MCP tool call — no MCP server
   restart is needed.
+
+## Configuration show semantics
+
+`show running-config` and `show configuration` are both scoped to the
+*current CLI context*:
+
+- **EXEC, global configuration, and `running` mode**: `show running-config`
+  is the committed MCP running-config selection (access-info/topology/
+  scenario/reference names) — this is the one meaning that predates
+  definitions having their own candidates. `show configuration` is the
+  candidate version of the same thing.
+- **A definition mode** (`topology`/`access-info`/`scenario`/`reference`,
+  or their nested device/jump-host submodes): both commands are scoped to
+  *that one object* instead — `show running-config` is its full committed
+  state (re-read fresh from disk; empty if never committed), `show
+  configuration` (and bare `show`) is its *uncommitted changes only*.
+
+```
+network-lab(config)# access-info test_lab
+network-lab(config-access-info-test_lab)# device R1
+network-lab(config-access-device-R1)# type iosxr
+network-lab(config-access-device-R1)# address 192.0.2.11
+network-lab(config-access-device-R1)# show running-config
+network-lab(config-access-device-R1)# show
+access-info test_lab
+ device R1
+  type iosxr
+  address 192.0.2.11
+ !
+!
+```
+
+(`show running-config` printed nothing — "empty" means no output line at
+all — because `test_lab` was never committed.) See
+[docs/cli_reference.md](docs/cli_reference.md#show-running-config-vs-show-configuration)
+for the full reference, including the field-level delta rules for
+structured scalar configuration and the bounded whole-document fallback
+used for scenario/reference.
 
 ## Architecture overview
 
@@ -234,10 +304,11 @@ network-lab-mcp/
 │   ├── principles.yaml
 │   │
 │   ├── access-info/
-│   │   └── sample_lab.yaml    # tracked; fictional sample only
+│   │   ├── sample.yaml        # tracked; fictional sample only
+│   │   └── ...                # any other file here is local/private, gitignored
 │   │
 │   ├── topologies/
-│   │   └── sample_lab.yaml    # tracked; safe logical data, documentation-only addresses
+│   │   └── sample.yaml        # tracked; safe logical data, documentation-only addresses
 │   │
 │   ├── scenarios/
 │   │   └── sample.yaml
@@ -252,8 +323,10 @@ network-lab-mcp/
     └── scenario_format.md
 ```
 
-`lab/access-info/sample_lab.yaml` and `lab/topologies/sample_lab.yaml`
-share a basename purely as a sample convenience — see
+`lab/access-info/sample.yaml` and `lab/topologies/sample.yaml` are
+independent sample files that happen to share a name purely by convention
+(both are the one canonical public sample for their respective concept) —
+see
 ["Access-info and topology filenames are not linked"](#access-info-and-topology-filenames-are-not-linked).
 
 ## Installation model
@@ -369,7 +442,7 @@ tool call.
 
 ### Sample topology and access-info
 
-`lab/topologies/sample_lab.yaml` and `lab/access-info/sample_lab.yaml` are
+`lab/topologies/sample.yaml` and `lab/access-info/sample.yaml` are
 tracked in git. The topology holds only safe logical data (devices, device
 type, links); the access-info definition holds the matching fictional
 connection data, using only documentation-only addresses from the RFC 5737
@@ -380,13 +453,16 @@ device-name/session-name mapping — not to be a real lab.
 
 ### Access-info and topology filenames are not linked
 
-`lab/access-info/sample_lab.yaml` and `lab/topologies/sample_lab.yaml`
-sharing a basename is a sample convenience, **not** an association
-mechanism. Network Lab MCP never infers "this access-info file belongs to
-this topology" from matching filenames — see
-["Temporary limitation: global device-ID uniqueness"](#temporary-limitation-global-device-id-uniqueness)
-below for how a device's access information is actually resolved in this
-phase, and why that lookup is deliberately not yet scoped by topology.
+Network Lab MCP never infers "this access-info file belongs to this
+topology" from filenames, matching or not — running-config's explicit
+`access-info <name>` / `topology <name>` selections are the only
+association; see
+["Device access resolution"](#device-access-resolution) below. This holds
+regardless of which access-info files happen to exist locally or what
+they're named; only `lab/access-info/sample.yaml` is tracked in git (see
+["Git safety design"](#git-safety-design) below), but any other
+`lab/access-info/*.yaml` a user creates locally is just as valid a
+selection target.
 
 ### Topology device-name validation
 
@@ -463,25 +539,28 @@ other private lab information. Rather than relying on documentation alone,
 
 - `lab/settings.yaml` (your local running-config selection) is gitignored.
 - `lab/settings.example.yaml` is tracked.
-- `lab/topologies/sample_lab.yaml` is tracked (safe logical data only).
-- `lab/access-info/sample_lab.yaml` is tracked (fictional data only).
+- `lab/topologies/sample.yaml` is tracked (safe logical data only).
+- `lab/access-info/sample.yaml` is tracked (fictional data only) — the
+  **only** access-info YAML tracked in git.
 - Every other file under `lab/topologies/*.yaml` and `lab/access-info/*.yaml`
-  is gitignored by default.
+  is gitignored by default, including any real access-info file a user
+  creates locally (e.g. via the CLI's `access-info <name>` /
+  `jump-host <name>` submodes) — regardless of its name.
 
 Concretely:
 
 ```gitignore
 lab/settings.yaml
 lab/topologies/*.yaml
-!lab/topologies/sample_lab.yaml
+!lab/topologies/sample.yaml
 lab/access-info/*.yaml
-!lab/access-info/sample_lab.yaml
+!lab/access-info/sample.yaml
 ```
 
 This was validated by creating `lab/access-info/private_lab.yaml` and
 `lab/topologies/private_lab.yaml` and confirming that a plain `git add .`
-does not stage either, while `lab/access-info/sample_lab.yaml`,
-`lab/topologies/sample_lab.yaml`, and `lab/settings.example.yaml` do get
+does not stage either, while `lab/access-info/sample.yaml`,
+`lab/topologies/sample.yaml`, and `lab/settings.example.yaml` do get
 staged normally.
 
 This is **not** a complete security boundary — it is a default that lowers
@@ -508,54 +587,189 @@ are used only to drive interactive terminal login. Network Lab MCP:
   includes it either.
 
 The Step 2 human CLI applies the same principle to lab configuration
-editing: a device `password` (entered in access-info's device submode) is
-stored in plain text in access-info YAML (as in Step 1 — this is a lab
-tool, not a secret manager), but is never shown by `show
-configuration`/`show running-config` (both render `********` in its
-place), never offered as a Tab/`?` completion candidate, and never retained
-in the CLI's own in-memory command history. External-editor support
-(`edit`) is not offered for access-info in this phase, precisely to keep
-password entry on the structured, masking-aware path. See
+editing, with one deliberate exception documented below: a device or
+jump-host `password` is stored in plain text in access-info YAML (as in
+Step 1 — this is a lab tool, not a secret manager), is never offered as a
+Tab/`?` completion candidate, and is never retained in the CLI's own
+in-memory command history. External-editor support (`edit`) is not offered
+for access-info in this phase, so credentials are never written to an
+external editor's temporary file. See
 [docs/cli_reference.md](docs/cli_reference.md) for details.
 
-## Device access resolution (temporary, Step 2.5)
+### Password display policy
+
+Network Lab MCP is primarily a lab tool, so **explicit local CLI
+configuration display** — `show running-config` / `show configuration` /
+bare `show` for an access-info device or jump host — shows `password` in
+**clear text**, not masked:
+
+```
+network-lab(config-access-device-R1)# show running-config
+access-info test_lab
+ device R1
+  type iosxr
+  address 192.168.70.159
+  transport ssh
+  port 22
+  username cisco
+  password cisco
+ !
+!
+```
+
+This is the **only** place a password is ever shown in clear text. Every
+other boundary is unchanged and unweakened:
+
+- MCP tool results (`get_active_topology()`, `get_execution_instructions()`,
+  every `terminal_*()` return value) never include it.
+- Logs, exceptions, and every `%`-prefixed error message never include it
+  (including the access-info-not-found/ambiguous and type-mismatch errors
+  below).
+- `?` help and Tab completion never reveal or offer it as a candidate.
+- The CLI's in-memory command history never retains a password-setting
+  command, even abbreviated.
+
+## Device access resolution
 
 `terminal_open(device)` receives only a logical device name from Claude —
 never an address, username, or password. Network Lab MCP resolves the
 private connection details itself:
 
-1. Verify the device exists in the active topology.
-2. Search every committed `lab/access-info/*.yaml` definition for an exact
-   device-ID match.
-3. Exactly one match -> continue; zero or multiple matches -> **fail
-   closed** (see below) before any connection is attempted.
-4. If both the topology and the resolved access-info specify `type`,
+1. Read the committed running-config and resolve the active topology.
+2. Verify the device exists in the active topology.
+3. Resolve the running-config's *selected* access-info
+   (`active_access_info`) — **fail closed** if none is selected
+   (`% No access-info is selected in running-config.`), or if the selected
+   definition does not exist on disk.
+4. Load **only that one** access-info definition and look up the device in
+   it — **fail closed** (`% Device '<device>' is not present in
+   access-info '<name>'.`) if it is absent. No other access-info file is
+   ever searched.
+5. If both the topology and the resolved access-info specify `type`,
    normalize both through the shared `DEVICE_TYPES` enum and compare —
    **fail closed** on a mismatch.
-5. Only then does the existing tmux/ssh/telnet path run.
+6. If the device has an optional `jump_host` reference, resolve it within
+   the same access-info definition and attach it for a single-hop OpenSSH
+   ProxyJump connection (see ["Single-hop SSH jump hosts"](#single-hop-ssh-jump-hosts-proxyjump)
+   below); otherwise connect directly, exactly as before.
+7. Only then does the existing tmux/ssh/telnet path run.
 
-### Temporary limitation: global device-ID uniqueness
+Selecting which access-info definition step 3 reads is done through
+`running-config`'s `access-info <name>` / `no access-info` (see
+["Selecting access-info in running-config"](#selecting-access-info-in-running-config)
+below) — the same candidate/commit model as topology/scenario/reference
+selection, and just as invisible to `terminal_open()` until committed.
 
-In this phase, device identifiers must be unique across all
-`lab/access-info/*.yaml` files, because access-info lookup is not yet
-scoped by topology. Reusing a device identifier across multiple access-info
-definitions causes `terminal_open()` to fail closed with an ambiguity
-error, **regardless of which topology is active** — the active topology
-never breaks the tie, and neither does a matching filename, edit recency,
-or alphabetical order. Concretely:
+### Selecting access-info in running-config
+
+```
+network-lab# configure
+network-lab(config)# running-config
+network-lab(config-running)# access-info test_lab
+network-lab(config-running)# commit
+Commit complete.
+network-lab(config-running)# end
+network-lab# show running-config
+!
+ access-info
+  test_lab
+!
+ topology
+  sample
+!
+ scenario
+  sample
+!
+ reference
+  sample
+!
+```
+
+`no access-info` removes the selection from the candidate (omission, not a
+sentinel value like `"none"`); a `settings.yaml` written before this field
+existed, or with no access-info selected, is a legitimate, fail-closed
+state — `get_active_access_info_name()` treats a missing field as "no
+selection", not an error.
+
+### Access-info lookup is no longer global
+
+Earlier in Step 2.5, access-info lookup searched every committed
+`lab/access-info/*.yaml` file for a matching device ID and failed closed on
+ambiguity if more than one file contained it. Now that running-config
+explicitly selects **one** access-info definition, that global search is
+gone entirely (not merely bypassed) — only the selected definition is ever
+read, so the same device ID may safely appear in other, unselected
+access-info files:
 
 ```
 lab/access-info/lab_a.yaml   R1
 lab/access-info/lab_b.yaml   R1
 ```
 
-`terminal_open("R1")` fails closed with `% Access information for device
-'R1' is ambiguous.` no matter which topology is active. This is a
-deliberate, temporary constraint — not an oversight — until topology-scoped
-access-info association is designed in Step 3 (see
-[Future steps](#future-steps)). No filename-based association,
-topology-to-access-info mapping, access-profile framework, or fuzzy
-matching has been introduced to work around it in this phase.
+With `active_access_info: lab_a`, `terminal_open("R1")` resolves
+`lab_a`'s `R1` only; selecting `lab_b` instead resolves `lab_b`'s `R1`
+instead. Neither a matching topology filename, edit recency, nor
+alphabetical order is ever used to choose between access-info files —
+there is exactly one selection, and it is explicit.
+
+### Single-hop SSH jump hosts (ProxyJump)
+
+access-info can declare reusable `jump_hosts`, each a generic endpoint
+(`type: host` — never a network-device type) reached over SSH:
+
+```yaml
+name: test_lab
+
+jump_hosts:
+  jump1:
+    type: host
+    address: 192.168.1.10
+    transport: ssh
+    port: 22
+    username: cisco
+    password: cisco
+
+devices:
+  R1:
+    type: iosxr
+    address: 192.168.70.159
+    transport: ssh
+    port: 22
+    username: cisco
+    password: cisco
+    jump_host: jump1
+```
+
+A device's optional `jump_host` field references one jump host by name
+within the *same* access-info definition. When resolving `R1` above,
+`terminal_open()` launches native OpenSSH with `-J` (conceptually `ssh -J
+cisco@192.168.1.10:22 -p 22 cisco@192.168.70.159`) instead of connecting
+directly — there is no shell-hop automation (no "SSH to the jump host,
+wait for its shell prompt, then SSH again"), just OpenSSH's own ProxyJump
+handling one SSH connection tunneled through another. The tmux pane still
+only ever shows one interactive session to read/send against, exactly like
+a direct connection.
+
+Constraints, all enforced by `lab.validate_access_info_data()` (so a
+manually edited, invalid committed file fails closed the same way a
+rejected CLI commit would):
+
+- a jump host's `type` must resolve to exactly `host` (reusing
+  `normalize_device_type()`/`DEVICE_TYPES`, so `HOST`/`Host`/`h` still
+  work, but `iosxr`/`iosxe`/`nxos` are rejected);
+- a jump host's `transport`, if set, must be `ssh` (ProxyJump is SSH-only);
+- a device's `transport` must also be `ssh` when it references a
+  `jump_host` — a telnet device can never use one;
+- single-hop only: a jump host has no `jump_host` field of its own: nesting
+  one jump host behind another is not supported.
+
+A device with no `jump_host` continues to connect directly, unchanged.
+Structured CLI support: `access-info <name>` gains `jump-host <name>`
+(`network-lab(config-access-jump-host-<name>)#`, with the same
+type/address/transport/port/username/password fields as a device), and
+`access-info <name>`'s device submode gains `jump-host <name>` (a reference,
+with Tab/`?` completion over the access-info definition's own jump host
+names) and `no jump-host`.
 
 ### Topology/access-info device.type consistency
 
@@ -640,15 +854,15 @@ add a new public MCP tool.
   inside the managed tmux path, and output visibility) were validated against
   a local port with no listening Telnet service; a live Telnet device
   interaction was not validated in this environment.
-- Device access resolution is **not yet scoped by topology** — see
-  ["Temporary limitation: global device-ID uniqueness"](#temporary-limitation-global-device-id-uniqueness).
-  This is the main Step 2.5 limitation Step 3 is expected to resolve.
 - access-info has no external-editor support in this phase (structured CLI
   editing only), unlike topology/scenario/reference.
+- Single-hop OpenSSH ProxyJump only: a jump host cannot itself reference
+  another jump host, and only `type: host` / `transport: ssh` jump hosts
+  are supported.
 - The case-only collision safeguard (`topology <name>`) is mandatory and
   implemented; the equivalent lightweight safeguard for `device <name>` (or
-  for access-info/scenario/reference names) is not implemented (identifiers
-  remain fully case-sensitive regardless).
+  for access-info/jump-host/scenario/reference names) is not implemented
+  (identifiers remain fully case-sensitive regardless).
 - Scenario/reference schema is intentionally not fixed yet — only "valid
   YAML, root is a mapping" is enforced (see
   [docs/scenario_format.md](docs/scenario_format.md)).
@@ -656,17 +870,23 @@ add a new public MCP tool.
 ## Future steps
 
 - **Step 3**: topology discovery (CDP/LLDP), `discover topology`, and
-  topology-scoped access-info association (removing the temporary global
-  device-ID-uniqueness limitation above). Conceptually:
+  multi-hop or otherwise richer jump routing if a real need for it
+  emerges. Conceptually:
 
   ```
   access-info -> device access -> CDP / LLDP -> type-specific parser
       -> normalized observations -> topology candidate
   ```
 
-  Topology will then have three paths to the same candidate/model: the
-  structured CLI, an external YAML editor, and discovery. This repository
-  implements only the first two so far.
+  When Step 3 discovery is started from a selected `access-info
+  <name>`, the default generated topology definition name will also be
+  `<name>` — a naming *convention* for that future command only, never an
+  implicit runtime association the way access-info/topology names can
+  otherwise differ freely today. Topology will then have three paths to the
+  same candidate/model: the structured CLI, an external YAML editor, and
+  discovery. This repository implements only the first two so far, and does
+  not implement `discover topology`, CDP/LLDP execution, any per-platform
+  discovery parser, topology reconciliation, or discovery persistence yet.
 
 ## MCP SDK
 

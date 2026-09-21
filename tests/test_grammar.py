@@ -318,7 +318,20 @@ def test_bare_help_lists_all_running_root_commands():
     ctx = make_ctx()
     result = grammar.help("running", "", ctx)
     tokens = [line.token for line in result.lines]
-    assert tokens == ["topology", "scenario", "reference", "no", "show", "clear", "commit", "end", "exit", "help"]
+    assert tokens == [
+        "access-info",
+        "topology",
+        "scenario",
+        "reference",
+        "no",
+        "show",
+        "clear",
+        "commit",
+        "root",
+        "end",
+        "exit",
+        "help",
+    ]
 
 
 def test_partial_token_help():

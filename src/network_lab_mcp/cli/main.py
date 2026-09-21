@@ -38,8 +38,6 @@ from network_lab_mcp.cli import config as cfgmod
 from network_lab_mcp.cli import editor
 from network_lab_mcp.cli import grammar
 
-PASSWORD_MASK = "********"
-
 # Repo checkout root, for a best-effort `git rev-parse` in `show version`.
 # Mirrors lab.find_lab_root()'s own repo-root computation; independent of it
 # so `show version` never depends on lab/ existing or being valid.
@@ -70,6 +68,32 @@ def _is_password_command(line: str) -> bool:
     return bool(first) and "password".startswith(first.lower())
 
 
+# --------------------------------------------------------------------------
+# Multi-line configuration paste
+# --------------------------------------------------------------------------
+
+
+def _normalize_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _split_pasted_command_lines(text: str) -> list[str]:
+    """Split a pasted multi-line block into normalized physical command
+    lines: CRLF/CR normalized to LF, leading configuration-display
+    indentation stripped from each line, and blank lines / standalone "!"
+    visual separators (as produced by the show-configuration renderers)
+    dropped. Everything else in a line -- internal spacing, punctuation,
+    special characters inside a value -- is preserved exactly, so this must
+    never be used on a single manually-typed line."""
+    lines = []
+    for raw_line in _normalize_newlines(text).split("\n"):
+        content = raw_line.lstrip(" \t")
+        if not content.strip() or content.strip() == "!":
+            continue
+        lines.append(content)
+    return lines
+
+
 class MaskingHistory(History):
     """In-memory-only command history that never retains a raw password
     value. History is never written to disk, matching Step 2's requirement
@@ -89,6 +113,17 @@ class MaskingHistory(History):
         pass
 
     def append_string(self, string: str) -> None:
+        if "\n" in _normalize_newlines(string):
+            # A multi-line paste: prompt_toolkit hands back the whole
+            # pasted block as one string containing embedded newlines.
+            # Never store that raw block (it may contain a password on any
+            # line) -- store each physical command line individually
+            # instead, still excluding any password line, so Up/Down can
+            # still recall the non-sensitive pasted commands.
+            for line in _split_pasted_command_lines(string):
+                if not _is_password_command(line):
+                    super().append_string(line)
+            return
         if _is_password_command(string):
             return
         super().append_string(string)
@@ -114,6 +149,8 @@ def prompt_text(session: cfgmod.CliSession) -> str:
         return f"network-lab(config-access-info-{session.definition_name})# "
     if session.mode == "access_device":
         return f"network-lab(config-access-device-{session.current_device_name})# "
+    if session.mode == "access_jump_host":
+        return f"network-lab(config-access-jump-host-{session.current_jump_host_name})# "
     if session.mode == "scenario":
         return f"network-lab(config-scenario-{session.definition_name})# "
     if session.mode == "reference":
@@ -128,11 +165,13 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
         candidate_references = tuple(session.settings_candidate.get("active_references") or [])
     topology_device_names: tuple[str, ...] = ()
     access_info_device_names: tuple[str, ...] = ()
+    access_info_jump_host_names: tuple[str, ...] = ()
     if session.definition_candidate is not None:
         if session.definition_kind == "topology":
             topology_device_names = tuple((session.definition_candidate.get("devices") or {}).keys())
         elif session.definition_kind == "access_info":
             access_info_device_names = tuple((session.definition_candidate.get("devices") or {}).keys())
+            access_info_jump_host_names = tuple((session.definition_candidate.get("jump_hosts") or {}).keys())
     return grammar.CliContext(
         topology_names=tuple(lab.list_topology_names(lab_root)),
         scenario_names=tuple(lab.list_scenario_names(lab_root)),
@@ -141,14 +180,18 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
         candidate_reference_names=candidate_references,
         topology_candidate_device_names=topology_device_names,
         access_info_candidate_device_names=access_info_device_names,
+        access_info_candidate_jump_host_names=access_info_jump_host_names,
     )
 
 
-def _mask_device(device: dict) -> dict:
-    masked = dict(device)
-    if masked.get("password"):
-        masked["password"] = PASSWORD_MASK
-    return masked
+# A device's 'jump_host' field is spelled 'jump-host' as a CLI keyword and
+# in every rendered view; every other field is spelled identically in YAML
+# and in the CLI.
+_FIELD_DISPLAY_NAMES = {"jump_host": "jump-host"}
+
+
+def _display_field_name(field_name: str) -> str:
+    return _FIELD_DISPLAY_NAMES.get(field_name, field_name)
 
 
 def render_topology_block(data: dict) -> list[str]:
@@ -168,14 +211,24 @@ def render_topology_block(data: dict) -> list[str]:
 
 
 def render_access_info_block(data: dict) -> list[str]:
+    """Explicit local access-info rendering: passwords are shown in clear
+    text here (this is a lab tool; see README.md "Password display
+    policy") -- MCP tool results, logs, errors, `?`, completion, and
+    history never go through this function and remain password-free."""
     lines = [f"access-info {data.get('name', '')}"]
+    for jump_host_name, jump_host in (data.get("jump_hosts") or {}).items():
+        lines.append(f" jump-host {jump_host_name}")
+        for field_name in cfgmod.JUMP_HOST_FIELD_ORDER:
+            value = (jump_host or {}).get(field_name)
+            if value not in (None, ""):
+                lines.append(f"  {_display_field_name(field_name)} {value}")
+        lines.append(" !")
     for device_name, device in (data.get("devices") or {}).items():
         lines.append(f" device {device_name}")
-        masked = _mask_device(device or {})
         for field_name in cfgmod.DEVICE_FIELD_ORDER:
-            value = masked.get(field_name)
+            value = (device or {}).get(field_name)
             if value not in (None, ""):
-                lines.append(f"  {field_name} {value}")
+                lines.append(f"  {_display_field_name(field_name)} {value}")
         lines.append(" !")
     lines.append("!")
     return lines
@@ -189,6 +242,9 @@ def render_generic_definition(data: dict) -> str:
 
 def _running_config_lines(settings: dict) -> str:
     sections: list[tuple[str, list[str]]] = []
+    access_info_name = settings.get("active_access_info")
+    if access_info_name:
+        sections.append(("access-info", [access_info_name]))
     topology_name = settings.get("active_topology")
     if topology_name:
         sections.append(("topology", [topology_name]))
@@ -211,14 +267,16 @@ def _running_config_lines(settings: dict) -> str:
 def render_committed_running_config(session: cfgmod.CliSession) -> str:
     """`show running-config` in EXEC/global/running mode: the committed MCP
     running-config selection -- never a definition's own content. Not used
-    once a topology/access-info/scenario/reference (or its device submode)
-    is the current context; see render_committed_definition() for that."""
+    once a topology/access-info/scenario/reference (or its device/jump-host
+    submode) is the current context; see render_committed_definition() for
+    that."""
     return _running_config_lines(lab.read_settings(session.lab_root))
 
 
-# Device submodes ("device" under topology, "access_device" under
-# access-info) show only the device being edited, not every device in the
-# parent definition -- context-local, like the definition-level modes.
+# Nested submodes ("device" under topology, "access_device"/
+# "access_jump_host" under access-info) show only the one sub-object being
+# edited, not every device/jump-host in the parent definition --
+# context-local, like the definition-level modes.
 _DEVICE_SUBMODES = ("device", "access_device")
 
 
@@ -233,7 +291,29 @@ def _scoped_to_current_device(data: Optional[dict], device_name: Optional[str]) 
         return None
     scoped = dict(data)
     scoped["devices"] = {device_name: devices[device_name]}
+    scoped.pop("jump_hosts", None)
     return scoped
+
+
+def _scoped_to_jump_host(data: Optional[dict], jump_host_name: Optional[str]) -> Optional[dict]:
+    """Same idea as _scoped_to_current_device(), for a jump-host submode."""
+    if data is None or jump_host_name is None:
+        return None
+    jump_hosts = data.get("jump_hosts") or {}
+    if jump_host_name not in jump_hosts:
+        return None
+    scoped = dict(data)
+    scoped["jump_hosts"] = {jump_host_name: jump_hosts[jump_host_name]}
+    scoped.pop("devices", None)
+    return scoped
+
+
+def _scope_to_session_context(session: cfgmod.CliSession, data: Optional[dict]) -> Optional[dict]:
+    if session.mode in _DEVICE_SUBMODES:
+        return _scoped_to_current_device(data, session.current_device_name)
+    if session.mode == "access_jump_host":
+        return _scoped_to_jump_host(data, session.current_jump_host_name)
+    return data
 
 
 def _render_definition_block(kind: Optional[str], data: Optional[dict]) -> str:
@@ -248,30 +328,182 @@ def _render_definition_block(kind: Optional[str], data: Optional[dict]) -> str:
 
 def render_committed_definition(session: cfgmod.CliSession) -> str:
     """`show running-config` while a topology/access-info/scenario/
-    reference definition (or its device submode) is the current context:
-    that same object's committed-on-disk state, re-read fresh -- never the
-    in-memory candidate -- so it is empty for a definition (or device)
-    that has never been committed, and reflects a commit made moments ago
-    in this same session."""
+    reference definition (or its device/jump-host submode) is the current
+    context: that same object's *full* committed-on-disk state, re-read
+    fresh -- never the in-memory candidate -- so it is empty for a
+    definition (or sub-object) that has never been committed, and reflects
+    a commit made moments ago in this same session."""
     data = cfgmod.load_committed_definition(session.definition_kind, session.definition_name, session.lab_root)
-    if session.mode in _DEVICE_SUBMODES:
-        data = _scoped_to_current_device(data, session.current_device_name)
+    data = _scope_to_session_context(session, data)
     return _render_definition_block(session.definition_kind, data)
+
+
+# --------------------------------------------------------------------------
+# `show configuration` / bare `show`: UNCOMMITTED CHANGES ONLY (a bounded,
+# pragmatic delta -- not a full candidate dump, and not a generic minimal
+# recursive diff engine). See docs/cli_reference.md "show configuration" for
+# the rationale.
+# --------------------------------------------------------------------------
+
+
+def _field_delta_lines(original_obj: dict, candidate_obj: dict, field_order: tuple[str, ...]) -> list[str]:
+    """Field-level delta for structured scalar configuration (access-info/
+    jump-host/topology-device fields): only changed fields are rendered,
+    each as a "field value" (set/changed) or "no field" (cleared) line --
+    unchanged fields are never repeated."""
+    lines = []
+    for field_name in field_order:
+        old_value = original_obj.get(field_name)
+        new_value = candidate_obj.get(field_name)
+        if old_value == new_value:
+            continue
+        display_name = _display_field_name(field_name)
+        if new_value not in (None, ""):
+            lines.append(f"  {display_name} {new_value}")
+        else:
+            lines.append(f"  no {display_name}")
+    return lines
+
+
+def _named_objects_delta(keyword: str, original_map: dict, candidate_map: dict, field_order: tuple[str, ...]) -> list[str]:
+    """Render only the named objects (devices/jump-hosts) that actually
+    changed, each as its own ' <keyword> <name>' / field lines / ' !'
+    block -- a brand-new object (absent from original_map) is diffed
+    against {}, so all of its populated fields show up as "new"."""
+    lines: list[str] = []
+    for name, candidate_obj in candidate_map.items():
+        original_obj = original_map.get(name) or {}
+        field_lines = _field_delta_lines(original_obj, candidate_obj or {}, field_order)
+        if field_lines:
+            lines.append(f" {keyword} {name}")
+            lines.extend(field_lines)
+            lines.append(" !")
+    return lines
+
+
+def render_access_info_configuration_delta(name: str, original: Optional[dict], candidate: dict) -> str:
+    original = original or {}
+    body = _named_objects_delta("jump-host", original.get("jump_hosts") or {}, candidate.get("jump_hosts") or {}, cfgmod.JUMP_HOST_FIELD_ORDER)
+    body += _named_objects_delta("device", original.get("devices") or {}, candidate.get("devices") or {}, cfgmod.DEVICE_FIELD_ORDER)
+    if not body:
+        return ""
+    return "\n".join([f"access-info {name}", *body, "!"])
+
+
+_TOPOLOGY_TRACKED_KEYS = ("name", "description", "devices")
+
+
+def render_topology_configuration_delta(name: str, original: Optional[dict], candidate: dict) -> str:
+    original = original or {}
+    other_keys = (set(candidate) | set(original)) - set(_TOPOLOGY_TRACKED_KEYS)
+    if any(candidate.get(k) != original.get(k) for k in other_keys):
+        # A field the structured CLI has no representation for changed
+        # (e.g. 'links', or something an external editor added) -- fall
+        # back to the whole candidate block so nothing is silently lost,
+        # per the bounded/pragmatic delta policy for open structures.
+        return "\n".join(render_topology_block(candidate))
+
+    lines: list[str] = []
+    old_description = original.get("description")
+    new_description = candidate.get("description")
+    if old_description != new_description:
+        lines.append(f" description {new_description}" if new_description else " no description")
+    lines += _named_objects_delta("device", original.get("devices") or {}, candidate.get("devices") or {}, ("type",))
+    if not lines:
+        return ""
+    return "\n".join([f"topology {name}", *lines, "!"])
+
+
+def render_generic_configuration_delta(name: str, original: Optional[dict], candidate: dict) -> str:
+    """Scenario/reference: open YAML with no structured CLI representation
+    below the whole-document level, so the "changed object" is the whole
+    (small) document -- an acceptable, bounded fallback, not a claim that
+    every field in it changed."""
+    if (original or {}) == candidate:
+        return ""
+    return render_generic_definition(candidate)
+
+
+def _render_configuration_delta(kind: Optional[str], name: Optional[str], original: Optional[dict], candidate: Optional[dict]) -> str:
+    if kind is None or candidate is None:
+        return ""
+    if kind == "topology":
+        return render_topology_configuration_delta(name, original, candidate)
+    if kind == "access_info":
+        return render_access_info_configuration_delta(name, original, candidate)
+    return render_generic_configuration_delta(name, original, candidate)
+
+
+def _running_config_delta_lines(original: dict, candidate: dict) -> list[str]:
+    """Field-level delta for the running-config selection: only the
+    selection(s) that actually changed, using the existing set/`no`
+    rendering conventions -- unrelated unchanged selections are never
+    repeated."""
+    lines: list[str] = []
+    for key, label in (
+        ("active_access_info", "access-info"),
+        ("active_topology", "topology"),
+        ("active_scenario", "scenario"),
+    ):
+        old_value = original.get(key)
+        new_value = candidate.get(key)
+        if old_value == new_value:
+            continue
+        if new_value:
+            lines.append("!")
+            lines.append(f" {label}")
+            lines.append(f"  {new_value}")
+            lines.append("!")
+        else:
+            lines.append(f"no {label}")
+
+    old_refs = original.get("active_references") or []
+    new_refs = candidate.get("active_references") or []
+    added_refs = [r for r in new_refs if r not in old_refs]
+    removed_refs = [r for r in old_refs if r not in new_refs]
+    if added_refs:
+        lines.append("!")
+        lines.append(" reference")
+        for reference in added_refs:
+            lines.append(f"  {reference}")
+        lines.append("!")
+    for reference in removed_refs:
+        lines.append(f"no reference {reference}")
+    return lines
 
 
 def render_configuration_candidate(session: cfgmod.CliSession) -> str:
-    """`show configuration`: the running-config candidate while in
-    `running` mode; the note below while in `global` mode with nothing
-    open; otherwise the open definition's candidate (scoped to the current
-    device, if a device submode is the context)."""
+    """`show configuration` (and bare `show` in a configuration mode):
+    **uncommitted changes only** in the current context -- never a full
+    dump of the candidate. `running` mode shows the running-config
+    selection delta; `global` mode aggregates that delta with the open
+    definition's delta (each dirty scope rendered with its own type-aware
+    delta renderer, not merged into one cross-definition diff); a
+    definition mode (or its device/jump-host submode) shows only that
+    object's delta, scoped to the current sub-object where applicable.
+    Entering a new, still-empty object produces no output at all."""
     if session.mode == "running":
-        return _running_config_lines(session.settings_candidate or {})
-    if session.definition_kind is None:
-        return "! No definition is currently selected for editing."
-    data = session.definition_candidate
-    if session.mode in _DEVICE_SUBMODES:
-        data = _scoped_to_current_device(data, session.current_device_name)
-    return _render_definition_block(session.definition_kind, data)
+        return "\n".join(_running_config_delta_lines(session.committed_settings or {}, session.settings_candidate or {}))
+
+    if session.mode == "global":
+        parts = []
+        settings_lines = _running_config_delta_lines(session.committed_settings or {}, session.settings_candidate or {})
+        if settings_lines:
+            parts.append("\n".join(settings_lines))
+        if session.definition_kind is not None:
+            original = cfgmod.load_committed_definition(session.definition_kind, session.definition_name, session.lab_root)
+            text = _render_configuration_delta(session.definition_kind, session.definition_name, original, session.definition_candidate)
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+
+    kind = session.definition_kind
+    if kind is None:
+        return ""
+    original = cfgmod.load_committed_definition(kind, session.definition_name, session.lab_root)
+    original = _scope_to_session_context(session, original)
+    candidate = _scope_to_session_context(session, session.definition_candidate)
+    return _render_configuration_delta(kind, session.definition_name, original, candidate)
 
 
 def print_help_result(result: grammar.HelpResult) -> None:
@@ -306,6 +538,11 @@ def _confirm(message: str) -> bool:
 
 
 def _do_commit(session: cfgmod.CliSession) -> None:
+    """`commit` only saves the candidate -- it never changes `mode`. IOS
+    XR-style navigation (`root`/`exit`/`end`) is how you leave a mode; a
+    successful or no-op commit leaves you exactly where you were, so a
+    freshly-committed object's mode (e.g. a device just created and
+    committed) stays reachable immediately afterward."""
     try:
         changed = session.commit()
     except cfgmod.CommitValidationError as exc:
@@ -313,7 +550,6 @@ def _do_commit(session: cfgmod.CliSession) -> None:
             print(f"% {error}")
         return
     print("Commit complete." if changed else "No changes to commit.")
-    session.mode = "exec"
 
 
 def _guarded_leave_configure(session: cfgmod.CliSession) -> None:
@@ -406,11 +642,11 @@ def render_quick_start() -> str:
             "  Configure the lab definitions and settings used by Network Lab MCP.",
             "",
             "Typical workflow:",
-            "  1. Configure private device access information.",
+            "  1. Configure private device access information (access-info).",
             "  2. Create or edit a topology.",
             "  3. Create or edit a scenario.",
             "  4. Create or edit references.",
-            "  5. Select the definitions used by MCP in running-config.",
+            "  5. Select access-info/topology/scenario/references in running-config.",
             "  6. Commit the configuration.",
             "  7. Use Claude Code with Network Lab MCP.",
             "",
@@ -453,15 +689,17 @@ def render_help_claude() -> str:
             "",
             "Claude never receives:",
             "  - device passwords, usernames, or addresses",
-            "  - any access-info definition",
+            "  - any access-info definition, including jump-host details",
             "  - uncommitted candidate configuration",
             "",
             "Claude addresses a device by its logical device ID only (e.g. \"R1\").",
-            "Network Lab MCP resolves the private connection details internally",
-            "and opens the terminal session -- Claude never sees them.",
+            "Network Lab MCP resolves the private connection details internally --",
+            "including an optional single-hop SSH jump host, entirely inside",
+            "terminal_open() -- and opens the terminal session; Claude never sees",
+            "any of that resolution.",
             "",
             "Use running-config (see 'help workflow') to select which committed",
-            "topology/scenario/references MCP exposes to Claude.",
+            "access-info/topology/scenario/references MCP uses and exposes to Claude.",
             "",
             "Getting started with Claude Code:",
             "  1. Install Network Lab MCP into an activated Python environment",
@@ -480,12 +718,12 @@ def render_help_workflow() -> str:
         [
             "Typical Workflow",
             "",
-            "1. Configure access-info.",
+            "1. Configure access-info (device credentials, optional jump hosts).",
             "2. Create or edit topology.",
             "3. Create or edit scenario.",
             "4. Create or edit references.",
-            "5. Configure running-config.",
-            "6. Review candidate configuration (show configuration).",
+            "5. Select access-info/topology/scenario/references in running-config.",
+            "6. Review uncommitted changes (show / show configuration).",
             "7. Commit.",
             "8. Use Claude Code.",
             "",
@@ -510,8 +748,8 @@ def render_help_editor() -> str:
             "External YAML Editor",
             "",
             "Available for topology, scenario, and reference definitions (not",
-            "access-info, which stays on the structured CLI to keep password",
-            "masking on one path).",
+            "access-info or jump hosts, which stay on the structured CLI so",
+            "credentials are never written to an external editor's temp file).",
             "",
             "Editor resolution order:",
             "  1. $VISUAL",
@@ -538,13 +776,23 @@ def render_help_cli() -> str:
             "  ?                     Context-sensitive help for the current position",
             "  Tab / Ctrl-I          Complete the current token",
             "  configure             Enter configuration mode",
-            "  show running-config   Committed MCP definition selection",
-            "  show configuration    Candidate configuration (inside configure)",
-            "  commit                Save the candidate configuration",
+            "  show                  Same as 'show configuration' (bare show)",
+            "  show configuration    Uncommitted changes in the current context",
+            "  show running-config   Committed state in the current context",
+            "  commit                Save the candidate; stays in the current mode",
+            "  root                  Jump to global configuration mode (candidate kept)",
+            "  exit                  Move one configuration level up (candidate kept)",
+            "  end                   Return to EXEC (blocked while uncommitted changes exist)",
             "  clear                 Discard uncommitted configure-session changes",
-            "  exit                  Move one configuration level up",
-            "  end                   Return to EXEC",
             "  Ctrl-C                Cancel the current input line only",
+            "",
+            "Pasting a multi-line configuration block is supported: each line runs in",
+            "order as if typed manually, stopping at the first invalid line.",
+            "",
+            "'commit' never leaves the mode you were in -- use 'root'/'exit'/'end' to",
+            "navigate. 'show running-config' means the committed MCP running-config",
+            "selection in EXEC/global/running mode, and the current object's own",
+            "committed state everywhere else.",
             "",
             "See docs/cli_reference.md for the full command reference.",
         ]
@@ -583,18 +831,28 @@ def h_end(session: cfgmod.CliSession, args: dict) -> None:
     _guarded_leave_configure(session)
 
 
-def h_exit_to_global(session: cfgmod.CliSession, args: dict) -> None:
-    session.mode = "global"
+def h_root(session: cfgmod.CliSession, args: dict) -> None:
+    """`root`: jump straight to global configuration mode from any nested
+    submode, preserving candidate state -- never commits, never clears."""
+    session.go_to_global()
 
 
-def h_device_exit(session: cfgmod.CliSession, args: dict) -> None:
-    session.current_device_name = None
-    session.mode = "topology"
+# `exit` moves exactly one configuration level up, per cfgmod._EXIT_PARENT_MODE
+# (the grammar/config single source of truth for the mode hierarchy -- no
+# separate per-mode table to keep in sync here). A leaf submode's own
+# current-object attribute is cleared on the way out.
+_LEAF_MODE_CURRENT_ATTR = {
+    "device": "current_device_name",
+    "access_device": "current_device_name",
+    "access_jump_host": "current_jump_host_name",
+}
 
 
-def h_access_device_exit(session: cfgmod.CliSession, args: dict) -> None:
-    session.current_device_name = None
-    session.mode = "access_info"
+def h_exit(session: cfgmod.CliSession, args: dict) -> None:
+    attr = _LEAF_MODE_CURRENT_ATTR.get(session.mode)
+    if attr is not None:
+        setattr(session, attr, None)
+    session.mode = cfgmod._EXIT_PARENT_MODE[session.mode]
 
 
 def h_edit(session: cfgmod.CliSession, args: dict) -> None:
@@ -661,6 +919,14 @@ def h_global_reference(session: cfgmod.CliSession, args: dict) -> None:
 # ---- running-config mode ----
 
 
+def h_running_access_info(session: cfgmod.CliSession, args: dict) -> None:
+    session.select_access_info(args["name"])
+
+
+def h_running_access_info_remove(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_access_info_selection()
+
+
 def h_running_topology(session: cfgmod.CliSession, args: dict) -> None:
     session.select_topology(args["name"])
 
@@ -702,6 +968,10 @@ def h_access_info_device(session: cfgmod.CliSession, args: dict) -> None:
     session.enter_access_info_device(args["name"])
 
 
+def h_access_info_jump_host(session: cfgmod.CliSession, args: dict) -> None:
+    session.enter_access_info_jump_host(args["name"])
+
+
 # ---- access-info device submode (private connection fields) ----
 
 
@@ -741,6 +1011,53 @@ def h_access_device_clear_port(session: cfgmod.CliSession, args: dict) -> None:
     session.clear_device_field("port")
 
 
+def h_access_device_set_jump_host(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_device_field("jump_host", args["value"])
+
+
+def h_access_device_clear_jump_host(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_device_field("jump_host")
+
+
+# ---- access-info jump-host submode (single-hop OpenSSH ProxyJump endpoint) ----
+
+
+def h_access_jump_host_set_type(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_jump_host_field("type", args["value"])
+
+
+def h_access_jump_host_set_address(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_jump_host_field("address", args["value"])
+
+
+def h_access_jump_host_set_transport(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_jump_host_field("transport", args["value"])
+
+
+def h_access_jump_host_set_port(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_jump_host_field("port", int(args["value"]))
+
+
+def h_access_jump_host_set_username(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_jump_host_field("username", args["value"])
+
+
+def h_access_jump_host_set_password(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_jump_host_field("password", args["value"])
+
+
+def h_access_jump_host_clear_username(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_jump_host_field("username")
+
+
+def h_access_jump_host_clear_password(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_jump_host_field("password")
+
+
+def h_access_jump_host_clear_port(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_jump_host_field("port")
+
+
 HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "exec.configure": h_exec_configure,
     "exec.show_running_config": h_show_running_config,
@@ -755,40 +1072,61 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "global.scenario": h_global_scenario,
     "global.reference": h_global_reference,
     "global.exit": h_end,
+    "running.access_info": h_running_access_info,
+    "running.access_info_remove": h_running_access_info_remove,
     "running.topology": h_running_topology,
     "running.scenario": h_running_scenario,
     "running.reference_add": h_running_reference_add,
     "running.reference_remove": h_running_reference_remove,
-    "running.exit": h_exit_to_global,
     "topology.description": h_topology_description,
     "topology.device": h_topology_device,
     "topology.edit": h_edit,
-    "topology.exit": h_exit_to_global,
     "device.set_type": h_device_set_type,
-    "device.exit": h_device_exit,
     "access_info.device": h_access_info_device,
-    "access_info.exit": h_exit_to_global,
+    "access_info.jump_host": h_access_info_jump_host,
     "access_device.set_type": h_access_device_set_type,
     "access_device.set_address": h_access_device_set_address,
     "access_device.set_transport": h_access_device_set_transport,
     "access_device.set_port": h_access_device_set_port,
     "access_device.set_username": h_access_device_set_username,
     "access_device.set_password": h_access_device_set_password,
+    "access_device.set_jump_host": h_access_device_set_jump_host,
     "access_device.clear_username": h_access_device_clear_username,
     "access_device.clear_password": h_access_device_clear_password,
     "access_device.clear_port": h_access_device_clear_port,
-    "access_device.exit": h_access_device_exit,
+    "access_device.clear_jump_host": h_access_device_clear_jump_host,
+    "access_jump_host.set_type": h_access_jump_host_set_type,
+    "access_jump_host.set_address": h_access_jump_host_set_address,
+    "access_jump_host.set_transport": h_access_jump_host_set_transport,
+    "access_jump_host.set_port": h_access_jump_host_set_port,
+    "access_jump_host.set_username": h_access_jump_host_set_username,
+    "access_jump_host.set_password": h_access_jump_host_set_password,
+    "access_jump_host.clear_username": h_access_jump_host_clear_username,
+    "access_jump_host.clear_password": h_access_jump_host_clear_password,
+    "access_jump_host.clear_port": h_access_jump_host_clear_port,
     "scenario.edit": h_edit,
-    "scenario.exit": h_exit_to_global,
     "reference.edit": h_edit,
-    "reference.exit": h_exit_to_global,
 }
 
-# Commands shared verbatim by every configuration mode (show/clear/commit/end/help
-# -- "exit" is handled above since its target differs per mode). `show
-# version` is deliberately EXEC-only (see grammar.py's _add_show_subtree),
-# so it is not part of this shared registration.
-for _mode in ("global", "running", "topology", "device", "access_info", "access_device", "scenario", "reference"):
+# Commands shared verbatim by every configuration mode (show/clear/commit/
+# end/help/exit). `exit`'s target per mode comes from
+# cfgmod._EXIT_PARENT_MODE (the config module's own mode-hierarchy SSOT), so
+# there is nothing mode-specific to list here even though the destination
+# differs. `root` is omitted at "global" (see grammar.py's
+# _add_common_subtree(include_root=False) -- global has no `root` node to
+# dispatch). `show version` is deliberately EXEC-only (see grammar.py's
+# _add_show_subtree), so it is not part of this shared registration either.
+for _mode in (
+    "global",
+    "running",
+    "topology",
+    "device",
+    "access_info",
+    "access_device",
+    "access_jump_host",
+    "scenario",
+    "reference",
+):
     HANDLERS[f"{_mode}.show_running_config"] = h_show_running_config
     HANDLERS[f"{_mode}.show_configuration"] = h_show_configuration
     HANDLERS[f"{_mode}.commit"] = h_commit
@@ -796,6 +1134,13 @@ for _mode in ("global", "running", "topology", "device", "access_info", "access_
     HANDLERS[f"{_mode}.end"] = h_end
     HANDLERS[f"{_mode}.help"] = h_help
     HANDLERS[f"{_mode}.help_topic"] = h_help_topic
+    if _mode != "global":
+        # global's "exit" is guarded (equivalent to "end"; see the literal
+        # "global.exit": h_end entry above) since global is the top of the
+        # configure-session hierarchy -- every other mode's "exit" moves up
+        # one level via cfgmod._EXIT_PARENT_MODE, unguarded.
+        HANDLERS[f"{_mode}.exit"] = h_exit
+        HANDLERS[f"{_mode}.root"] = h_root
 
 
 # --------------------------------------------------------------------------
@@ -851,6 +1196,56 @@ def _make_key_bindings(session: cfgmod.CliSession) -> KeyBindings:
     return kb
 
 
+def execute_command_line(session: cfgmod.CliSession, line: str) -> bool:
+    """Parse and execute exactly one physical command line against the
+    session's current authoritative mode/candidate state, exactly as a
+    manually typed line would be. Used both for ordinary single-line input
+    and for each physical line of a multi-line paste: a line that changes
+    mode or candidate state (device/exit/root/end/clear/commit/...) mutates
+    `session` in place, so the *next* call always sees the resulting state
+    -- there is no separate paste-side notion of "current mode". Returns
+    True on success, False if a parse or handler error was printed.
+
+    Propagates `_ExitCli` (EXEC `exit`/`quit`) uncaught, matching how a
+    manually typed `exit` unwinds the REPL loop in `run()`."""
+    result = grammar.parse(session.mode, line)
+    if not result.ok:
+        print_parse_error(result.error)
+        return False
+
+    handler = HANDLERS[result.action]
+    try:
+        handler(session, result.args or {})
+    except (cfgmod.ConfigError, cfgmod.CommitValidationError, lab.LabConfigError, editor.EditorError) as exc:
+        if isinstance(exc, cfgmod.CommitValidationError):
+            for error in exc.errors:
+                print(f"% {error}")
+        else:
+            print(f"% {exc}")
+        return False
+    return True
+
+
+def execute_input_block(session: cfgmod.CliSession, text: str) -> None:
+    """Execute one accepted REPL input, which is either a single manually
+    typed command or a pasted multi-line configuration block (prompt_toolkit
+    hands back pasted text as one string with embedded newlines). A
+    single-line input is executed exactly as before, unchanged. A multi-line
+    input is split into normalized physical command lines and executed
+    sequentially through execute_command_line(), stopping at the first
+    error -- lines already applied stay in the candidate (no rollback), and
+    nothing here or in execute_command_line() ever calls commit implicitly.
+
+    Propagates `_ExitCli` uncaught, so a pasted `exit`/`quit` at EXEC level
+    unwinds the REPL loop exactly like a manually typed one."""
+    if "\n" in _normalize_newlines(text):
+        for line in _split_pasted_command_lines(text):
+            if not execute_command_line(session, line):
+                break
+    else:
+        execute_command_line(session, text)
+
+
 def run() -> None:
     lab_root = lab.find_lab_root()
     session = cfgmod.CliSession(lab_root)
@@ -866,7 +1261,7 @@ def run() -> None:
 
     while True:
         try:
-            line = prompt_session.prompt(prompt_text(session))
+            raw = prompt_session.prompt(prompt_text(session))
         except KeyboardInterrupt:
             # Cancel only the current partially typed input line; the
             # candidate configuration and current mode are untouched.
@@ -879,25 +1274,13 @@ def run() -> None:
             print()
             break
 
-        if not line.strip():
+        if not raw.strip():
             continue
 
-        result = grammar.parse(session.mode, line)
-        if not result.ok:
-            print_parse_error(result.error)
-            continue
-
-        handler = HANDLERS[result.action]
         try:
-            handler(session, result.args or {})
+            execute_input_block(session, raw)
         except _ExitCli:
             break
-        except (cfgmod.ConfigError, cfgmod.CommitValidationError, lab.LabConfigError, editor.EditorError) as exc:
-            if isinstance(exc, cfgmod.CommitValidationError):
-                for error in exc.errors:
-                    print(f"% {error}")
-            else:
-                print(f"% {exc}")
 
 
 def main() -> None:

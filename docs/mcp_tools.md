@@ -36,9 +36,9 @@ topology.
 
 ```json
 {
-  "active_topology": "sample_lab",
+  "active_topology": "sample",
   "topology": {
-    "name": "sample_lab",
+    "name": "sample",
     "description": "...",
     "devices": { "R1": { "type": "iosxr" } },
     "links": []
@@ -126,27 +126,35 @@ a topology switch in `lab/settings.yaml`) is picked up without restarting the
 server. `device` only needs to name a device that exists in the active
 topology — Claude never supplies (or sees) an address, username, or
 password. Internally, Network Lab MCP resolves the device's private
-connection data by searching every committed `lab/access-info/*.yaml`
-definition for an exact match on `device` (see
-[architecture.md](architecture.md#device-access-resolution)); this search
-is not yet scoped by the active topology (see "Error behavior" below and
-[README.md](../README.md#temporary-limitation-global-device-id-uniqueness)).
-This tool does not parse or automate login: password prompts, host key
-confirmations, and any other interactive prompt are left for the caller to
-observe via `terminal_read()` and respond to via `terminal_send()`.
+connection data from running-config's *selected* access-info definition
+only (`active_access_info`) — see
+[architecture.md](architecture.md#device-access-resolution); no other
+committed access-info file is ever searched. If the resolved device
+references a `jump_host` (within that same access-info definition),
+Network Lab MCP connects via native OpenSSH ProxyJump instead of directly
+— see [architecture.md](architecture.md#single-hop-openssh-proxyjump) —
+transparently to Claude, which still only ever sees the one resulting
+terminal session. This tool does not parse or automate login: password
+prompts, host key confirmations, and any other interactive prompt are left
+for the caller to observe via `terminal_read()` and respond to via
+`terminal_send()`.
 
 **Error behavior**: raises a tool error (fail closed, never a silent guess)
 when:
 
 - the device is not present in the active topology;
-- no committed access-info definition contains that device ID (`% Access
-  information for device '<device>' was not found.`);
-- more than one committed access-info definition contains that device ID —
-  a deliberate, temporary limitation since this lookup is not yet scoped by
-  topology (`% Access information for device '<device>' is ambiguous.`);
+- no access-info is selected in running-config (`% No access-info is
+  selected in running-config.`);
+- the selected access-info definition does not exist (`% Selected
+  access-info '<name>' does not exist.`);
+- the device is not present in the selected access-info definition (`%
+  Device '<device>' is not present in access-info '<name>'.`) — there is
+  no fallback search through any other access-info file;
 - the topology and resolved access-info both specify `type` and, once
   normalized, they disagree (`% Device type mismatch for '<device>' between
   topology and access information.`);
+- the device references a `jump_host` that does not exist in the same
+  access-info definition;
 - the device's transport is unsupported, the required `ssh`/`telnet` binary
   is unavailable, or the device name cannot be mapped to a valid session
   name.

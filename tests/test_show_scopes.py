@@ -4,10 +4,14 @@ scoping, and the EXEC-only restriction on `show version`.
 General rule: in EXEC/global/running mode, `show running-config` is the
 committed MCP running-config selection (unchanged). In every other mode
 (a topology/access-info/scenario/reference definition, or its nested
-device submode), `show running-config` means "what is currently committed
-for *this* object" (re-read fresh from disk, empty if never committed) and
-`show configuration` means "what am I currently editing" (the candidate,
-scoped to the current device inside a device submode)."""
+device/jump-host submode), `show running-config` means "what is currently
+*fully* committed for *this* object" (re-read fresh from disk, empty if
+never committed), while `show configuration` means **uncommitted changes
+only** -- a bounded, pragmatic delta, not a full candidate dump (see
+docs/cli_reference.md "show configuration"). Explicit local access-info
+rendering (both committed and candidate views) shows passwords in clear
+text; MCP/log/error/help/completion/history privacy is covered separately
+in test_lab_step1_regression.py and test_grammar.py."""
 
 from __future__ import annotations
 
@@ -46,15 +50,21 @@ def test_running_mode_show_running_config_is_committed_mcp_selection(lab_root):
     assert "sample_lab" in text
 
 
-def test_running_mode_show_configuration_is_candidate_selection(lab_root):
+def test_running_mode_show_configuration_is_selection_delta(lab_root):
     session = cfgmod.CliSession(lab_root)
     session.enter_configure()
     session.mode = "running"
-    session.apply_topology_definition_plan(session.plan_topology_definition("test"))  # unrelated definition edit
-    session.mode = "running"
+    # Selecting the already-committed value is not a change -- no delta.
     session.select_topology("sample_lab")
+    assert climain.render_configuration_candidate(session) == ""
+
+    # A real change to the selection shows up as a delta.
+    session.apply_topology_definition_plan(session.plan_topology_definition("new_topo"))
+    session.mode = "running"
+    session.select_topology("new_topo")
     text = climain.render_configuration_candidate(session)
-    assert "sample_lab" in text
+    assert "new_topo" in text
+    assert "sample_lab" not in text  # unrelated unchanged selections are not repeated
 
 
 # ---- show version: EXEC only ----
@@ -78,13 +88,24 @@ def test_new_access_info_running_config_is_empty(lab_root):
     assert climain.render_committed_definition(session) == ""
 
 
-def test_new_access_info_configuration_shows_only_candidate(lab_root):
+def test_new_access_info_with_nothing_configured_yet_shows_no_delta(lab_root):
+    # Entering a brand-new mode alone must not create fake output.
     session = cfgmod.CliSession(lab_root)
     session.enter_configure()
     session.enter_access_info_definition("test")
+    assert climain.render_configuration_candidate(session) == ""
+
+
+def test_new_access_info_configuration_shows_only_its_own_delta(lab_root):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.enter_access_info_definition("test")
+    session.enter_access_info_device("R1")
+    session.set_device_field("type", "iosxr")
     text = climain.render_configuration_candidate(session)
     assert "sample_lab" not in text  # never another definition's data
     assert "test" in text
+    assert "R1" in text
 
 
 def test_new_access_info_device_running_config_empty_until_commit(lab_root):
@@ -100,14 +121,18 @@ def test_new_access_info_device_running_config_empty_until_commit(lab_root):
     candidate_text = climain.render_configuration_candidate(session)
     assert "R1" in candidate_text
     assert "192.0.2.50" in candidate_text
-    assert "s3cret" not in candidate_text  # masked even in the candidate view
-    assert "********" in candidate_text
+    # Explicit local access-info rendering shows password in clear text
+    # (this is a lab tool -- see README.md "Password display policy");
+    # MCP/log/error/help/completion/history privacy is unaffected and
+    # tested separately.
+    assert "s3cret" in candidate_text
+    assert "********" not in candidate_text
 
     session.commit()
     committed_text = climain.render_committed_definition(session)
     assert "R1" in committed_text
     assert "192.0.2.50" in committed_text
-    assert "s3cret" not in committed_text
+    assert "s3cret" in committed_text
 
 
 # ---- existing access-info definition ----
@@ -122,13 +147,17 @@ def test_existing_access_info_running_config_vs_configuration(lab_root):
 
     committed_text = climain.render_committed_definition(session)
     candidate_text = climain.render_configuration_candidate(session)
+    # show running-config: the full committed block, clear-text password.
     assert "192.0.2.11" in committed_text  # original committed address
     assert "192.0.2.99" not in committed_text
-    assert "192.0.2.99" in candidate_text  # modified candidate address
-    assert "********" in committed_text and "********" in candidate_text
+    assert "example-password" in committed_text
+    assert "********" not in committed_text
+    # show configuration: only the changed field -- unchanged scalar fields
+    # (type/transport/port/username/password) are not repeated.
+    assert candidate_text == "access-info sample_lab\n device R1\n  address 192.0.2.99\n !\n!"
 
 
-def test_clear_restores_committed_view_in_configuration(lab_root):
+def test_clear_restores_committed_view_and_empties_the_delta(lab_root):
     session = cfgmod.CliSession(lab_root)
     session.enter_configure()
     session.enter_access_info_definition("sample_lab")
@@ -138,8 +167,11 @@ def test_clear_restores_committed_view_in_configuration(lab_root):
 
     session.clear()
     assert not lab.access_info_exists("test", lab_root)  # unrelated: sanity
-    assert "192.0.2.99" not in climain.render_configuration_candidate(session)
-    assert "192.0.2.11" in climain.render_configuration_candidate(session)
+    # No uncommitted changes left -> no delta at all.
+    assert climain.render_configuration_candidate(session) == ""
+    # The full committed view is back to the original value.
+    assert "192.0.2.11" in climain.render_committed_definition(session)
+    assert "192.0.2.99" not in climain.render_committed_definition(session)
 
 
 def test_clear_on_brand_new_definition_leaves_no_disk_write_and_falls_back(lab_root):

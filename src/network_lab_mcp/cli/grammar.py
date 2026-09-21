@@ -56,6 +56,7 @@ class CliContext:
     candidate_reference_names: tuple[str, ...] = ()
     topology_candidate_device_names: tuple[str, ...] = ()
     access_info_candidate_device_names: tuple[str, ...] = ()
+    access_info_candidate_jump_host_names: tuple[str, ...] = ()
 
 
 Provider = Callable[[CliContext, str], list[str]]
@@ -103,6 +104,27 @@ def validate_transport(value: str) -> ValidationOutcome:
     if lowered in ("ssh", "telnet"):
         return _ok(lowered)
     return _fail("Invalid transport. Expected ssh or telnet.")
+
+
+def validate_jump_host_type(value: str) -> ValidationOutcome:
+    """Jump hosts are always generic endpoints for native OpenSSH ProxyJump,
+    never a network-device type. Reuses lab.normalize_device_type() for the
+    case-insensitive/abbreviation matching (so 'HOST'/'Host'/'h' all still
+    resolve), then narrows the accepted result to exactly 'host'."""
+    try:
+        normalized = lab.normalize_device_type(value)
+    except lab.LabConfigError as exc:
+        return _fail(str(exc))
+    if normalized != lab.JUMP_HOST_TYPE:
+        return _fail(f"Invalid jump-host type. Expected: {lab.JUMP_HOST_TYPE}.")
+    return _ok(normalized)
+
+
+def validate_jump_host_transport(value: str) -> ValidationOutcome:
+    """Single-hop OpenSSH ProxyJump is SSH-only."""
+    if value.lower() == "ssh":
+        return _ok("ssh")
+    return _fail("Invalid transport. Jump hosts support ssh only (required by OpenSSH ProxyJump).")
 
 
 def validate_port(value: str) -> ValidationOutcome:
@@ -155,6 +177,20 @@ def provide_transport_values(ctx: CliContext, prefix: str) -> list[str]:
 def provide_device_types(ctx: CliContext, prefix: str) -> list[str]:
     lowered = prefix.lower()
     return [v for v in lab.DEVICE_TYPES if v.startswith(lowered)]
+
+
+def provide_jump_host_type_values(ctx: CliContext, prefix: str) -> list[str]:
+    lowered = prefix.lower()
+    return [lab.JUMP_HOST_TYPE] if lab.JUMP_HOST_TYPE.startswith(lowered) else []
+
+
+def provide_jump_host_transport_values(ctx: CliContext, prefix: str) -> list[str]:
+    lowered = prefix.lower()
+    return ["ssh"] if "ssh".startswith(lowered) else []
+
+
+def provide_access_info_jump_host_names(ctx: CliContext, prefix: str) -> list[str]:
+    return [n for n in ctx.access_info_candidate_jump_host_names if n.startswith(prefix)]
 
 
 # `help <topic>` is Network Lab MCP's own Quick Start/usage help, distinct
@@ -256,15 +292,21 @@ def _add_show_subtree(
     include_configuration: bool,
     configuration_description: str = "Show candidate configuration",
     include_version: bool = False,
+    bare_show: bool = False,
+    show_keyword_description: str = "Show information",
 ) -> None:
     """`show running-config` and `show configuration` are scoped to the
     *current CLI context*: EXEC/global/running-config mode show the MCP
     running-config selection; a topology/access-info/scenario/reference
-    (or its nested device submode) shows that same object's own committed/
-    candidate state instead (see cli/main.py's context-aware renderers).
-    Only EXEC gets `show version` -- it is software-level information, not
-    part of any configuration context."""
-    show = root.add_literal("show", "Show information")
+    (or its nested device/jump-host submode) shows that same object's own
+    committed/uncommitted state instead (see cli/main.py's context-aware
+    renderers). Only EXEC gets `show version` -- it is software-level
+    information, not part of any configuration context. Every configuration
+    mode (never EXEC) additionally makes bare `show` itself a complete
+    command with the same meaning as `show configuration` -- the same
+    "a node can carry both its own command and further children" mechanism
+    parse()/help() already use for bare `help`."""
+    show = root.add_literal("show", show_keyword_description)
     running = show.add_literal("running-config", running_config_description)
     running.set_command(f"{mode}.show_running_config", running_config_description)
     if include_version:
@@ -273,6 +315,8 @@ def _add_show_subtree(
     if include_configuration:
         candidate = show.add_literal("configuration", configuration_description)
         candidate.set_command(f"{mode}.show_configuration", configuration_description)
+    if bare_show:
+        show.set_command(f"{mode}.show_configuration", configuration_description)
 
 
 def _add_help_subtree(root: Node, mode: str) -> None:
@@ -296,15 +340,31 @@ def _add_help_subtree(root: Node, mode: str) -> None:
     topic_next.set_command(f"{mode}.help_topic", "Display help for a specific topic")
 
 
-def _add_common_subtree(root: Node, mode: str) -> None:
+def _add_common_subtree(
+    root: Node,
+    mode: str,
+    *,
+    include_root: bool = True,
+    exit_description: str = "Exit from this submode",
+) -> None:
+    """`commit` deliberately never changes `mode` (see cli/main.py::h_commit)
+    -- it only saves the candidate. Navigation is `root` (jump straight to
+    global configuration mode, preserving candidate state), `exit` (one
+    level up), and `end` (guarded jump to EXEC) -- none of the three ever
+    commits or clears. `root` is omitted at global configuration mode
+    itself (already the configuration root; IOS XR-style submode-only
+    visibility) via `include_root=False`."""
     clear = root.add_literal("clear", "Clear the uncommitted configuration")
     clear.set_command(f"{mode}.clear", "Clear the uncommitted configuration")
-    commit = root.add_literal("commit", "Commit candidate configuration")
-    commit.set_command(f"{mode}.commit", "Commit candidate configuration")
-    end = root.add_literal("end", "Return to EXEC mode")
-    end.set_command(f"{mode}.end", "Return to EXEC mode")
-    exit_node = root.add_literal("exit", "Exit one configuration level")
-    exit_node.set_command(f"{mode}.exit", "Exit one configuration level")
+    commit = root.add_literal("commit", "Commit configuration changes")
+    commit.set_command(f"{mode}.commit", "Commit configuration changes")
+    if include_root:
+        root_node = root.add_literal("root", "Exit to the global configuration mode")
+        root_node.set_command(f"{mode}.root", "Exit to the global configuration mode")
+    end = root.add_literal("end", "Exit from configure mode")
+    end.set_command(f"{mode}.end", "Exit from configure mode")
+    exit_node = root.add_literal("exit", exit_description)
+    exit_node.set_command(f"{mode}.exit", exit_description)
     _add_help_subtree(root, mode)
 
 
@@ -394,16 +454,28 @@ def _build_global_root() -> Node:
     _add_show_subtree(
         root,
         "global",
-        running_config_description="Show committed MCP definition selection",
+        running_config_description="Contents of running configuration",
         include_configuration=True,
-        configuration_description="Show candidate configuration",
+        configuration_description="Contents of uncommitted configuration",
+        bare_show=True,
+        show_keyword_description="Show contents of configuration",
     )
-    _add_common_subtree(root, "global")
+    _add_common_subtree(root, "global", include_root=False, exit_description="Exit from configure mode")
     return root
 
 
 def _build_running_root() -> Node:
     root = Node()
+
+    access_info_arg = Argument(
+        "name",
+        "Access information name",
+        provider=provide_access_info_names,
+        hint="<name>",
+    )
+    access_info_node = root.add_literal("access-info", "Select access information used by MCP/runtime")
+    access_info_next = access_info_node.add_argument(access_info_arg)
+    access_info_next.set_command("running.access_info", "Select access information used by MCP/runtime")
 
     topology_arg = Argument(
         "name",
@@ -436,6 +508,8 @@ def _build_running_root() -> Node:
     reference_next.set_command("running.reference_add", "Add reference used by MCP")
 
     no_node = root.add_literal("no", "Negate a running configuration item")
+    no_access_info_node = no_node.add_literal("access-info", "Remove the access information selection")
+    no_access_info_node.set_command("running.access_info_remove", "Remove the access information selection")
     no_reference_node = no_node.add_literal("reference", "Remove a reference used by MCP")
     no_reference_arg = Argument(
         "name",
@@ -449,9 +523,11 @@ def _build_running_root() -> Node:
     _add_show_subtree(
         root,
         "running",
-        running_config_description="Show committed MCP definition selection",
+        running_config_description="Contents of running configuration",
         include_configuration=True,
-        configuration_description="Show candidate MCP definition selection",
+        configuration_description="Contents of uncommitted configuration",
+        bare_show=True,
+        show_keyword_description="Show contents of configuration",
     )
     _add_common_subtree(root, "running")
     return root
@@ -489,9 +565,11 @@ def _build_topology_root() -> Node:
     _add_show_subtree(
         root,
         "topology",
-        running_config_description="Show committed topology configuration",
+        running_config_description="Contents of committed topology configuration",
         include_configuration=True,
-        configuration_description="Show candidate topology configuration",
+        configuration_description="Contents of uncommitted topology configuration",
+        bare_show=True,
+        show_keyword_description="Show contents of configuration",
     )
     _add_common_subtree(root, "topology")
     return root
@@ -519,9 +597,11 @@ def _build_device_root() -> Node:
     _add_show_subtree(
         root,
         "device",
-        running_config_description="Show committed topology configuration",
+        running_config_description="Contents of committed device configuration",
         include_configuration=True,
-        configuration_description="Show candidate topology configuration",
+        configuration_description="Contents of uncommitted device configuration",
+        bare_show=True,
+        show_keyword_description="Show contents of configuration",
     )
     _add_common_subtree(root, "device")
     return root
@@ -543,12 +623,27 @@ def _build_access_info_root() -> Node:
     device_next = device_node.add_argument(device_arg)
     device_next.set_command("access_info.device", "Create or edit a device")
 
+    jump_host_arg = Argument(
+        "name",
+        "Jump host name",
+        provider=provide_access_info_jump_host_names,
+        hint="<name>",
+        creatable=True,
+        existing_label="Existing jump host",
+        create_label="Create or edit jump host",
+    )
+    jump_host_node = root.add_literal("jump-host", "Create or edit a jump host")
+    jump_host_next = jump_host_node.add_argument(jump_host_arg)
+    jump_host_next.set_command("access_info.jump_host", "Create or edit a jump host")
+
     _add_show_subtree(
         root,
         "access_info",
-        running_config_description="Show committed access information",
+        running_config_description="Contents of committed access information",
         include_configuration=True,
-        configuration_description="Show candidate access information",
+        configuration_description="Contents of uncommitted access information",
+        bare_show=True,
+        show_keyword_description="Show contents of configuration",
     )
     _add_common_subtree(root, "access_info")
     return root
@@ -620,12 +715,20 @@ def _build_access_device_root() -> Node:
         sensitive=True,
         hint="<password>",
     )
+    add_field(
+        "jump-host",
+        "Reference a jump host for this device (single-hop OpenSSH ProxyJump)",
+        "access_device.set_jump_host",
+        provider=provide_access_info_jump_host_names,
+        hint="<name>",
+    )
 
     no_node = root.add_literal("no", "Negate a device field")
     for keyword, action, description in (
         ("username", "access_device.clear_username", "Clear the device username"),
         ("password", "access_device.clear_password", "Clear the device password"),
         ("port", "access_device.clear_port", "Clear the device port"),
+        ("jump-host", "access_device.clear_jump_host", "Clear the device jump-host reference"),
     ):
         field_node = no_node.add_literal(keyword, description)
         field_node.set_command(action, description)
@@ -633,11 +736,107 @@ def _build_access_device_root() -> Node:
     _add_show_subtree(
         root,
         "access_device",
-        running_config_description="Show committed access information",
+        running_config_description="Contents of committed device configuration",
         include_configuration=True,
-        configuration_description="Show candidate access information",
+        configuration_description="Contents of uncommitted device configuration",
+        bare_show=True,
+        show_keyword_description="Show contents of configuration",
     )
     _add_common_subtree(root, "access_device")
+    return root
+
+
+def _build_access_jump_host_root() -> Node:
+    """access-info's nested jump-host submode: a reusable single-hop
+    OpenSSH ProxyJump endpoint. Deliberately narrower than the device
+    submode above: `type` only ever resolves to 'host' and `transport`
+    only ever resolves to 'ssh' (see validate_jump_host_type()/
+    validate_jump_host_transport()) -- both still reuse the shared
+    device.type SSOT rather than inventing a separate enum."""
+    root = Node()
+
+    def add_field(
+        keyword: str,
+        description: str,
+        action: str,
+        *,
+        validate: Validator = validate_freeform,
+        provider: Optional[Provider] = None,
+        hint: str = "<value>",
+        sensitive: bool = False,
+        enumerate_when_empty: bool = False,
+        value_help: Optional[dict[str, str]] = None,
+    ) -> None:
+        argument = Argument(
+            "value",
+            description,
+            validate=validate,
+            provider=provider,
+            hint=hint,
+            sensitive=sensitive,
+            enumerate_when_empty=enumerate_when_empty,
+            value_help=value_help or {},
+        )
+        node = root.add_literal(keyword, description)
+        next_node = node.add_argument(argument)
+        next_node.set_command(action, description)
+
+    add_field(
+        "type",
+        "Set the jump-host type",
+        "access_jump_host.set_type",
+        validate=validate_jump_host_type,
+        provider=provide_jump_host_type_values,
+        hint="<host>",
+        enumerate_when_empty=True,
+        value_help={lab.JUMP_HOST_TYPE: lab.DEVICE_TYPES[lab.JUMP_HOST_TYPE]},
+    )
+    add_field("address", "Set the jump-host management address", "access_jump_host.set_address")
+    add_field(
+        "transport",
+        "Set the jump-host transport",
+        "access_jump_host.set_transport",
+        validate=validate_jump_host_transport,
+        provider=provide_jump_host_transport_values,
+        hint="<ssh>",
+        enumerate_when_empty=True,
+        value_help={"ssh": "Use SSH transport (required for ProxyJump)"},
+    )
+    add_field(
+        "port",
+        "Set the jump-host port",
+        "access_jump_host.set_port",
+        validate=validate_port,
+        hint="<1-65535>",
+    )
+    add_field("username", "Set the jump-host username", "access_jump_host.set_username")
+    add_field(
+        "password",
+        "Set the jump-host password",
+        "access_jump_host.set_password",
+        sensitive=True,
+        hint="<password>",
+    )
+
+    no_node = root.add_literal("no", "Negate a jump-host field")
+    for keyword, action, description in (
+        ("username", "access_jump_host.clear_username", "Clear the jump-host username"),
+        ("password", "access_jump_host.clear_password", "Clear the jump-host password"),
+        ("port", "access_jump_host.clear_port", "Clear the jump-host port"),
+    ):
+        field_node = no_node.add_literal(keyword, description)
+        field_node.set_command(action, description)
+
+    _add_show_subtree(
+        root,
+        "access_jump_host",
+        running_config_description="Contents of committed jump-host configuration",
+        include_configuration=True,
+        configuration_description="Contents of uncommitted jump-host configuration",
+        bare_show=True,
+        show_keyword_description="Show contents of configuration",
+    )
+    _add_common_subtree(root, "access_jump_host")
     return root
 
 
@@ -648,9 +847,11 @@ def _build_scenario_root() -> Node:
     _add_show_subtree(
         root,
         "scenario",
-        running_config_description="Show committed scenario configuration",
+        running_config_description="Contents of committed scenario configuration",
         include_configuration=True,
-        configuration_description="Show candidate scenario configuration",
+        configuration_description="Contents of uncommitted scenario configuration",
+        bare_show=True,
+        show_keyword_description="Show contents of configuration",
     )
     _add_common_subtree(root, "scenario")
     return root
@@ -663,9 +864,11 @@ def _build_reference_root() -> Node:
     _add_show_subtree(
         root,
         "reference",
-        running_config_description="Show committed reference configuration",
+        running_config_description="Contents of committed reference configuration",
         include_configuration=True,
-        configuration_description="Show candidate reference configuration",
+        configuration_description="Contents of uncommitted reference configuration",
+        bare_show=True,
+        show_keyword_description="Show contents of configuration",
     )
     _add_common_subtree(root, "reference")
     return root
@@ -679,6 +882,7 @@ MODE_ROOTS: dict[str, Node] = {
     "device": _build_device_root(),
     "access_info": _build_access_info_root(),
     "access_device": _build_access_device_root(),
+    "access_jump_host": _build_access_jump_host_root(),
     "scenario": _build_scenario_root(),
     "reference": _build_reference_root(),
 }

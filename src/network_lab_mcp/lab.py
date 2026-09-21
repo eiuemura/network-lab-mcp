@@ -272,6 +272,11 @@ def topology_exists(name: str, lab_root: Path | None = None) -> bool:
 # --------------------------------------------------------------------------
 
 
+# Single-hop OpenSSH ProxyJump only (see terminal.py): a jump host is always
+# a generic endpoint, never a network device, and ProxyJump is SSH-only.
+JUMP_HOST_TYPE = "host"
+
+
 def validate_access_info_data(name: str, data: Any) -> None:
     """Validate an in-memory access-info mapping. Device names only need
     basic sanity here (non-empty strings) -- unlike topology, access-info

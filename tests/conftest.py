@@ -26,6 +26,7 @@ def lab_root(tmp_path: Path) -> Path:
     _write_yaml(
         root / "settings.yaml",
         {
+            "active_access_info": "sample_lab",
             "active_topology": "sample_lab",
             "active_scenario": "sample",
             "active_references": ["sample"],
@@ -48,6 +49,16 @@ def lab_root(tmp_path: Path) -> Path:
         root / "access-info" / "sample_lab.yaml",
         {
             "name": "sample_lab",
+            "jump_hosts": {
+                "jump1": {
+                    "type": "host",
+                    "address": "192.0.2.10",
+                    "transport": "ssh",
+                    "port": 22,
+                    "username": "example-user",
+                    "password": "example-password",
+                },
+            },
             "devices": {
                 "R1": {
                     "type": "iosxr",

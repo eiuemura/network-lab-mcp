@@ -122,3 +122,76 @@ def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
         "show_lldp_neighbors": show_lldp_neighbors,
     }
 
+
+# --------------------------------------------------------------------------
+# IOS XR LLDP parsing -- observations only, no identity resolution
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LldpObservation:
+    local_device_id: str
+    local_interface: str
+    remote_device_id_raw: str
+    remote_port_id: str
+    capabilities: tuple[str, ...] = ()
+    source: str = "lldp"
+
+
+_CAPABILITY_CODES = {
+    "R": "router",
+    "B": "bridge",
+    "T": "telephone",
+    "C": "docsis_cable_device",
+    "W": "wlan_access_point",
+    "P": "repeater",
+    "S": "station",
+    "O": "other",
+}
+
+
+def _normalize_capabilities(raw: str) -> tuple[str, ...]:
+    return tuple(_CAPABILITY_CODES.get(ch, ch) for ch in raw.strip() if ch.strip())
+
+
+def parse_lldp_neighbors(raw_text: str, local_device_id: str) -> list[LldpObservation]:
+    """Parse `show lldp neighbors` output into normalized observations.
+
+    Deliberately tolerant of real IOS XR output variation: the timestamp
+    line and capability-codes legend are optional/ignored, column spacing
+    is not depended on (each data row is split on whitespace, not fixed
+    columns), and a trailing device prompt or a blank line ends the table
+    just as reliably as "Total entries displayed: N". A row that doesn't
+    split into exactly the 5 expected fields is skipped rather than raising
+    -- this parser only ever produces raw observations, never resolves a
+    remote Device ID to a logical managed device (see
+    resolve_remote_identity() for that separate stage)."""
+    observations: list[LldpObservation] = []
+    in_table = False
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not in_table:
+            if line.startswith("Device ID") and "Local Intf" in line:
+                in_table = True
+            continue
+        if not line:
+            break
+        if line.lower().startswith("total entries displayed"):
+            break
+        if _IOSXR_PROMPT_RE.search(line):
+            break
+        parts = line.split()
+        if len(parts) != 5:
+            continue
+        device_id_raw, local_intf, _hold_time, capability_raw, port_id = parts
+        observations.append(
+            LldpObservation(
+                local_device_id=local_device_id,
+                local_interface=local_intf,
+                remote_device_id_raw=device_id_raw,
+                remote_port_id=port_id,
+                capabilities=_normalize_capabilities(capability_raw),
+            )
+        )
+    return observations
+

@@ -441,6 +441,78 @@ it is EXEC-only (see "`show version`" above and "`show running-config` vs.
 | `show running-config` | Show the full committed selection on disk (unaffected by the candidate). |
 | `commit` / `clear` / `root` / `end` / `exit` | As in global configuration mode. `root`/`exit` return one level up, to global configuration mode (no dirty guard — still the same overall configure session). `commit` stays in `running` mode. |
 
+## Running-config selection model
+
+The four running-config selections are not all symmetric:
+
+| Type | Selection | Can be unset | Behavior |
+|------|-----------|--------------|----------|
+| `access-info` | Single | Yes | Without it, terminal access and discovery are unavailable |
+| `topology` | Single | No | Required; use `topology <name>` to switch |
+| `scenario` | Single | No | Required; use `scenario <name>` to switch |
+| `reference` | Multiple | Yes | Use `no reference <name>` to remove one |
+
+`network-lab(config-running)# no ?` prints exactly this table as an
+explanatory footer, right after its two real candidates:
+
+```
+network-lab(config-running)# no ?
+  access-info          Remove the access information selection
+  reference            Remove a reference used by MCP
+
+Running-config selection model:
+Type         Selection     Can be unset  Behavior
+-----------  ------------  ------------  --------------------------------------------
+access-info  Single        Yes           Without it, terminal access and discovery
+                                          are unavailable
+topology     Single        No            Required; use "topology <name>" to switch
+scenario     Single        No            Required; use "scenario <name>" to switch
+reference    Multiple      Yes           Use "no reference <name>" to remove one
+
+network-lab(config-running)# no
+```
+
+`topology`/`scenario` appear **only** in this footer's prose — they are not
+real grammar candidates under `no` in `running` mode, are never Tab-completable,
+and `no topology`/`no scenario` are still rejected the same way they always
+were. The footer is scoped to exactly the spaced `no ?` help context: the
+attached `no?` form (IOS XR's `token?` vs `token ?` distinction — see "`?`
+vs. `help`" below) shows its ordinary one-line summary instead, and the
+footer never appears in EXEC/global configuration/any definition submode's
+own `no ?`.
+
+`show running-config` always renders the `access-info` and `reference`
+sections, even when unset/empty, using a display-only `<none>` marker
+instead of omitting the section:
+
+```
+network-lab# show running-config
+!
+ access-info
+  <none>
+!
+ topology
+  sample_lab
+!
+ scenario
+  sample
+!
+ reference
+  <none>
+!
+```
+
+`<none>` is presentation only: it is never written to `lab/settings.yaml`
+(absence is still represented natively — a missing key / empty list), never
+a valid value for `access-info <name>`/`reference <name>`, never a Tab/`?`
+candidate, and never appears in `show configuration`'s candidate-diff syntax
+(deleting the access-info selection there is still rendered as
+`no access-info`, unchanged). A pending `no access-info`/`no reference
+<name>` in the candidate does not show `<none>` until `commit` succeeds; a
+failed commit leaves the previously committed value displayed. `topology`
+and `scenario` never show `<none>` — they are mandatory selections, and a
+missing value there is left exactly as before (not papered over).
+
 ## Topology definition mode commands
 
 | Command | Effect |

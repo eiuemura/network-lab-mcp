@@ -357,11 +357,28 @@ def render_generic_definition(data: dict) -> str:
     return yaml.safe_dump(data, sort_keys=False, default_flow_style=False).rstrip("\n")
 
 
+_NONE_DISPLAY = "<none>"
+
+
 def _running_config_lines(settings: dict) -> str:
+    """`show running-config` selection summary (EXEC/global/running --
+    one shared renderer). Step D.1: the `access-info` and `reference`
+    sections always appear, even when empty, showing the display-only
+    `<none>` marker instead of being silently omitted -- this makes an
+    optional selection's absence explicit rather than ambiguous (was it
+    never rendered, or genuinely unset?). `<none>` is rendering only: it
+    is never written to settings.yaml, never a valid selector value, and
+    never returned through candidate-diff (`show configuration`) or MCP
+    state -- see _running_config_delta_lines() below, unchanged.
+
+    `topology`/`scenario` are mandatory selections and keep their
+    pre-existing behavior unchanged (a section is only appended if a
+    name is actually present) -- Step D.1 does not introduce `<none>`
+    for them; a missing mandatory value is not a state this renderer
+    tries to make presentable, it is left exactly as before."""
     sections: list[tuple[str, list[str]]] = []
     access_info_name = settings.get("active_access_info")
-    if access_info_name:
-        sections.append(("access-info", [access_info_name]))
+    sections.append(("access-info", [access_info_name] if access_info_name else [_NONE_DISPLAY]))
     topology_name = settings.get("active_topology")
     if topology_name:
         sections.append(("topology", [topology_name]))
@@ -369,8 +386,7 @@ def _running_config_lines(settings: dict) -> str:
     if scenario_name:
         sections.append(("scenario", [scenario_name]))
     references = settings.get("active_references") or []
-    if references:
-        sections.append(("reference", list(references)))
+    sections.append(("reference", list(references) if references else [_NONE_DISPLAY]))
     lines: list[str] = []
     for label, values in sections:
         lines.append("!")
@@ -659,6 +675,38 @@ def print_help_result(result: grammar.HelpResult) -> None:
         print(f"  {line.token:<20} {line.description}")
     if result.show_cr:
         print("  <cr>")
+
+
+# Step D.1: purely explanatory footer for the exact `config-running# no ?`
+# help context (grammar.is_bare_no_context() gates it). access-info and
+# reference are the ONLY real grammar candidates under running-config's
+# "no" -- topology/scenario never gained "no topology"/"no scenario" (both
+# are mandatory running-config selections, unset via "topology <name>" /
+# "scenario <name>" instead, never by removal). This table only explains
+# that existing shape in prose; it is not itself parsed, completed, or
+# stored anywhere -- see the semantic-drift tests in
+# tests/test_running_config_selection_model.py that assert the real
+# grammar still matches every claim made here.
+_RUNNING_CONFIG_SELECTION_MODEL = """\
+Running-config selection model:
+Type         Selection     Can be unset  Behavior
+-----------  ------------  ------------  --------------------------------------------
+access-info  Single        Yes           Without it, terminal access and discovery
+                                          are unavailable
+topology     Single        No            Required; use "topology <name>" to switch
+scenario     Single        No            Required; use "scenario <name>" to switch
+reference    Multiple      Yes           Use "no reference <name>" to remove one"""
+
+
+def _render_running_config_selection_model() -> str:
+    return _RUNNING_CONFIG_SELECTION_MODEL
+
+
+def _should_show_running_no_footer(mode: str, text_before: str) -> bool:
+    """Gate for the Step D.1 footer: only the spaced `no ?` context, only
+    in running mode. Factored out of the `?` key-binding so it is testable
+    without prompt_toolkit machinery."""
+    return mode == "running" and grammar.is_bare_no_context(mode, text_before)
 
 
 def print_parse_error(error: grammar.ParseError) -> None:
@@ -1738,6 +1786,14 @@ def _make_key_bindings(session: cfgmod.CliSession) -> KeyBindings:
             # actually pressed, before the help lines that answer it.
             print(f"{prompt_text(session)}{text_before}?{text_after}")
             print_help_result(result)
+            # Step D.1: the running-config selection model footer is scoped
+            # to exactly the spaced "no ?" context in running mode -- never
+            # the attached "no?", never any other mode/token. Presentation
+            # only: it adds no grammar candidate and cannot affect Tab
+            # completion, parsing, or command history.
+            if _should_show_running_no_footer(session.mode, text_before):
+                print()
+                print(_render_running_config_selection_model())
 
         if result.lines or result.show_cr:
             run_in_terminal(_show)

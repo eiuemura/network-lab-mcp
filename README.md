@@ -198,6 +198,23 @@ stdio protocol.
   legal to select — never a generic `<name>` placeholder, and never a
   definition currently pending deletion. See
   [docs/cli_reference.md](docs/cli_reference.md#no-kind-name).
+- **Running-config selection model**: access-info is optional, single-select,
+  and unsettable (`no access-info`); topology and scenario are mandatory,
+  single-select, and never unsettable (switch with `topology <name>` /
+  `scenario <name>` — there is no `no topology`/`no scenario`); reference is
+  optional and multi-select, with individual entries removed via
+  `no reference <name>`. `network-lab(config-running)# no ?` prints this
+  model as an explanatory footer after its two real candidates
+  (`access-info`, `reference`) — `topology`/`scenario` appear only in that
+  prose, never as parseable or completable tokens, and the footer never
+  appears for the attached `no?` form or in any other mode. `show
+  running-config` always renders the `access-info` and `reference` sections
+  even when unset/empty, showing a display-only `<none>` marker rather than
+  omitting the section; `<none>` is presentation only — never persisted to
+  `settings.yaml`, never a valid selector value, and never used by `show
+  configuration`'s candidate-diff syntax (still `no access-info`, unchanged).
+  Topology/scenario never show `<none>` (they are mandatory). See
+  [docs/cli_reference.md](docs/cli_reference.md#running-config-selection-model).
 - **Step 1 validator reuse**: topology/access-info/device.type validation on
   commit reuses `network_lab_mcp.lab.validate_topology_data()` /
   `validate_access_info_data()` / `normalize_device_type()` — the CLI does

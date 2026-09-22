@@ -1539,3 +1539,26 @@ def help(mode: str, text_before_cursor: str, ctx: CliContext) -> HelpResult:
 
     show_cr = partial == "" and node.command is not None
     return HelpResult(lines, show_cr, partial)
+
+
+def is_bare_no_context(mode: str, text_before_cursor: str) -> bool:
+    """True exactly for the spaced ``no ?`` help context in `mode`: the
+    committed text resolves to exactly the "no" keyword and nothing has
+    been typed after it yet (`no ?`, not the attached `no?` -- see the
+    `token?` vs `token ?` distinction documented throughout help() above).
+
+    Presentation-only query, used by cli/main.py to gate an explanatory
+    help footer onto one exact help context. Adds no trie node, and does
+    not affect parse()/complete()/help()'s own candidate output -- `no`'s
+    real children (e.g. access-info/reference in "running" mode) remain
+    exactly as returned by help() itself."""
+    committed, partial = split_for_completion(text_before_cursor)
+    if partial != "" or len(committed) != 1:
+        return False
+    root = MODE_ROOTS.get(mode)
+    if root is None:
+        return False
+    no_node = root.literal_children.get("no")
+    if no_node is None:
+        return False
+    return _walk_committed(mode, committed) is no_node

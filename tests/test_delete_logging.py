@@ -86,6 +86,17 @@ def _cleanup_sessions():
     yield
     for session_name in list(terminal.list_validation_sessions()):
         terminal.close_validation_session(session_name[len(terminal.VALIDATION_PREFIX) :])
+
+
+@pytest.fixture(autouse=True)
+def _no_managed_auth_wait(monkeypatch):
+    """This file exercises logging/active-writer safety, never SSH
+    authentication -- `open_device_terminal(..., {"transport": "ssh", ...})`
+    below is only ever a convenient stand-in for "some active managed
+    session", against a fake, non-routable address (Step 3.5's own
+    authentication wait would otherwise poll for the bounded
+    _MANAGED_LOGIN_TIMEOUT_SECONDS on every such call for nothing)."""
+    monkeypatch.setattr(terminal, "_authenticate_managed_session", lambda *a, **k: None)
     for device_id in _WRITER_TEST_DEVICE_IDS:
         terminal.close_device_terminal(device_id)
         terminal.close_bootstrap_terminal(device_id)

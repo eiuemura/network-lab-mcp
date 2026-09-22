@@ -46,8 +46,11 @@ DISCOVERY_MAX_WORKERS = 8
 # "Local hostname collection" in docs/architecture.md): no separate
 # `show running-config | include hostname` query is needed.
 _IOSXR_PROMPT_RE = re.compile(r"RP/\S+/CPU\d+:(?P<hostname>[^#\s]+)#\s*$", re.MULTILINE)
-_PASSWORD_PROMPT_RE = re.compile(r"[Pp]assword:\s*$", re.MULTILINE)
-_LOGIN_WAIT_RE = re.compile(f"(?:{_PASSWORD_PROMPT_RE.pattern})|(?:{_IOSXR_PROMPT_RE.pattern})")
+# The password-prompt regex itself is shared SSOT (Step 3.5): see
+# terminal.PASSWORD_PROMPT_RE's own docstring -- OpenSSH's client-side
+# prompt text is identical regardless of caller, so there is exactly one
+# place that recognizes it.
+_LOGIN_WAIT_RE = re.compile(f"(?:{terminal.PASSWORD_PROMPT_RE.pattern})|(?:{_IOSXR_PROMPT_RE.pattern})")
 
 
 class DiscoveryError(Exception):
@@ -66,40 +69,21 @@ def _last_nonblank_line(text: str) -> str:
     return ""
 
 
-# OpenSSH's own interactive password prompt is always exactly
-# "<user>@<host>'s password: " for whichever hop is currently
-# authenticating -- stable, well-documented client-side text (not the
-# remote device's own banner), used below to tell a jump-host prompt
-# apart from the target device's own prompt without guessing.
-_SSH_HOP_PASSWORD_PROMPT_RE = re.compile(r"(?P<hop_user>[^\s@]+)@(?P<hop_host>[^\s']+)'s password:\s*$")
-
-
 def _resolve_login_password(device_id: str, device_config: dict, prompt_line: str) -> str:
     """Which password answers the current prompt.
 
-    Direct SSH (no jump_host_config) is unambiguous: the one password
-    prompt that can appear is always the target device's own.
-
-    ProxyJump can show *two* separate password prompts in sequence (one
-    per hop), and sending the wrong one to the wrong hop must never
-    happen. This reads the prompting hop's own address out of OpenSSH's
-    prompt text and only answers when it confidently matches the target
-    device's own address; a prompt that matches the jump host's address,
-    or that cannot be confidently attributed to either hop, fails closed
-    (DiscoveryError) instead of guessing -- see "Bounded ProxyJump
-    limitation" in docs/architecture.md. This is a deliberately bounded,
-    Discovery-only limitation: it does not touch, and does not need to
-    touch, terminal_open()'s shared connection-building code, since that
-    path never automates password entry at all."""
-    jump_host_config = device_config.get("jump_host_config")
-    if not jump_host_config:
-        return device_config.get("password") or ""
-
-    hop_match = _SSH_HOP_PASSWORD_PROMPT_RE.search(prompt_line)
-    hop_host = hop_match.group("hop_host") if hop_match else None
-    if hop_host is not None and hop_host == str(device_config.get("address")):
-        return device_config.get("password") or ""
-    if hop_host is not None and hop_host == str(jump_host_config.get("address")):
+    A thin, Discovery-specific wrapper around the shared
+    terminal.resolve_target_password_prompt() (Step 3.5): the actual
+    target-vs-jump-host attribution logic lives there once, reused
+    identically by managed terminal_open()'s own private authentication,
+    so a prompt that cannot be confidently attributed to either hop fails
+    closed (DiscoveryError) the exact same way for both callers -- this
+    function only supplies Discovery's own wording for that failure (see
+    "Bounded ProxyJump limitation" in docs/architecture.md)."""
+    outcome = terminal.resolve_target_password_prompt(device_config, prompt_line)
+    if outcome.matched_target:
+        return outcome.password
+    if outcome.reason == "jump-host password prompt":
         raise DiscoveryError(
             f"Device '{device_id}': the jump host prompted for an interactive password, which "
             "Discovery's automated bootstrap login does not support. Configure key/agent-based "
@@ -121,7 +105,7 @@ def _login(device_id: str, device_config: dict) -> str:
     terminal.open_bootstrap_terminal(device_id, device_config)
     text = terminal.wait_for_bootstrap_pattern(device_id, _LOGIN_WAIT_RE, LOGIN_TIMEOUT_SECONDS)
     last_line = _last_nonblank_line(text)
-    if _PASSWORD_PROMPT_RE.search(last_line):
+    if terminal.PASSWORD_PROMPT_RE.search(last_line):
         password = _resolve_login_password(device_id, device_config, last_line)
         terminal.send_to_bootstrap(device_id, password, None, True)
         text = terminal.wait_for_bootstrap_pattern(device_id, _IOSXR_PROMPT_RE, LOGIN_TIMEOUT_SECONDS)

@@ -23,6 +23,17 @@ def isolated_logs(tmp_path, monkeypatch):
     return logs_root
 
 
+@pytest.fixture(autouse=True)
+def _no_managed_auth_wait(monkeypatch):
+    """This file exercises persistent logging, never SSH authentication --
+    `open_device_terminal(..., {"transport": "ssh", ...})` below is only
+    ever a convenient stand-in for "some active managed session", against
+    a fake, non-routable address (Step 3.5's own authentication wait would
+    otherwise poll for the bounded _MANAGED_LOGIN_TIMEOUT_SECONDS on every
+    such call for nothing)."""
+    monkeypatch.setattr(terminal, "_authenticate_managed_session", lambda *a, **k: None)
+
+
 def _open_validation(validation_id: str, script: str) -> str:
     result = terminal.open_validation_session(validation_id, ["bash", "-c", script])
     return result["session_name"]

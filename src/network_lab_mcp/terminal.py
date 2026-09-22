@@ -80,6 +80,68 @@ class TerminalError(Exception):
 
 
 # --------------------------------------------------------------------------
+# Shared safe SSH password-prompt attribution (Step 3.5)
+#
+# OpenSSH's own client-side interactive password prompt is always exactly
+# "<user>@<host>'s password: " for whichever hop is currently
+# authenticating -- stable, well-documented client-side text (not the
+# remote device's own banner/CLI). Matching at this transport level (never
+# a device-CLI-specific prompt) is what makes this safely reusable by both
+# Discovery's bootstrap login (discovery.py, IOS XR specific elsewhere)
+# and normal managed terminal_open() private authentication below (device-
+# type agnostic) -- one shared attribution rule, not two independent
+# password-prompt parsers.
+# --------------------------------------------------------------------------
+
+PASSWORD_PROMPT_RE = re.compile(r"[Pp]assword:\s*$", re.MULTILINE)
+SSH_HOP_PASSWORD_PROMPT_RE = re.compile(r"(?P<hop_user>[^\s@]+)@(?P<hop_host>[^\s']+)'s password:\s*$")
+
+
+@dataclass(frozen=True)
+class PasswordPromptOutcome:
+    """Result of attributing one observed password-prompt line to a
+    specific SSH hop. `matched_target` is True only when the prompt can be
+    confidently attributed to the target device's own address -- never a
+    guess. `reason` is a short, fixed, never-secret description of why a
+    prompt was rejected (`matched_target=False`); it never includes any
+    access-info content."""
+
+    matched_target: bool
+    password: str
+    reason: str
+
+
+def resolve_target_password_prompt(device_config: dict, prompt_line: str) -> PasswordPromptOutcome:
+    """Shared safe target-vs-jump-host password-prompt attribution.
+
+    Direct SSH (no `jump_host_config`) is unambiguous: the one password
+    prompt that can appear is always the target device's own.
+
+    ProxyJump can show *two* separate password prompts in sequence (one
+    per hop), and sending the wrong one to the wrong hop must never
+    happen. This reads the prompting hop's own address out of OpenSSH's
+    prompt text and only answers when it confidently matches the target
+    device's own address; a prompt that matches the jump host's address,
+    or that cannot be confidently attributed to either hop, fails closed
+    (`matched_target=False`) instead of guessing -- see "Bounded ProxyJump
+    limitation" in docs/architecture.md. Callers (discovery.py, and
+    _authenticate_managed_session() below) each translate a rejected
+    outcome into their own caller-appropriate exception with their own
+    wording; this function never raises."""
+    jump_host_config = device_config.get("jump_host_config")
+    if not jump_host_config:
+        return PasswordPromptOutcome(True, device_config.get("password") or "", "")
+
+    hop_match = SSH_HOP_PASSWORD_PROMPT_RE.search(prompt_line)
+    hop_host = hop_match.group("hop_host") if hop_match else None
+    if hop_host is not None and hop_host == str(device_config.get("address")):
+        return PasswordPromptOutcome(True, device_config.get("password") or "", "")
+    if hop_host is not None and hop_host == str(jump_host_config.get("address")):
+        return PasswordPromptOutcome(False, "", "jump-host password prompt")
+    return PasswordPromptOutcome(False, "", "ambiguous password prompt")
+
+
+# --------------------------------------------------------------------------
 # Session name derivation
 # --------------------------------------------------------------------------
 
@@ -367,9 +429,10 @@ def _wait_for_pattern(
 ) -> str:
     """Poll pane content until `pattern` matches the tail of the captured
     text, or raise TerminalError on timeout. Returns the full captured pane
-    text at the moment of the match. Used only by the private Discovery
-    bootstrap path (see discovery.py) -- terminal_read()/terminal_send()
-    remain a simple, unattended capture/send with no waiting loop.
+    text at the moment of the match. Used by the private Discovery
+    bootstrap path (see discovery.py) and by _authenticate_managed_session()
+    below (Step 3.5) -- terminal_read()/terminal_send() themselves remain a
+    simple, unattended capture/send with no waiting loop.
 
     `baseline_text`, when given, is the pane content captured *before* the
     command that's now being waited on was sent. A match is only accepted
@@ -801,6 +864,136 @@ def _build_transport_command(device_config: dict, *, accept_new_host_keys: bool 
 
 
 # --------------------------------------------------------------------------
+# Private managed-terminal SSH authentication (Step 3.5)
+#
+# Closes the gap between "native SSH session created" and "usable for
+# terminal_send()/terminal_read()" for a password-authenticated device:
+# previously, terminal_open() never automated a password prompt at all
+# (only Discovery's separate bootstrap login did), leaving the AI/human to
+# discover and answer it interactively -- but the whole point of a
+# *managed* device's private access-info is that the password already
+# belongs to Network Lab MCP, not the AI. This reuses
+# resolve_target_password_prompt() (above) unchanged, so the exact same
+# jump-host/ambiguous-prompt fail-closed rule Discovery already relies on
+# protects managed opens too -- never a second, independently-written
+# password-prompt parser.
+#
+# Deliberately transport-level, not device-CLI-specific (never parses an
+# IOS XR/any other vendor prompt): the only things ever recognized here
+# are OpenSSH's own password prompt and a small, stable set of OpenSSH's
+# own authentication-failure messages. This keeps it safe for every
+# device type terminal_open() supports, not just IOS XR, and matches the
+# project's existing "Claude reads the pane" model for anything beyond
+# that -- if no password prompt or failure ever appears (key/agent auth,
+# a host-key confirmation prompt, a slow connection, telnet), this
+# function does nothing further and normal interactive use proceeds
+# exactly as before Step 3.5.
+# --------------------------------------------------------------------------
+
+# Bounded waits, deliberately separate constants from Discovery's own
+# LOGIN_TIMEOUT_SECONDS/COMMAND_TIMEOUT_SECONDS (Step 3.5 Section 45: do
+# not change Discovery's existing timeouts) -- similar order of magnitude,
+# tuned for one interactive terminal_open() MCP call rather than an
+# unattended multi-command bootstrap collection.
+_MANAGED_LOGIN_TIMEOUT_SECONDS = 15
+_MANAGED_AUTH_SETTLE_TIMEOUT_SECONDS = 15
+
+# A small, stable set of OpenSSH client-side (never device-CLI) messages
+# that unambiguously mean authentication did not succeed. Deliberately not
+# extended to generic device-CLI error text -- see module docstring above.
+_SSH_AUTH_FAILURE_RE = re.compile(
+    r"Permission denied|Authentication failed|Connection closed by|Connection refused|"
+    r"Connection timed out|Host key verification failed",
+    re.IGNORECASE,
+)
+_MANAGED_LOGIN_WAIT_RE = re.compile(f"(?:{PASSWORD_PROMPT_RE.pattern})|(?:{_SSH_AUTH_FAILURE_RE.pattern})")
+# Matches literally any visible content -- used only together with
+# _wait_for_pattern()'s own baseline-diff requirement, so this really means
+# "wait until the pane changes at all", with no vendor-specific assumption
+# about what the new content looks like.
+_ANY_VISIBLE_CONTENT_RE = re.compile(r"\S")
+
+
+def _last_nonblank_line(text: str) -> str:
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            return line
+    return ""
+
+
+def _authenticate_managed_session(
+    device_name: str, device_config: dict, session_name: str, *, newly_created: bool
+) -> None:
+    """Complete SSH password authentication for a managed session if (and
+    only if) the target's own SSH password prompt is currently, or
+    imminently, showing -- never otherwise. Fails closed (TerminalError,
+    always sanitized: never includes the password or any other
+    access-info content) on a wrong-host/jump-host/ambiguous prompt, a
+    missing configured password, a repeated identical prompt after one
+    send, or an explicit SSH authentication-failure message. Sends the
+    password at most once per call.
+
+    `newly_created` decides how the *first* observation is made, which is
+    what keeps an already-authenticated, already-idempotent session
+    (Step 3.3/pre-3.5 behavior) completely undisturbed: a brand-new
+    session's connection is still in flight, so this polls briefly for a
+    prompt/failure to first appear; an already-existing session's pane is
+    already settled, so this takes exactly one immediate read-only
+    capture -- if that does not show a password prompt right now (the
+    ordinary case: already authenticated, or showing unrelated output),
+    nothing further happens: no send, no wait, no disturbance."""
+    if device_config.get("transport") != "ssh":
+        return  # Step 3.5 scope: SSH only; telnet behavior is unchanged.
+
+    if newly_created:
+        try:
+            text = _wait_for_pattern(session_name, _MANAGED_LOGIN_WAIT_RE, _MANAGED_LOGIN_TIMEOUT_SECONDS)
+        except TerminalError:
+            return  # no password prompt and no failure signal within the bounded wait -- proceed
+    else:
+        text = _capture_pane(session_name, HISTORY_LIMIT)
+
+    last_line = _last_nonblank_line(text)
+    if not PASSWORD_PROMPT_RE.search(last_line):
+        return  # not currently at a password prompt -- nothing to do
+
+    outcome = resolve_target_password_prompt(device_config, last_line)
+    if not outcome.matched_target:
+        raise TerminalError(
+            f"Device '{device_name}': cannot safely complete authentication ({outcome.reason}). "
+            "Configure key/agent-based (non-interactive) SSH authentication, or answer the "
+            "prompt manually via terminal_send()/terminal_read()."
+        )
+    if not outcome.password:
+        raise TerminalError(
+            f"Device '{device_name}': a password prompt appeared but no private password is "
+            "configured in the active access-info definition."
+        )
+
+    baseline = text
+    _send_literal_text(session_name, outcome.password)
+    _send_enter(session_name)
+    try:
+        settled = _wait_for_pattern(
+            session_name, _ANY_VISIBLE_CONTENT_RE, _MANAGED_AUTH_SETTLE_TIMEOUT_SECONDS, baseline_text=baseline
+        )
+    except TerminalError as exc:
+        raise TerminalError(f"Device '{device_name}': timed out waiting for authentication to complete.") from exc
+
+    settled_last_line = _last_nonblank_line(settled)
+    if PASSWORD_PROMPT_RE.search(settled_last_line):
+        # The same prompt reappeared -- the password was rejected. Never
+        # send it again (Step 3.5 Section 16/43): one attempt per call.
+        raise TerminalError(f"Device '{device_name}': SSH authentication failed (password rejected).")
+    if _SSH_AUTH_FAILURE_RE.search(settled_last_line) or _SSH_AUTH_FAILURE_RE.search(settled):
+        raise TerminalError(f"Device '{device_name}': SSH authentication failed.")
+    # Anything else that appeared is treated as authentication having
+    # progressed past the password prompt -- matching the project's
+    # existing "Claude reads the pane" model for whatever comes next,
+    # never a vendor-specific device-prompt parser.
+
+
+# --------------------------------------------------------------------------
 # Public production API (used by the terminal_* MCP tools)
 # --------------------------------------------------------------------------
 
@@ -811,11 +1004,29 @@ def open_device_terminal(device_name: str, device_config: dict) -> dict:
     Serialized per-device (Step 3.3): a concurrent open/send/read/close for
     this same device waits its turn instead of racing this one's
     check-then-create against it; a different device's call uses a
-    different lock and proceeds independently."""
+    different lock and proceeds independently -- so concurrent opens of
+    the *same* device can never send its password twice (the second call
+    blocks until the first's whole open-and-authenticate sequence
+    finishes), while different devices continue to authenticate fully in
+    parallel.
+
+    Step 3.5: completes private SSH password authentication using the
+    device's own access-info password if (and only if) the target's own
+    password prompt actually appears -- see
+    _authenticate_managed_session()'s own docstring for the exact rule.
+    If *this* call created a new session and authentication definitively
+    fails, that now-unusable session is closed (never a pre-existing
+    session this call merely reused)."""
     session_name = derive_production_session_name(device_name)
     with _session_lock(session_name):
         transport, command = _build_transport_command(device_config)
         reused = _ensure_managed_session(session_name, command, log_device_name=device_name)
+        try:
+            _authenticate_managed_session(device_name, device_config, session_name, newly_created=not reused)
+        except TerminalError:
+            if not reused:
+                _close_session(session_name)
+            raise
         return {
             "device": device_name,
             "session_name": session_name,

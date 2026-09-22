@@ -633,6 +633,94 @@ automation framework -- just "send one command, wait for the prompt to
 come back, slice out the output between the echoed command and the
 prompt."
 
+### Shared safe SSH password-prompt attribution (Step 3.5)
+
+Both Discovery's bootstrap login and normal managed `terminal_open()`
+need to answer the exact same kind of prompt safely: OpenSSH's own
+client-side interactive password prompt, always exactly `"<user>@<host>'s
+password: "` for whichever hop is currently authenticating (stable,
+well-documented client text -- never the remote device's own banner/CLI).
+This attribution logic lives once, in `terminal.resolve_target_password_
+prompt(device_config, prompt_line)`, and is reused unchanged by both
+callers -- never two independently-written password-prompt parsers:
+
+- **Direct SSH** (no `jump_host_config`): unambiguous. The one password
+  prompt that can ever appear is always the target device's own.
+- **ProxyJump**: can show *two* separate password prompts in sequence
+  (one per hop), and sending the wrong one to the wrong hop must never
+  happen. The function reads the prompting hop's own address out of
+  OpenSSH's prompt text and only answers when it confidently matches the
+  target device's own address; a prompt that matches the jump host's
+  address, or that cannot be confidently attributed to either hop, fails
+  closed instead of guessing. This is a deliberately **bounded ProxyJump
+  limitation**: jump-host authentication must be non-interactive (key/
+  agent-based) for both Discovery and managed `terminal_open()` alike --
+  neither one will ever answer a jump host's own password prompt.
+
+Discovery's `_resolve_login_password()` (in `discovery.py`) and managed
+`terminal_open()`'s `_authenticate_managed_session()` (in `terminal.py`,
+below) are each a thin, caller-specific wrapper around this one shared
+function -- translating a rejected outcome into their own wording
+(`DiscoveryError` vs. `TerminalError`), never re-implementing the
+attribution rule itself.
+
+### Managed-terminal private authentication (Step 3.5)
+
+`terminal_open()` previously never automated a password prompt at all --
+only Discovery's separate bootstrap login did -- so the first real
+end-to-end Claude Code test hit a real gap: after `terminal_open(R1)`,
+Claude saw the device's own SSH password prompt and had to stop and ask
+the human for the router's password. Since the active access-info
+definition already privately holds that password, the credential belongs
+to Network Lab MCP, not the AI, so `terminal_open()` now completes
+authentication itself.
+
+`terminal._authenticate_managed_session()` runs after the managed session
+is created or reused, still inside the existing Step 3.3 per-device lock
+(so a concurrent `terminal_open(R1)` from two callers can never send its
+password twice, while a different device continues to authenticate fully
+in parallel):
+
+- **Transport-level, not device-CLI-specific.** It recognizes only
+  OpenSSH's own password prompt and a small, stable set of OpenSSH's own
+  authentication-failure messages (`Permission denied`, `Authentication
+  failed`, `Connection refused`, ...) -- never an IOS XR (or any other
+  vendor) CLI prompt. This keeps it safe for every device type
+  `terminal_open()` supports, and preserves the project's existing "Claude
+  reads the pane" model for anything this cannot resolve on its own (a
+  host-key confirmation prompt, a device-CLI-level interaction, telnet --
+  Step 3.5 is SSH-only; telnet behavior is completely unchanged).
+- **New vs. existing session.** A brand-new session's connection is still
+  in flight, so this polls briefly (bounded) for a prompt/failure to first
+  appear. An already-existing session's pane is already settled, so this
+  takes exactly one immediate read-only capture -- if that does not show
+  a password prompt right now (the ordinary case: already authenticated,
+  or mid-command), nothing further happens at all: no send, no wait, no
+  disturbance. This is what keeps an already-authenticated session fully
+  idempotent, and also what lets a *pre-existing* session that happens to
+  already be sitting at the password prompt (e.g. after an MCP server
+  restart) get authenticated on the very next `terminal_open()`, with no
+  need to manually destroy it first.
+- **Sends the password at most once.** If the same prompt reappears after
+  one send (rejected), or an explicit failure message appears, or the
+  wait after sending times out, authentication fails closed
+  (`TerminalError`, always sanitized -- never includes the password or
+  any other access-info content) -- never a retry loop.
+- **Cleanup ownership.** If *this* `terminal_open()` call created a new
+  session and authentication definitively fails, that now-unusable session
+  is closed; a pre-existing session this call merely reused is never
+  touched, even if authenticating it fails.
+- **Credential boundary.** The password is read from the committed active
+  access-info definition, passed through this one narrow call path, and
+  sent only via the existing `_send_literal_text()` primitive (the same
+  one Discovery's own login already uses) -- never returned by any MCP
+  tool, never included in a sanitized error, never separately logged
+  (tmux's own pipe-pane transcript remains the only thing that might show
+  a prompt or remote echo, exactly as it always could for any terminal
+  content), and never passed as a `sshpass`-style process argument. No
+  module-global credential state is introduced; authentication context is
+  local to each `terminal_open()` call.
+
 ## Step 3: IOS XR + LLDP topology discovery
 
 ```

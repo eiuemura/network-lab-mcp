@@ -713,7 +713,11 @@ private connection details itself:
    the same access-info definition and attach it for a single-hop OpenSSH
    ProxyJump connection (see ["Single-hop SSH jump hosts"](#single-hop-ssh-jump-hosts-proxyjump)
    below); otherwise connect directly, exactly as before.
-7. Only then does the existing tmux/ssh/telnet path run.
+7. Only then does the existing tmux/ssh/telnet path run. For SSH, once the
+   session exists, `terminal_open()` also completes private password
+   authentication if the target's own SSH password prompt actually appears
+   -- see ["Private managed-terminal authentication"](#private-managed-terminal-authentication)
+   below.
 
 Selecting which access-info definition step 3 reads is done through
 `running-config`'s `access-info <name>` / `no access-info` (see
@@ -751,6 +755,52 @@ sentinel value like `"none"`); a `settings.yaml` written before this field
 existed, or with no access-info selected, is a legitimate, fail-closed
 state — `get_active_access_info_name()` treats a missing field as "no
 selection", not an error.
+
+### Private managed-terminal authentication
+
+Network Lab MCP can complete target SSH password authentication using the
+selected private access-info definition. Credentials remain inside Network
+Lab MCP and are not exposed to the AI/MCP client:
+
+```
+Claude
+   |
+   | terminal_open(R1)
+   v
+Network Lab MCP
+   |
+   +--> committed active access-info
+   |        |
+   |        +--> private username/password
+   |
+   v
+native SSH in tmux
+   |
+   +--> verify target password prompt
+   |
+   +--> send password privately
+   |
+   v
+authenticated terminal
+```
+
+The password never crosses the MCP boundary. `terminal_open()` recognizes
+only OpenSSH's own client-side password prompt (never a device-CLI-specific
+prompt, so this works for every device type, not just IOS XR) and only
+answers it once that prompt can be confidently attributed to the *target*
+device — a jump host's own password prompt (single-hop ProxyJump) is never
+answered; that hop must still use non-interactive key/agent authentication,
+exactly as Discovery's own bootstrap login already requires. Key/agent
+authentication that succeeds without ever showing a password prompt is
+completely unaffected — no password is sent. If authentication definitively
+fails or is rejected, `terminal_open()` fails with a sanitized error (never
+the password itself) and, if it created a new session for this attempt,
+closes it; a pre-existing session is never destroyed just because a later
+open encounters an unusual state, and an already-authenticated session
+stays fully idempotent (no send, no disturbance). See
+["Managed-terminal private authentication"](docs/architecture.md) in the
+architecture doc for the full design, including the shared prompt-
+attribution logic reused from Discovery.
 
 ### Access-info lookup is no longer global
 

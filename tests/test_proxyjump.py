@@ -239,11 +239,15 @@ def test_telnet_transport_unaffected_by_jump_host_key_presence():
     assert command == ["telnet", "192.0.2.1", "23"]
 
 
-# ---- Discovery's automated login must never send the wrong hop's
-# password (see discovery._resolve_login_password()) -- this is a
-# Discovery-only fix; terminal_open() never automates password entry at
-# all (see the regression tests at the end of this section), so it is
-# untouched. ----
+# ---- Target-vs-jump-host password-prompt attribution must never send the
+# wrong hop's password. Since Step 3.5, this logic lives once in
+# terminal.resolve_target_password_prompt() and is reused by both
+# discovery._resolve_login_password() (a thin wrapper, tested directly
+# below) and terminal.open_device_terminal()'s own private authentication
+# (see tests/test_managed_terminal_auth.py for the full managed-open
+# authentication suite; the ProxyJump-specific regression tests at the end
+# of this section exercise the same shared attribution through
+# open_device_terminal() directly). ----
 
 _TARGET_CONFIG = {
     "transport": "ssh",
@@ -301,24 +305,87 @@ def test_terminal_open_proxyjump_argv_construction_unaffected_by_discovery_login
     assert "jump-secret" not in joined
 
 
-def test_terminal_open_never_reads_or_sends_a_password_at_all(monkeypatch):
-    """terminal_open() (human/Claude-interactive) has no password
-    automation of any kind -- confirmed structurally by proving it works
-    identically whether or not `password` is present in device_config,
-    and that no text is ever sent on the caller's behalf."""
-    sent = []
-    monkeypatch.setattr(terminal, "_send_literal_text", lambda *a, **k: sent.append(a))
-    monkeypatch.setattr(terminal, "_ensure_managed_session", lambda *a, **k: False)
-    monkeypatch.setattr(terminal, "_start_session_logging", lambda *a, **k: None)
+# ---- Step 3.5: terminal_open()'s own private authentication reuses the
+# exact same ProxyJump target-vs-jump-host attribution -- see
+# tests/test_managed_terminal_auth.py for the full managed-open
+# authentication suite (direct SSH, no-password-configured, repeated
+# prompt, failure, timeout, existing-session states, concurrency, secret
+# non-leak). These three tests cover only the ProxyJump-specific
+# regression: the jump host's own prompt must never receive the target's
+# password, and vice versa, through open_device_terminal() itself (real
+# isolated tmux, never a real router). ----
 
-    config_with_password = dict(_TARGET_CONFIG)
-    config_without_password = {k: v for k, v in _TARGET_CONFIG.items() if k != "password"}
-    config_without_password["jump_host_config"] = {
-        k: v for k, v in _TARGET_CONFIG["jump_host_config"].items() if k != "password"
-    }
 
-    result_with = terminal.open_device_terminal("R1", config_with_password)
-    result_without = terminal.open_device_terminal("R1", config_without_password)
+@pytest.fixture(autouse=True)
+def _isolated_logs_for_this_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(terminal, "LOGS_ROOT", tmp_path / "logs" / "terminal")
 
-    assert result_with["transport"] == result_without["transport"] == "ssh"
-    assert sent == []  # open_device_terminal never sends anything itself
+
+@pytest.fixture(autouse=True)
+def _cleanup_proxyjump_sessions():
+    yield
+    for session in terminal.list_device_sessions():
+        terminal.close_device_terminal(session["device"])
+
+
+def _write_fake_ssh_script(tmp_path, name: str, body: str) -> list[str]:
+    """A script *file* (never `bash -c "<inline text>"`): a shell only
+    ever echoes the *invocation* line, never a script file's own
+    contents, so this lets the body below freely use words like
+    "password" without that literal text ever appearing in the pane
+    before the script actually runs and prints it -- avoiding a
+    false-positive early match against the echoed command source itself
+    (see tests/test_managed_terminal_auth.py's module docstring for the
+    full explanation)."""
+    path = tmp_path / name
+    path.write_text(f"#!/usr/bin/env bash\n{body}\n")
+    path.chmod(0o755)
+    return ["bash", str(path)]
+
+
+def test_terminal_open_proxyjump_target_prompt_sends_target_password_once(monkeypatch, tmp_path):
+    # `stty -echo` + `read` mimics real OpenSSH's own password-entry
+    # behavior (the terminal never echoes what is typed at a password
+    # prompt); this is what makes "the secret is absent from the pane"
+    # a meaningful assertion here, rather than an artifact of a fake
+    # script that happens not to echo anything at all (Step 3.5 Section 52).
+    script = _write_fake_ssh_script(
+        tmp_path,
+        "target_succeed.sh",
+        'stty -echo\nprintf "target-user@192.0.2.11'"'"'s password: "\nread x\nstty echo\necho\necho AUTH-OK\nsleep 5\n',
+    )
+    monkeypatch.setattr(terminal, "_build_transport_command", lambda config, **kw: ("ssh", script))
+    result = terminal.open_device_terminal("PJ1", _TARGET_CONFIG)
+    assert result["transport"] == "ssh"
+    snapshot = terminal.capture_device_terminal_view("PJ1")
+    assert "AUTH-OK" in snapshot.pane_text
+    assert "target-secret" not in snapshot.pane_text
+    assert "jump-secret" not in snapshot.pane_text
+
+
+def test_terminal_open_proxyjump_jump_host_prompt_never_sends_target_password(monkeypatch, tmp_path):
+    script = _write_fake_ssh_script(
+        tmp_path, "jump_prompt.sh", 'printf "jump-user@192.0.2.10'"'"'s password: "\nsleep 5\n'
+    )
+    monkeypatch.setattr(terminal, "_build_transport_command", lambda config, **kw: ("ssh", script))
+    with pytest.raises(terminal.TerminalError, match="jump-host password prompt"):
+        terminal.open_device_terminal("PJ1", _TARGET_CONFIG)
+    # The newly-created, now-unusable session is cleaned up (Step 3.5
+    # Section 18) -- and, either way, neither credential ever appears
+    # anywhere observable.
+    assert "PJ1" not in {s["device"] for s in terminal.list_device_sessions()}
+
+
+def test_terminal_open_key_auth_success_sends_no_password(monkeypatch, tmp_path):
+    # No password/failure signal ever appears, so the initial wait runs to
+    # its full bound before proceeding -- shrink it so this genuinely
+    # timeout-bound case stays fast in tests (production keeps
+    # _MANAGED_LOGIN_TIMEOUT_SECONDS unchanged).
+    monkeypatch.setattr(terminal, "_MANAGED_LOGIN_TIMEOUT_SECONDS", 2)
+    script = _write_fake_ssh_script(tmp_path, "key_auth.sh", "echo already-authenticated\nsleep 5\n")
+    monkeypatch.setattr(terminal, "_build_transport_command", lambda config, **kw: ("ssh", script))
+    result = terminal.open_device_terminal("PJ1", _TARGET_CONFIG)
+    assert result["transport"] == "ssh"
+    snapshot = terminal.capture_device_terminal_view("PJ1")
+    assert "target-secret" not in snapshot.pane_text
+    assert "already-authenticated" in snapshot.pane_text

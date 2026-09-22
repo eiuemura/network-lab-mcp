@@ -59,9 +59,14 @@ def get_execution_instructions() -> dict:
 def terminal_open(device: str) -> dict:
     """Open (or reuse) a terminal session for a device in the active topology,
     launching ssh or telnet inside a dedicated tmux environment. The active
-    topology is reloaded from disk before opening the session. Login prompts,
-    passwords, and host-key confirmations are handled interactively via
-    terminal_read()/terminal_send(), not automated by this tool."""
+    topology is reloaded from disk before opening the session. For SSH, an
+    interactive password prompt from the device itself is answered
+    automatically using the active access-info definition's own private
+    password, once it can be safely confirmed to belong to the target
+    device (never a jump host) -- credentials are never returned by this
+    tool or any other. A host-key confirmation prompt, or any other
+    situation this cannot safely resolve on its own, is still left for
+    terminal_read()/terminal_send() to handle interactively."""
     try:
         _, device_config = lab.get_device(device)
         return terminal.open_device_terminal(device, device_config)

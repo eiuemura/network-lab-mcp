@@ -1,12 +1,18 @@
-"""Step 3 initial scope: IOS XR + LLDP topology discovery.
+"""Step 3 scope: IOS XR + IOS XE topology discovery over LLDP and CDP.
 
     committed active_access_info
         -> private bootstrap connection (terminal.open_bootstrap_terminal)
-        -> IOS XR login + `show version`/`show running-config`/
-           `show lldp neighbors` (this module's minimal command runner)
-        -> IOS XR LLDP parsing (parse_lldp_neighbors)
-        -> identity resolution (resolve_remote_identity)
-        -> link reconciliation (reconcile_links)
+        -> per-type login + read-only collection (this module's minimal
+           command runner): IOS XR gets LLDP + CDP; IOS XE gets CDP only
+           (Step 3.6 Section 3 -- IOS XE has no LLDP support in this step)
+        -> normalized neighbor observations (parse_lldp_neighbors /
+           parse_cdp_neighbors), each tagged with its own `source`
+        -> identity resolution (resolve_remote_identity, protocol-agnostic)
+        -> multi-protocol link reconciliation (reconcile_links): the same
+           physical link seen via both protocols (or reciprocally from both
+           ends) becomes exactly one link; a local interface where LLDP and
+           CDP disagree about the neighbor is reported as a conflict
+           instead of silently picking one
         -> DiscoveryResult (in-memory only)
 
 `discover_topology()` is the only entry point cli/main.py's `discover
@@ -16,11 +22,15 @@ file -- the caller (cli/config.py) is responsible for turning a
 DiscoveryResult into a topology *candidate*, exactly like any other
 topology edit, and nothing here special-cases commit/clear/root/exit/end.
 
-Explicitly out of scope for this initial implementation (see README.md/
-docs/architecture.md for the full list): IOS XE/NX-OS discovery, CDP,
-multi-hop jump hosts, SNMP/NETCONF/RESTCONF, automatic topology
-activation/commit, and a generic discovery/plugin framework.
-"""
+IOS XE login uses whatever transport the device's access-info specifies
+(ssh or telnet). Telnet is unauthenticated-in-transit and unencrypted --
+suitable only for isolated lab environments, never presented as a secure
+transport (see README.md/docs/architecture.md).
+
+Explicitly out of scope: NX-OS discovery, multi-hop jump hosts (telnet
+devices cannot have a jump_host at all -- see lab.validate_device_jump_
+host_references()), SNMP/NETCONF/RESTCONF, automatic topology activation/
+commit, and a generic discovery/plugin framework."""
 
 from __future__ import annotations
 
@@ -51,6 +61,21 @@ _IOSXR_PROMPT_RE = re.compile(r"RP/\S+/CPU\d+:(?P<hostname>[^#\s]+)#\s*$", re.MU
 # prompt text is identical regardless of caller, so there is exactly one
 # place that recognizes it.
 _LOGIN_WAIT_RE = re.compile(f"(?:{terminal.PASSWORD_PROMPT_RE.pattern})|(?:{_IOSXR_PROMPT_RE.pattern})")
+
+# IOS XE (classic-IOS-style) exec prompt, e.g. "PAGENT#" or "PAGENT>" --
+# unlike IOS XR's "RP/.../CPU0:hostname#" shape, IOS XE's own prompt *is*
+# just the hostname, so the whole line must be exactly that (never matched
+# against a mid-table CDP row, which always has other fields after the
+# device ID on the same line -- see parse_cdp_neighbors()). A telnet/console
+# login may also show a "Username:" prompt before "Password:" (Step 3.6
+# Section 13); OpenSSH's own password prompt (terminal.PASSWORD_PROMPT_RE)
+# is reused unchanged since it is transport-agnostic text matching, not an
+# SSH-specific mechanism.
+_IOSXE_PROMPT_RE = re.compile(r"^(?P<hostname>[\w.-]+)[#>]\s*$", re.MULTILINE)
+_USERNAME_PROMPT_RE = re.compile(r"[Uu]sername:\s*$", re.MULTILINE)
+_IOSXE_LOGIN_WAIT_RE = re.compile(
+    f"(?:{_USERNAME_PROMPT_RE.pattern})|(?:{terminal.PASSWORD_PROMPT_RE.pattern})|(?:{_IOSXE_PROMPT_RE.pattern})"
+)
 
 
 class DiscoveryError(Exception):
@@ -115,10 +140,50 @@ def _login(device_id: str, device_config: dict) -> str:
     return match.group("hostname")
 
 
-def _extract_command_output(full_text: str, command_text: str) -> str:
+def _login_iosxe(device_id: str, device_config: dict) -> str:
+    """IOS XE equivalent of _login(): the same bounded, at-most-one-
+    password-send flow, but for classic-IOS-style login instead of IOS
+    XR's. Works over either transport the device's access-info specifies
+    (ssh or telnet, both already handled uniformly by terminal.
+    open_bootstrap_terminal() -- see _build_transport_command()). A telnet
+    device structurally cannot have a jump_host_config (lab.py's schema
+    validation requires transport 'ssh' for that), so
+    resolve_target_password_prompt()'s "no jump_host_config -> unambiguous"
+    short-circuit already answers a telnet password prompt correctly with
+    no telnet-specific attribution logic needed.
+
+    Also answers at most one optional "Username:" prompt, which only some
+    IOS XE login configurations show before "Password:"."""
+    terminal.open_bootstrap_terminal(device_id, device_config)
+    text = terminal.wait_for_bootstrap_pattern(device_id, _IOSXE_LOGIN_WAIT_RE, LOGIN_TIMEOUT_SECONDS)
+    last_line = _last_nonblank_line(text)
+    if _USERNAME_PROMPT_RE.search(last_line):
+        username = device_config.get("username")
+        if not username:
+            raise DiscoveryError(
+                f"Device '{device_id}': a username prompt appeared but no username is configured in "
+                "the active access-info definition."
+            )
+        terminal.send_to_bootstrap(device_id, str(username), None, True)
+        text = terminal.wait_for_bootstrap_pattern(
+            device_id, _IOSXE_LOGIN_WAIT_RE, LOGIN_TIMEOUT_SECONDS, baseline_text=text
+        )
+        last_line = _last_nonblank_line(text)
+    if terminal.PASSWORD_PROMPT_RE.search(last_line):
+        password = _resolve_login_password(device_id, device_config, last_line)
+        terminal.send_to_bootstrap(device_id, password, None, True)
+        text = terminal.wait_for_bootstrap_pattern(device_id, _IOSXE_PROMPT_RE, LOGIN_TIMEOUT_SECONDS)
+    match = _IOSXE_PROMPT_RE.search(_last_nonblank_line(text))
+    if not match:
+        raise DiscoveryError(f"Device '{device_id}': did not reach an IOS XE exec prompt after login.")
+    return match.group("hostname")
+
+
+def _extract_command_output(full_text: str, command_text: str, prompt_re: re.Pattern) -> str:
     """Slice out one command's own output from the full pane transcript:
     everything after the line that echoes the command, up to (excluding)
-    the trailing prompt line(s)."""
+    the trailing prompt line(s). `prompt_re` is the device-type-specific
+    "end of output" prompt (IOS XR's or IOS XE's)."""
     lines = full_text.splitlines()
     needle = command_text.strip()
     start = 0
@@ -127,13 +192,20 @@ def _extract_command_output(full_text: str, command_text: str) -> str:
             start = i + 1
             break
     end = len(lines)
-    while end > start and (not lines[end - 1].strip() or _IOSXR_PROMPT_RE.search(lines[end - 1])):
+    while end > start and (not lines[end - 1].strip() or prompt_re.search(lines[end - 1])):
         end -= 1
     return "\n".join(lines[start:end])
 
 
-def _run_command(device_id: str, command_text: str, timeout: float = COMMAND_TIMEOUT_SECONDS) -> str:
-    """Send one command line and wait for the IOS XR prompt to return.
+def _run_command(
+    device_id: str,
+    command_text: str,
+    prompt_re: re.Pattern = _IOSXR_PROMPT_RE,
+    timeout: float = COMMAND_TIMEOUT_SECONDS,
+) -> str:
+    """Send one command line and wait for the device's own prompt to
+    return. `prompt_re` defaults to IOS XR's prompt (unchanged call sites);
+    IOS XE collection passes _IOSXE_PROMPT_RE instead.
 
     Captures the pane *before* sending so wait_for_bootstrap_pattern() can
     require the pane to have actually changed before accepting a prompt
@@ -142,15 +214,19 @@ def _run_command(device_id: str, command_text: str, timeout: float = COMMAND_TIM
     command produced any output at all (a stale-prompt race)."""
     baseline = terminal.read_bootstrap(device_id)
     terminal.send_to_bootstrap(device_id, command_text, None, True)
-    full_text = terminal.wait_for_bootstrap_pattern(device_id, _IOSXR_PROMPT_RE, timeout, baseline_text=baseline)
-    return _extract_command_output(full_text, command_text)
+    full_text = terminal.wait_for_bootstrap_pattern(device_id, prompt_re, timeout, baseline_text=baseline)
+    return _extract_command_output(full_text, command_text, prompt_re)
 
 
 def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
-    """Log in, disable pagination, and collect the three required
-    read-only commands. Fails closed (DiscoveryError) on any login,
-    command, or timeout failure -- the caller is responsible for closing
-    the bootstrap session either way."""
+    """IOS XR collection: log in, disable pagination, and collect the
+    read-only commands -- `show version`/`show running-config` (unused
+    downstream today, kept for diagnostic parity/future use) plus both
+    neighbor-discovery protocols (Step 3.6 Section 3: IOS XR gets LLDP and
+    CDP). CDP being unavailable/disabled is not a collection failure (see
+    parse_cdp_neighbors()'s own lenient handling) -- only a login, other
+    command, or timeout failure is (DiscoveryError). The caller is
+    responsible for closing the bootstrap session either way."""
     try:
         hostname = _login(device_id, device_config)
         # Discovery sessions are temporary and closed right after
@@ -160,6 +236,7 @@ def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
         show_version = _run_command(device_id, "show version")
         show_running_config = _run_command(device_id, "show running-config")
         show_lldp_neighbors = _run_command(device_id, "show lldp neighbors")
+        show_cdp_neighbors = _run_command(device_id, "show cdp neighbors")
     except terminal.TerminalError as exc:
         raise DiscoveryError(f"Device '{device_id}': {exc}") from exc
     return {
@@ -167,16 +244,44 @@ def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
         "show_version": show_version,
         "show_running_config": show_running_config,
         "show_lldp_neighbors": show_lldp_neighbors,
+        "show_cdp_neighbors": show_cdp_neighbors,
+    }
+
+
+def _bootstrap_collect_iosxe(device_id: str, device_config: dict) -> dict:
+    """IOS XE collection: log in and collect `show version` (diagnostic
+    parity with the IOS XR path) plus `show cdp neighbors` -- IOS XE has no
+    LLDP support in this step (Step 3.6 Section 3), and `show running-
+    config` is skipped since it is unused downstream for IOS XR too (kept
+    minimal per Section 11's "collect at minimum" framing). Fails closed
+    (DiscoveryError) on any login, command, or timeout failure."""
+    try:
+        hostname = _login_iosxe(device_id, device_config)
+        show_version = _run_command(device_id, "show version", _IOSXE_PROMPT_RE)
+        show_cdp_neighbors = _run_command(device_id, "show cdp neighbors", _IOSXE_PROMPT_RE)
+    except terminal.TerminalError as exc:
+        raise DiscoveryError(f"Device '{device_id}': {exc}") from exc
+    return {
+        "hostname": hostname,
+        "show_version": show_version,
+        "show_cdp_neighbors": show_cdp_neighbors,
     }
 
 
 # --------------------------------------------------------------------------
-# IOS XR LLDP parsing -- observations only, no identity resolution
+# LLDP + CDP parsing -- normalized observations only, no identity resolution
 # --------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class LldpObservation:
+    """A single normalized neighbor observation from either protocol
+    (`source` distinguishes them: "lldp" or "cdp") -- despite the name
+    (kept to avoid an unnecessary rename of an already-public, widely
+    tested type), this is the shared observation shape Step 3.6's CDP
+    support reuses as-is rather than inventing a second, parallel type;
+    see the `NeighborObservation` alias below for new code."""
+
     local_device_id: str
     local_interface: str
     remote_device_id_raw: str
@@ -184,6 +289,10 @@ class LldpObservation:
     capabilities: tuple[str, ...] = ()
     source: str = "lldp"
 
+
+# New CDP-facing code should spell it this way; both names are the exact
+# same class.
+NeighborObservation = LldpObservation
 
 _CAPABILITY_CODES = {
     "R": "router",
@@ -196,11 +305,40 @@ _CAPABILITY_CODES = {
     "O": "other",
 }
 
+# CDP's own "Capability Codes" legend uses different letters/meanings than
+# LLDP's (e.g. CDP's "T" is "Trans Bridge", not "telephone"; CDP's repeater
+# code is lowercase "r", not "P") -- a separate mapping, not a reuse of
+# LLDP's, to avoid mislabeling. The letter set here is a safe superset of
+# what real Cisco CDP output uses; an unmapped letter is kept as-is rather
+# than dropped (see _normalize_capability_chars()).
+_CDP_CAPABILITY_CODES = {
+    "R": "router",
+    "T": "trans_bridge",
+    "B": "source_route_bridge",
+    "S": "switch",
+    "H": "host",
+    "I": "igmp",
+    "r": "repeater",
+    "P": "phone",
+    "D": "remote",
+    "C": "cvta",
+    "M": "two_port_mac_relay",
+}
+# Every single-character CDP capability code, used only to distinguish a
+# capability token (e.g. "S", "I") from the start of the Platform field
+# during row parsing (see parse_cdp_neighbors()) -- not used for the
+# mapping itself.
+_CDP_CAPABILITY_LETTERS = frozenset(_CDP_CAPABILITY_CODES)
+
 _TOTAL_ENTRIES_RE = re.compile(r"total entries displayed:\s*(\d+)", re.IGNORECASE)
 
 
+def _normalize_capability_chars(raw: str, codes: dict[str, str]) -> tuple[str, ...]:
+    return tuple(codes.get(ch, ch) for ch in raw.strip() if ch.strip())
+
+
 def _normalize_capabilities(raw: str) -> tuple[str, ...]:
-    return tuple(_CAPABILITY_CODES.get(ch, ch) for ch in raw.strip() if ch.strip())
+    return _normalize_capability_chars(raw, _CAPABILITY_CODES)
 
 
 class LldpParseError(Exception):
@@ -279,6 +417,114 @@ def parse_lldp_neighbors(raw_text: str, local_device_id: str) -> list[LldpObserv
     return observations
 
 
+_CDP_HEADER_MARKER = "Local Intrfce"
+
+
+def _cdp_is_capability_token(token: str) -> bool:
+    return bool(token) and all(ch in _CDP_CAPABILITY_LETTERS for ch in token)
+
+
+def parse_cdp_neighbors(raw_text: str, local_device_id: str) -> list[NeighborObservation]:
+    """Parse `show cdp neighbors` output into normalized observations.
+
+    Handles both real-world row shapes (Step 3.6 Section 4-5):
+      - IOS XR-style, entirely on one line:
+        "PAGENT          Gi0/0/0/10       144     R          Cisco 720 Gi0/0"
+      - IOS/IOS XE-style, where a long/FQDN Device ID wraps onto its own
+        line and the remaining fields follow on the *next* physical line:
+        "external-switch.example.com"
+        "                 Fas 0/0            159             S I   WS-C2960X Gig 1/0/16"
+
+    Never assumes fixed column byte offsets. Since both Local Interface,
+    Platform, and Port ID can each be multiple whitespace-separated tokens
+    (e.g. "Fas 0/0", "ASR9K Ser", "Gig 1/0/16"), plain column-count
+    splitting (as LLDP's parser uses) is not reliable here; instead, a
+    field row is recognized by containing a bare-integer Holdtime token,
+    which reliably splits "Device ID + Local Interface" (before it) from
+    "Capability + Platform + Port ID" (after it), and only the Port ID
+    field's own column start (read once from the header line) is needed to
+    unambiguously split Platform from Port ID.
+
+    Deliberately more lenient than parse_lldp_neighbors(): CDP is commonly
+    disabled/unsupported on a given device, so a missing/unrecognized
+    table header returns an empty list of observations rather than raising
+    (Step 3.6 Section 10/37 -- CDP being unavailable must never fail the
+    whole device's collection; contrast with LLDP, which is expected to
+    always be available and so still fails closed on an unrecognized
+    header). A malformed individual row is skipped, never fatal."""
+    observations: list[NeighborObservation] = []
+    in_table = False
+    port_id_col: int | None = None
+    pending_device_id: str | None = None
+
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not in_table:
+            if line.startswith("Device ID") and _CDP_HEADER_MARKER in line:
+                idx = raw_line.find("Port ID")
+                if idx != -1:
+                    port_id_col = idx
+                    in_table = True
+            continue
+        if not line:
+            break
+
+        tokens = list(re.finditer(r"\S+", raw_line))
+        if not tokens:
+            continue
+        has_holdtime = any(m.group().isdigit() for m in tokens)
+        if not has_holdtime:
+            # A real wrapped Device-ID-only line (the row wrapped because
+            # the Device ID was too long to fit before the Local Interface
+            # column) is always exactly one token -- a real Device ID never
+            # contains whitespace. A multi-token line with no Holdtime
+            # anywhere is unrecognized/malformed input, not a wrapped
+            # Device ID -- skip it rather than risk misattributing the
+            # *next* row's fields to it.
+            if len(tokens) == 1:
+                pending_device_id = line
+            continue
+
+        if pending_device_id is not None:
+            device_id = pending_device_id
+            pending_device_id = None
+            field_tokens = tokens
+        else:
+            device_id = tokens[0].group()
+            field_tokens = tokens[1:]
+
+        holdtime_idx = next((i for i, m in enumerate(field_tokens) if m.group().isdigit()), None)
+        if holdtime_idx is None or holdtime_idx == 0:
+            continue  # malformed row (no interface text before Holdtime) -- skip
+        local_intf = " ".join(m.group() for m in field_tokens[:holdtime_idx])
+
+        cap_tokens: list[str] = []
+        for m in field_tokens[holdtime_idx + 1 :]:
+            if not _cdp_is_capability_token(m.group()):
+                break
+            cap_tokens.append(m.group())
+        capability_raw = " ".join(cap_tokens)
+
+        port_id = raw_line[port_id_col:].strip() if port_id_col is not None else ""
+        if not port_id:
+            continue  # malformed row (no Port ID text) -- skip
+
+        observations.append(
+            NeighborObservation(
+                local_device_id=local_device_id,
+                local_interface=local_intf,
+                remote_device_id_raw=device_id,
+                remote_port_id=port_id,
+                capabilities=_normalize_capability_chars(capability_raw, _CDP_CAPABILITY_CODES),
+                source="cdp",
+            )
+        )
+
+    if not in_table:
+        return []
+    return observations
+
+
 # --------------------------------------------------------------------------
 # Identity resolution + link reconciliation
 # --------------------------------------------------------------------------
@@ -343,23 +589,37 @@ class UnresolvedNeighbor:
 
 
 def reconcile_links(
-    resolved_observations: list[tuple[LldpObservation, str]],
+    resolved_observations: list[tuple[NeighborObservation, str]],
 ) -> tuple[list[ManagedLink], list[LinkConflict]]:
-    """Deduplicate reciprocal LLDP observations into physical links.
+    """Deduplicate reciprocal, multi-protocol observations into physical
+    links.
 
     `resolved_observations` is a list of (observation, resolved_remote_id)
-    pairs, already filtered to observations whose remote resolved uniquely
-    to a managed device (see resolve_remote_identity()). A physical link is
-    keyed by its unordered pair of (device, interface) endpoints, so two
-    parallel links between the same router pair on different interfaces
-    stay distinct (section 46). A reciprocal pair that disagrees about the
-    interface mapping is reported as a conflict instead of silently
-    picking one side; this only detects disagreement between two *managed,
-    resolved* observations of each other, not a one-sided observation
-    versus an unrelated/unresolved one on the same local interface."""
-    by_local_endpoint: dict[tuple[str, str], tuple[LldpObservation, str]] = {}
+    pairs from either protocol, already filtered to observations whose
+    remote resolved uniquely to a managed device (see
+    resolve_remote_identity()) -- the protocol that produced each
+    observation is irrelevant to this function beyond its own `source`
+    field, which callers may use for diagnostics. A physical link is keyed
+    by its unordered pair of (device, interface) endpoints, so two parallel
+    links between the same router pair on different interfaces stay
+    distinct (section 46).
+
+    Two conflict cases are both reported (never silently resolved by
+    picking one side), and both fail closed only for the specific local
+    interface(s) involved -- an unrelated link elsewhere still reconciles
+    normally:
+      1. A reciprocal pair that disagrees about the interface mapping
+         (unchanged from before Step 3.6).
+      2. (Step 3.6 Section 28/29) *One* local interface has more than one
+         observation -- whether from different protocols (LLDP says one
+         neighbor, CDP says a different one) or the same protocol
+         producing incompatible rows -- that do not all agree on the same
+         (remote device, remote interface). Corroborating observations
+         (same protocol or not, same remote endpoint) are not a conflict;
+         they collapse into the same single candidate link."""
+    by_local_endpoint: dict[tuple[str, str], list[tuple[NeighborObservation, str]]] = {}
     for obs, remote_id in resolved_observations:
-        by_local_endpoint[(obs.local_device_id, obs.local_interface)] = (obs, remote_id)
+        by_local_endpoint.setdefault((obs.local_device_id, obs.local_interface), []).append((obs, remote_id))
 
     links: list[ManagedLink] = []
     conflicts: list[LinkConflict] = []
@@ -370,7 +630,23 @@ def reconcile_links(
     # physical endpoint twice.
     seen_endpoints: set[tuple[str, str]] = set()
 
-    for (local_dev, local_intf), (obs, remote_id) in by_local_endpoint.items():
+    resolved_by_endpoint: dict[tuple[str, str], tuple[NeighborObservation, str]] = {}
+    for endpoint, obs_list in by_local_endpoint.items():
+        first_obs, first_remote_id = obs_list[0]
+        agree = all(
+            remote_id == first_remote_id and obs.remote_port_id == first_obs.remote_port_id
+            for obs, remote_id in obs_list
+        )
+        if not agree:
+            second_obs, _second_remote_id = next(
+                (o, r) for o, r in obs_list if r != first_remote_id or o.remote_port_id != first_obs.remote_port_id
+            )
+            conflicts.append(LinkConflict(endpoint, endpoint, first_obs, second_obs))
+            seen_endpoints.add(endpoint)
+            continue
+        resolved_by_endpoint[endpoint] = (first_obs, first_remote_id)
+
+    for (local_dev, local_intf), (obs, remote_id) in resolved_by_endpoint.items():
         endpoint_a = (local_dev, local_intf)
         if endpoint_a in seen_endpoints:
             continue
@@ -378,9 +654,9 @@ def reconcile_links(
         remote_intf = obs.remote_port_id
         endpoint_b = (remote_id, remote_intf)
 
-        reverse = by_local_endpoint.get(endpoint_b)
+        reverse = resolved_by_endpoint.get(endpoint_b)
         if reverse is None:
-            # One-sided LLDP observation -- still a valid managed link.
+            # One-sided observation -- still a valid managed link.
             links.append(ManagedLink(local_dev, local_intf, remote_id, remote_intf))
             seen_endpoints.add(endpoint_a)
             continue
@@ -408,6 +684,8 @@ class DiscoveryResult:
     iosxr_target_count: int
     connected_count: int
     observation_count: int
+    iosxe_target_count: int = 0
+    cdp_observation_count: int = 0
     devices: dict[str, dict] = field(default_factory=dict)
     managed_links: list[ManagedLink] = field(default_factory=list)
     unresolved: list[UnresolvedNeighbor] = field(default_factory=list)
@@ -415,11 +693,11 @@ class DiscoveryResult:
     identity_map: dict[str, str] = field(default_factory=dict)
 
 
-def _select_iosxr_targets(access_data: dict) -> dict[str, dict]:
-    """Supported Discovery targets: type iosxr only. `type host` is
-    silently skipped (not an error); iosxe/nxos are unsupported for this
-    phase and are also skipped, not failed -- only a mixed definition with
-    *zero* iosxr targets fails (see discover_topology())."""
+def _select_targets_by_type(access_data: dict, wanted_type: str) -> dict[str, dict]:
+    """Discovery targets of one normalized device `type`. Any other type
+    (including an unrecognized/missing one) is silently skipped, not an
+    error -- only a definition with *zero* supported targets of any kind
+    fails (see discover_topology())."""
     targets: dict[str, dict] = {}
     devices = access_data.get("devices") or {}
     jump_hosts = access_data.get("jump_hosts") or {}
@@ -432,7 +710,7 @@ def _select_iosxr_targets(access_data: dict) -> dict[str, dict]:
             normalized = lab.normalize_device_type(str(raw_type))
         except lab.LabConfigError:
             continue
-        if normalized != "iosxr":
+        if normalized != wanted_type:
             continue
         resolved = dict(device_cfg)
         jump_ref = device_cfg.get("jump_host")
@@ -442,6 +720,14 @@ def _select_iosxr_targets(access_data: dict) -> dict[str, dict]:
     return targets
 
 
+def _select_iosxr_targets(access_data: dict) -> dict[str, dict]:
+    return _select_targets_by_type(access_data, "iosxr")
+
+
+def _select_iosxe_targets(access_data: dict) -> dict[str, dict]:
+    return _select_targets_by_type(access_data, "iosxe")
+
+
 def discover_topology(lab_root=None) -> DiscoveryResult:
     """Run the full Discovery flow against committed running-config's
     selected access-info and return an in-memory DiscoveryResult.
@@ -449,9 +735,14 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
     Never touches the committed candidate/topology/settings -- turning this
     into a topology candidate is the caller's job (cli/config.py), exactly
     like any other topology edit. Conservative or nothing: if any supported
-    IOS XR target fails login/collection, the whole operation fails
+    target fails login/collection, the whole operation fails
     (DiscoveryError) before any bootstrap session is even considered for
-    reconciliation -- there is no partial result."""
+    reconciliation -- there is no partial result.
+
+    Supported targets (Step 3.6 Section 3): IOS XR (LLDP + CDP) and IOS XE
+    (CDP only -- no LLDP support in this step). `nxos`/`host` and any
+    unrecognized type are silently skipped, not failed; only zero supported
+    targets of *either* kind fails."""
     lab_root = lab_root or lab.find_lab_root()
     access_info_name = resolve_default_topology_name(lab_root)
     if not lab.access_info_exists(access_info_name, lab_root):
@@ -459,17 +750,20 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
     access_data = lab.load_access_info(access_info_name, lab_root)
 
     iosxr_targets = _select_iosxr_targets(access_data)
-    if not iosxr_targets:
-        raise DiscoveryError(f"No supported IOS XR devices found in access-info '{access_info_name}'.")
+    iosxe_targets = _select_iosxe_targets(access_data)
+    if not iosxr_targets and not iosxe_targets:
+        raise DiscoveryError(f"No supported IOS XR or IOS XE devices found in access-info '{access_info_name}'.")
+    all_targets: dict[str, dict] = {**iosxr_targets, **iosxe_targets}
 
-    # Step 3.3: one device's collection (login + the three read-only
-    # commands) still runs strictly sequentially within its own worker --
-    # only *different* devices' collectors run concurrently, bounded by
-    # DISCOVERY_MAX_WORKERS. Workers return a value (_bootstrap_collect's
-    # dict) and touch only their own device's bootstrap session; nothing
-    # here is mutated by more than one worker, and no candidate/topology
-    # state is touched until every result has been collected below.
-    worker_count = min(len(iosxr_targets), DISCOVERY_MAX_WORKERS)
+    # Step 3.3: one device's collection (login + its own read-only commands)
+    # still runs strictly sequentially within its own worker -- only
+    # *different* devices' collectors run concurrently, bounded by
+    # DISCOVERY_MAX_WORKERS. Workers return a value (the per-type
+    # _bootstrap_collect*'s dict) and touch only their own device's
+    # bootstrap session; nothing here is mutated by more than one worker,
+    # and no candidate/topology state is touched until every result has
+    # been collected below.
+    worker_count = min(len(all_targets), DISCOVERY_MAX_WORKERS)
     futures: dict[str, concurrent.futures.Future] = {}
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -477,25 +771,32 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
                 device_id: executor.submit(_bootstrap_collect, device_id, device_cfg)
                 for device_id, device_cfg in iosxr_targets.items()
             }
+            futures.update(
+                {
+                    device_id: executor.submit(_bootstrap_collect_iosxe, device_id, device_cfg)
+                    for device_id, device_cfg in iosxe_targets.items()
+                }
+            )
         # The `with` block above only exits once every submitted future has
         # finished (successfully or not) -- so every bootstrap session below
         # is either fully collected or has already failed, never still
         # in flight, exactly like the previous sequential loop's own
         # try/finally guarantee.
     finally:
-        for device_id in iosxr_targets:
+        for device_id in all_targets:
             terminal.close_bootstrap_terminal(device_id)
 
     # Deterministic aggregation and error attribution: always in original
-    # target order, never in whatever order the thread pool happened to
-    # finish them -- so which device's failure surfaces first, and the
-    # eventual candidate's own device/link ordering, never depends on
-    # scheduling. The first target-order failure is raised and stops
-    # aggregation immediately, matching the previous sequential loop's own
-    # fail-fast behavior exactly (it also never populated `collected` past
-    # the first failing device).
+    # target order (IOS XR targets, then IOS XE targets -- each preserving
+    # its own access-info iteration order), never in whatever order the
+    # thread pool happened to finish them -- so which device's failure
+    # surfaces first, and the eventual candidate's own device/link
+    # ordering, never depends on scheduling. The first target-order failure
+    # is raised and stops aggregation immediately, matching the previous
+    # sequential loop's own fail-fast behavior exactly (it also never
+    # populated `collected` past the first failing device).
     collected: dict[str, dict] = {}
-    for device_id in iosxr_targets:
+    for device_id in all_targets:
         try:
             collected[device_id] = futures[device_id].result()
         except DiscoveryError:
@@ -509,18 +810,26 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
 
     identity_map = {device_id: info["hostname"] for device_id, info in collected.items()}
 
-    resolved: list[tuple[LldpObservation, str]] = []
+    resolved: list[tuple[NeighborObservation, str]] = []
     unresolved: list[UnresolvedNeighbor] = []
     observation_count = 0
+    cdp_observation_count = 0
     for device_id, info in collected.items():
-        try:
-            observations = parse_lldp_neighbors(info["show_lldp_neighbors"], device_id)
-        except LldpParseError as exc:
-            raise DiscoveryError(str(exc)) from exc
-        observation_count += len(observations)
+        observations: list[NeighborObservation] = []
+        if device_id in iosxr_targets:
+            try:
+                lldp_observations = parse_lldp_neighbors(info["show_lldp_neighbors"], device_id)
+            except LldpParseError as exc:
+                raise DiscoveryError(str(exc)) from exc
+            observation_count += len(lldp_observations)
+            observations.extend(lldp_observations)
+        cdp_observations = parse_cdp_neighbors(info.get("show_cdp_neighbors", ""), device_id)
+        cdp_observation_count += len(cdp_observations)
+        observations.extend(cdp_observations)
+
         for obs in observations:
             remote_id = resolve_remote_identity(obs.remote_device_id_raw, identity_map)
-            if remote_id is not None and remote_id in iosxr_targets:
+            if remote_id is not None and remote_id in all_targets:
                 resolved.append((obs, remote_id))
             else:
                 unresolved.append(
@@ -535,13 +844,18 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
 
     links, conflicts = reconcile_links(resolved)
 
+    devices = {device_id: {"type": "iosxr"} for device_id in iosxr_targets}
+    devices.update({device_id: {"type": "iosxe"} for device_id in iosxe_targets})
+
     return DiscoveryResult(
         access_info_name=access_info_name,
         default_topology_name=access_info_name,
         iosxr_target_count=len(iosxr_targets),
         connected_count=len(collected),
         observation_count=observation_count,
-        devices={device_id: {"type": "iosxr"} for device_id in iosxr_targets},
+        iosxe_target_count=len(iosxe_targets),
+        cdp_observation_count=cdp_observation_count,
+        devices=devices,
         managed_links=links,
         unresolved=unresolved,
         conflicts=conflicts,

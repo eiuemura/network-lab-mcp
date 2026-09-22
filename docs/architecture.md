@@ -633,6 +633,23 @@ automation framework -- just "send one command, wait for the prompt to
 come back, slice out the output between the echoed command and the
 prompt."
 
+`_run_command()`/`_extract_command_output()` take the "end of output"
+prompt regex as a parameter (default: IOS XR's) rather than hard-coding
+it, which is what lets `_bootstrap_collect_iosxe()` (Step 3.6) reuse the
+exact same send/wait/slice runner with IOS XE's own prompt shape
+(`_IOSXE_PROMPT_RE`, matching a classic-IOS-style `hostname#`/`hostname>`
+line in full) instead of writing a second command runner.
+
+IOS XE login (`_login_iosxe()`, Step 3.6) is a separate, small function
+from `_login()` -- not a generalized/parameterized version of it -- since
+IOS XR's `_login()` waits for an IOS-XR-specific prompt shape that classic
+IOS/IOS XE never produces. It answers at most one optional `Username:`
+prompt (some IOS XE login configurations show one, some don't) and one
+`Password:` prompt, reusing `_resolve_login_password()`/`terminal.
+resolve_target_password_prompt()` unchanged for the password itself --
+see the next section for why no telnet-specific attribution logic was
+needed.
+
 ### Shared safe SSH password-prompt attribution (Step 3.5)
 
 Both Discovery's bootstrap login and normal managed `terminal_open()`
@@ -656,6 +673,18 @@ callers -- never two independently-written password-prompt parsers:
   limitation**: jump-host authentication must be non-interactive (key/
   agent-based) for both Discovery and managed `terminal_open()` alike --
   neither one will ever answer a jump host's own password prompt.
+
+**Telnet (Step 3.6) reuses this same function unchanged, with no telnet-
+specific code at all.** Telnet has no client-side host-wrapping prompt
+text (unlike OpenSSH's `"<user>@<host>'s password:"`), so on its own this
+function's `SSH_HOP_PASSWORD_PROMPT_RE` attribution wouldn't apply -- but
+it doesn't need to: the access-info schema's own jump-host validation
+requires `transport: ssh` for any device that references a `jump_host`, so
+a telnet device can structurally never have one. That means
+`resolve_target_password_prompt()`'s very first check -- "no
+`jump_host_config` -> unambiguous, answer with the target's own configured
+password" -- already handles a telnet password prompt correctly, without
+ever inspecting `prompt_line` at all in that case.
 
 Discovery's `_resolve_login_password()` (in `discovery.py`) and managed
 `terminal_open()`'s `_authenticate_managed_session()` (in `terminal.py`,
@@ -725,24 +754,36 @@ in parallel):
 
 ```
 committed active_access_info
-    -> discovery._select_iosxr_targets()  (type iosxr only; host/iosxe/
-       nxos are skipped, not failed, unless zero iosxr targets remain)
-    -> discovery._bootstrap_collect()  (per device: login, `terminal
-       length 0`, `show version`, `show running-config`,
-       `show lldp neighbors` -- all logged persistently, see above)
-    -> discovery.parse_lldp_neighbors()  (raw text -> LldpObservation,
-       never resolving identity itself)
-    -> discovery.resolve_remote_identity()  (LldpObservation.remote_
+    -> discovery._select_iosxr_targets() / _select_iosxe_targets()
+       (type iosxr / iosxe; host is skipped, not failed; nxos is skipped;
+       unless zero targets of either kind remain)
+    -> discovery._bootstrap_collect() (iosxr: login, `terminal length 0`,
+       `show version`, `show running-config`, `show lldp neighbors`,
+       `show cdp neighbors`) / _bootstrap_collect_iosxe() (iosxe:
+       _login_iosxe(), `show version`, `show cdp neighbors`) -- all
+       logged persistently, see above
+    -> discovery.parse_lldp_neighbors() / parse_cdp_neighbors()  (raw
+       text -> NeighborObservation, tagged `source="lldp"`/`"cdp"`, never
+       resolving identity itself)
+    -> discovery.resolve_remote_identity()  (NeighborObservation.remote_
        device_id_raw -> logical device ID, or None -- fails closed on
-       anything ambiguous)
-    -> discovery.reconcile_links()  (resolved observations -> ManagedLink
-       list + LinkConflict list)
+       anything ambiguous; identical for either protocol)
+    -> discovery.reconcile_links()  (resolved observations, mixed
+       protocols -> ManagedLink list + LinkConflict list; the same link
+       seen via both protocols dedupes to one, a same-interface
+       cross-protocol disagreement is a conflict)
     -> discovery.DiscoveryResult  (in-memory only)
     -> cli/config.py CliSession.apply_discovery_result()  (opens/creates
        the topology candidate via the *same* plan_topology_definition()/
        apply_topology_definition_plan() as a manually typed `topology
        <name>`, then merges in discovery.build_topology_devices_and_links())
 ```
+
+Step 3.6 adds CDP + IOS XE support entirely inside `discovery.py` (plus a
+few new summary lines in `cli/main.py`'s `render_discovery_summary()`):
+`mcp_server.py` has zero diff and `cli/grammar.py` is unchanged --
+`discover topology` remains the only Discovery command, with protocol/
+device-type selection happening internally, never as a CLI choice.
 
 `discovery.py` owns every Discovery-specific behavior (bootstrap
 connectivity reuses `terminal.py`'s primitives, but the login sequence,
@@ -781,9 +822,10 @@ R4 collect -----|
 ```
 
 Parallelism is device-level only: within one device, `_bootstrap_collect()`
-itself is untouched (login, then `terminal length 0`, `show version`,
-`show running-config`, `show lldp neighbors`, strictly in that order, in
-that device's own worker). Workers are value-oriented -- each returns its
+/`_bootstrap_collect_iosxe()` themselves are strictly sequential (login,
+then each command in order, in that device's own worker); IOS XR and IOS
+XE targets are submitted to the *same* thread pool, just dispatched to
+their own collector function. Workers are value-oriented -- each returns its
 own collected dict; nothing here mutates a shared candidate, link list, or
 conflict list from more than one thread. Aggregation and error attribution
 are always by original target order, not by whichever thread happened to
@@ -796,16 +838,21 @@ mutation, exactly like the pre-Step-3.3 sequential loop.
 
 ### Identity resolution is bounded and fails closed
 
-`resolve_remote_identity()` matches an LLDP remote Device ID against an
-in-memory `{logical_device_id: observed_hostname}` map built from each
-bootstrap session's own IOS XR prompt, in this order, each step requiring
-a *unique* match or the neighbor stays unresolved:
+`resolve_remote_identity()` matches a remote Device ID (from either
+protocol -- the function never looks at `NeighborObservation.source`)
+against an in-memory `{logical_device_id: observed_hostname}` map built
+from each bootstrap session's own login prompt (the IOS XR prompt for
+`iosxr` targets, `_login_iosxe()`'s exec prompt for `iosxe` targets), in
+this order, each step requiring a *unique* match or the neighbor stays
+unresolved:
 
 1. exact observed-hostname match
 2. case-normalized exact match
 3. short-name/FQDN-style alias match (the raw ID's segment before its
    first `.`, compared case-insensitively against each hostname --
-   e.g. `APJC_JP_OSK_R2.cisco` matches hostname `APJC_JP_OSK_R2`)
+   e.g. `APJC_JP_OSK_R2.cisco` matches hostname `APJC_JP_OSK_R2`; this is
+   also the path a CDP-reported FQDN like `ASR9001_R1.cisco.com` resolves
+   through, exactly the same as an LLDP one)
 
 There is no substring search, no fuzzy matching, and no inference from
 the logical device ID itself (never `"R2" in device_id`). A neighbor that
@@ -814,41 +861,60 @@ like one that resolves to none -- unresolved, never guessed.
 
 ### Managed vs. unresolved neighbors, and where their evidence lives
 
-A resolved neighbor that is also one of *this run's* selected IOS XR
-targets becomes a candidate topology device/link. Everything else --
-external routers, LLDP-visible but not in the selected access-info, or
-genuinely ambiguous -- is an **unresolved neighbor**: never invented as a
-managed topology device, but not silently dropped either. Its full raw
-evidence (remote Device ID, observing device/interface, remote port,
-capability) is:
+A resolved neighbor that is also one of *this run's* selected IOS XR/IOS
+XE targets becomes a candidate topology device/link. Everything else --
+external routers/switches visible only via LLDP/CDP but not in the
+selected access-info, or genuinely ambiguous -- is an **unresolved
+neighbor**: never invented as a managed topology device, but not silently
+dropped either. Its full raw evidence (remote Device ID, observing
+device/interface, remote port, capability) is:
 
 - rendered directly in that `discover topology` run's own CLI output
   (mandatory, not reducible to just a count), and
 - separately, persistently recoverable afterwards from the observing
   device's own terminal log (`show logging <device-id> <log-file>`,
-  since the original `show lldp neighbors` output is right there).
+  since the original `show lldp neighbors`/`show cdp neighbors` output is
+  right there).
 
 Deliberately, there is **no third persistence layer** for this evidence:
 no `show discover`/discovery-history command, and no unresolved-neighbor
 record written into the committed topology YAML. Re-running `discover
 topology` produces a fresh normalized result the same way every time.
 
-### Link reconciliation
+### Link reconciliation (multi-protocol, Step 3.6)
 
-`reconcile_links()` indexes resolved observations by their own
-`(local_device_id, local_interface)` key (never by a "canonical pair"
-derived from a claimed remote port, since the two sides of a conflict may
-claim *different* remote ports for the same local interface -- keying by
-each side's own dict entry is what correctly prevents double-processing
-in that case). For each local endpoint not yet consumed:
+`reconcile_links()` first groups *all* resolved observations (LLDP and
+CDP mixed together) by their own `(local_device_id, local_interface)` key
+(never by a "canonical pair" derived from a claimed remote port, since the
+two sides of a conflict may claim *different* remote ports for the same
+local interface -- keying by each side's own dict entry is what correctly
+prevents double-processing in that case). Within one local endpoint's own
+group (which may hold one LLDP observation, one CDP observation, or
+both):
+
+- if every observation for that endpoint agrees on the same (remote
+  device, remote interface), they collapse into a single candidate for
+  that endpoint -- this is what makes the same physical link, seen via
+  both protocols or reciprocally from both ends, become exactly one
+  `ManagedLink` rather than two;
+- if they disagree -- whether one says LLDP and the other CDP, or both
+  are the same protocol producing incompatible rows -- that endpoint is a
+  `LinkConflict` on its own (`endpoint_a == endpoint_b`, both sides of the
+  conflict being the differing observations of *this one* local
+  interface), and it is excluded from further reconciliation; every other
+  endpoint is unaffected.
+
+Only endpoints that survived that first pass (i.e. have one agreed-upon
+candidate) go through the existing reciprocal check:
 
 - if the *remote* endpoint has no observation of its own, the link is
-  one-sided but still created (section 48: bidirectional LLDP is not an
-  absolute requirement);
+  one-sided but still created (section 48: bidirectional discovery is not
+  an absolute requirement);
 - if it does, and it reciprocally agrees (claims the same original local
   device/interface back), the pair collapses into one `ManagedLink`;
 - if it does, but disagrees (a different interface mapping), a
-  `LinkConflict` is recorded instead -- the link is never silently
+  `LinkConflict` is recorded instead (`endpoint_a != endpoint_b`, the
+  original reciprocal-mismatch shape) -- the link is never silently
   created from either side's guess.
 
 A link's identity is its unordered pair of `(device, interface)`

@@ -28,15 +28,22 @@ if os.environ.get("NETWORK_LAB_REAL_TESTS") != "1":
     )
 
 
-def _real_iosxr_targets() -> dict[str, dict]:
+def _real_access_data() -> dict:
     settings = lab.read_settings()
     access_info_name = lab.get_active_access_info_name(settings)
     if not access_info_name:
         pytest.fail("Real lab prerequisite: no access-info is selected in running-config.")
     if not lab.access_info_exists(access_info_name):
         pytest.fail(f"Real lab prerequisite: selected access-info '{access_info_name}' does not exist.")
-    access_data = lab.load_access_info(access_info_name)
-    return discovery._select_iosxr_targets(access_data)
+    return lab.load_access_info(access_info_name)
+
+
+def _real_iosxr_targets() -> dict[str, dict]:
+    return discovery._select_iosxr_targets(_real_access_data())
+
+
+def _real_iosxe_targets() -> dict[str, dict]:
+    return discovery._select_iosxe_targets(_real_access_data())
 
 
 @pytest.fixture(scope="module")
@@ -71,11 +78,34 @@ def test_real_device_login_and_required_commands(device_id, iosxr_targets):
 def test_real_end_to_end_discovery_run():
     result = discovery.discover_topology()
 
-    assert result.connected_count == result.iosxr_target_count
+    assert result.connected_count == result.iosxr_target_count + result.iosxe_target_count
     assert result.observation_count >= 0
-    assert all(device["type"] == "iosxr" for device in result.devices.values())
+    assert result.cdp_observation_count >= 0
+    assert all(device["type"] in ("iosxr", "iosxe") for device in result.devices.values())
     for device_id in result.devices:
         assert terminal.list_device_logs(device_id), f"{device_id}: no terminal log after discovery"
 
     # Never commits or otherwise touches the real running-config/committed
     # topology -- this call only ever returns an in-memory DiscoveryResult.
+
+
+@pytest.mark.parametrize("device_id", ["PAGENT"])
+def test_real_iosxe_device_login_and_cdp_collection(device_id):
+    """Gated, optional: only meaningful if the selected access-info defines
+    an IOS XE target (e.g. PAGENT). Skips (does not fail) if absent, since
+    IOS XE targets are not a hard real-lab prerequisite the way IOS XR ones
+    are."""
+    targets = _real_iosxe_targets()
+    if device_id not in targets:
+        pytest.skip(f"Real lab: no IOS XE target '{device_id}' in the selected access-info.")
+    device_config = targets[device_id]
+
+    try:
+        info = discovery._bootstrap_collect_iosxe(device_id, device_config)
+    finally:
+        terminal.close_bootstrap_terminal(device_id)
+
+    assert info["hostname"], f"{device_id}: no hostname resolved from the IOS XE prompt"
+    assert info["show_version"].strip(), f"{device_id}: 'show version' returned empty output"
+    # 'show cdp neighbors' may legitimately report zero/disabled; the
+    # command having executed without raising (above) is what's asserted.

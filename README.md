@@ -567,13 +567,12 @@ ever offer these four values, and an unambiguous abbreviation like `type
 nx` normalizes to `nxos`, or `type h` to `host`).
 
 This enum is also how Step 3's `discover topology` selects its targets
-from the selected access-info's devices: `iosxr` is the only currently
-supported Discovery target (LLDP only, see
+from the selected access-info's devices: `iosxr` (LLDP + CDP) and `iosxe`
+(CDP only) are supported Discovery targets (see
 [Step 3](#step-3-ios-xr--lldp-topology-discovery) below); `host` is a
 normal registered topology node for which discovery is intentionally
-skipped, not an "unsupported type" error, and `iosxe`/`nxos` are likewise
-skipped (not implemented yet) rather than failing a mixed access-info
-definition.
+skipped, not an "unsupported type" error, and `nxos` is likewise skipped
+(not implemented yet) rather than failing a mixed access-info definition.
 
 Topology and access-info store `type` independently (they are separate
 files, possibly authored at different times); terminal access validates
@@ -964,18 +963,21 @@ add a new public MCP tool.
 
 ## Current limitations
 
-- Topology discovery (Step 3) is IOS XR + LLDP only: no CDP, no IOS XE/
-  NX-OS discovery, no SNMP/NETCONF/RESTCONF, and no generic discovery
-  plugin framework. See
+- Topology discovery (Step 3) supports IOS XR (LLDP + CDP) and IOS XE (CDP
+  only): no NX-OS discovery, no SNMP/NETCONF/RESTCONF, and no generic
+  discovery plugin framework. See
   ["Step 3: IOS XR + LLDP topology discovery"](#step-3-ios-xr--lldp-topology-discovery)
   below.
 - No automatic stale-link pruning after Discovery (definition deletion
   itself — `no access-info`/`topology`/`scenario`/`reference <name>` — is
   supported; see the CLI feature list above).
-- Login to a device via the public `terminal_open()`/`terminal_send()`/
-  `terminal_read()` path is interactive, not automated -- only Discovery's
-  private bootstrap path (see below) automates login, and only for its own
-  temporary sessions.
+- Login to a device via the public `terminal_open()` path automates SSH
+  password authentication only (Step 3.5, see
+  ["Private managed-terminal authentication"](#private-managed-terminal-authentication)
+  above); it does not automate a host-key confirmation prompt, and
+  `terminal_send()`/`terminal_read()` themselves remain a simple,
+  unattended capture/send with no login automation of their own beyond
+  that one-time `terminal_open()` step.
 - Non-editable/wheel installation is not supported.
 - Telnet transport mechanics (binary detection, command construction, launch
   inside the managed tmux path, and output visibility) were validated against
@@ -996,27 +998,31 @@ add a new public MCP tool.
 
 ## Step 3: IOS XR + LLDP topology discovery
 
-Step 3's initial scope is deliberately narrow: **IOS XR devices, LLDP
-only**, direct SSH or existing single-hop ProxyJump, driven from the
-already-committed `active_access_info`. It never installs/activates a
-package, enables LLDP, or changes router configuration; `show cdp
-neighbors` is explicitly not part of this phase (the real lab runs
-`xr-lldp`, not the CDP package). CDP, IOS XE/NX-OS discovery, SNMP/
-NETCONF/RESTCONF, multi-hop jump chains, and a generic discovery/plugin
-framework are all out of scope for this phase.
+Step 3's scope: **IOS XR devices (LLDP + CDP) and IOS XE devices (CDP
+only)**, direct SSH or existing single-hop ProxyJump (or telnet, for IOS
+XE — see ["CDP + IOS XE discovery"](#cdp--ios-xe-discovery-step-36)
+below), driven from the already-committed `active_access_info`. It never
+installs/activates a package, enables LLDP/CDP, or changes router
+configuration. NX-OS discovery, SNMP/NETCONF/RESTCONF, multi-hop jump
+chains, and a generic discovery/plugin framework are all out of scope.
 
 ```
 committed active_access_info
-    -> private bootstrap connection (direct SSH / ProxyJump, reused from
-       terminal.py; a structurally separate, temporary session namespace
-       -- never reachable through the public terminal_open())
-    -> IOS XR login + `show version` / `show running-config` /
-       `show lldp neighbors`, captured to a persistent terminal log
-    -> IOS XR LLDP parsing -> normalized observations
+    -> private bootstrap connection (direct SSH / ProxyJump / telnet,
+       reused from terminal.py; a structurally separate, temporary
+       session namespace -- never reachable through the public
+       terminal_open())
+    -> per-type login + read-only collection: IOS XR gets `show version` /
+       `show running-config` / `show lldp neighbors` / `show cdp
+       neighbors`; IOS XE gets `show version` / `show cdp neighbors` --
+       captured to a persistent terminal log
+    -> LLDP/CDP parsing -> normalized observations (each tagged with its
+       own protocol)
     -> identity resolution (bounded hostname/alias matching, fails closed
        on anything ambiguous) -> managed vs. unresolved neighbor
-    -> link reconciliation (reciprocal dedup, parallel links preserved,
-       conflicts reported, never silently resolved)
+    -> multi-protocol link reconciliation (reciprocal + cross-protocol
+       dedup, parallel links preserved, conflicts reported, never
+       silently resolved)
     -> topology candidate (same candidate/commit/clear system as any
        other topology edit)
     -> `show` / `show configuration` for review -> explicit `commit`
@@ -1024,37 +1030,47 @@ committed active_access_info
 
 - **`discover topology`** (global configuration mode only): reads
   *committed* `active_access_info` (never an uncommitted candidate
-  selection), selects its `type: iosxr` devices (`type: host` is skipped,
-  not an error; `iosxe`/`nxos` are unsupported and skipped; zero IOS XR
-  targets is a hard failure), and requires **all** of them to succeed --
-  any login/command/timeout failure fails the whole operation before the
-  prior candidate is touched. On success it prints a Discovery summary
-  and, if any LLDP neighbor could not be resolved to a managed device,
-  an explicit "Unresolved neighbors" section (raw Device ID, observing
-  device/interface, remote port, capability) — then enters topology
-  configuration mode with the result applied as the candidate, exactly
-  like a manually typed `topology <name>`. It never commits and never
-  changes `active_topology` itself.
-- **Managed vs. unresolved neighbors**: an LLDP neighbor is "managed"
-  only if its Device ID resolves *uniquely* to one of the selected
-  access-info's own IOS XR devices (exact hostname match, then
-  case-normalized match, then a short-name/FQDN-style alias match — never
-  a substring search, never inferred from the logical device ID).
-  Anything else (e.g. a real external router visible only via LLDP) stays
-  unresolved: it is never invented as a managed topology device. Its raw
-  evidence is retained for the current `discover topology` run's own
-  output and remains reviewable afterwards through the device's own
-  persistent terminal log (`show logging <device-id> <log-file>`, since
-  the original `show lldp neighbors` output is right there) — there is no
-  separate `show discover`/discovery-history command or database; re-running
-  `discover topology` produces a fresh normalized result the same way.
-- **Link reconciliation**: two devices' reciprocal LLDP observations
-  collapse into one topology link (keyed by the unordered pair of
-  (device, interface) endpoints, so parallel links on different
-  interfaces between the same two routers stay distinct); a one-sided
-  observation (only one side ran LLDP) still creates a link; a reciprocal
-  pair that disagrees about the interface mapping is reported as a
-  conflict and not silently resolved into either interpretation.
+  selection), selects its `type: iosxr` and `type: iosxe` devices
+  (`type: host` is skipped, not an error; `nxos` is unsupported and
+  skipped; zero supported targets of either kind is a hard failure), and
+  requires **all** of them to succeed -- any login/command/timeout
+  failure fails the whole operation before the prior candidate is
+  touched. On success it prints a Discovery summary and, if any neighbor
+  could not be resolved to a managed device, an explicit "Unresolved
+  neighbors" section (raw Device ID, observing device/interface, remote
+  port, capability) — then enters topology configuration mode with the
+  result applied as the candidate, exactly like a manually typed
+  `topology <name>`. It never commits and never changes `active_topology`
+  itself.
+- **Managed vs. unresolved neighbors**: an LLDP or CDP neighbor is
+  "managed" only if its Device ID resolves *uniquely* to one of the
+  selected access-info's own IOS XR/IOS XE devices (exact hostname match,
+  then case-normalized match, then a short-name/FQDN-style alias match —
+  never a substring search, never inferred from the logical device ID).
+  This is the same resolution rule for both protocols: a CDP Device ID is
+  commonly an FQDN (e.g. `ASR9001_R1.cisco.com`), resolved the same
+  short-name way an LLDP FQDN already was. Anything else (e.g. a real
+  external/unmanaged switch visible only via CDP) stays unresolved: it is
+  never invented as a managed topology device. Its raw evidence is
+  retained for the current `discover topology` run's own output and
+  remains reviewable afterwards through the device's own persistent
+  terminal log (`show logging <device-id> <log-file>`) — there is no
+  separate `show discover`/discovery-history command or database;
+  re-running `discover topology` produces a fresh normalized result the
+  same way.
+- **Multi-protocol link reconciliation**: two devices' reciprocal
+  observations (from either protocol) collapse into one topology link
+  (keyed by the unordered pair of (device, interface) endpoints, so
+  parallel links on different interfaces between the same two routers
+  stay distinct); a one-sided observation still creates a link; a
+  reciprocal pair that disagrees about the interface mapping is reported
+  as a conflict and not silently resolved into either interpretation. The
+  same physical link seen via *both* LLDP and CDP on the same local
+  interface is not duplicated (one link); if LLDP and CDP disagree about
+  which neighbor a given local interface connects to, that is *also*
+  reported as a conflict for that specific interface only — not silently
+  resolved by preferring one protocol, and unrelated links elsewhere are
+  unaffected.
 - **Existing vs. new target topology**: if a topology already exists
   under the default name, its description and unrelated devices/links are
   preserved — Discovery only adds newly discovered managed devices/links
@@ -1139,8 +1155,10 @@ committed active_access_info
 
     Access-info:          test_lab
     IOS XR targets:       4
+    IOS XE targets:       0
     Connected:            4
     LLDP observations:    20
+    CDP observations:     0
     Managed links:        8
     Unresolved neighbors: 2
     Topology candidate:   test_lab
@@ -1174,6 +1192,45 @@ committed active_access_info
 
   (`--tb=line`, and never `--showlocals`, so a real device's password
   never ends up in a failure traceback.)
+
+### CDP + IOS XE discovery (Step 3.6)
+
+- **Protocol mapping is automatic, not a CLI choice**: `discover topology`
+  remains the only Discovery command. `iosxr` targets are collected via
+  LLDP *and* CDP; `iosxe` targets are collected via CDP only (no LLDP
+  support for IOS XE in this step). There is no `discover cdp` or
+  protocol-selection flag.
+- **CDP parsing** handles both real row shapes: an IOS XR-style row
+  entirely on one line, and an IOS/IOS XE-style row where a long/FQDN
+  Device ID wraps onto its own line with the remaining fields on the
+  *next* physical line. CDP being disabled/unsupported on a given device
+  (or reporting zero neighbors) never fails that device's collection —
+  unlike LLDP, which is expected to always be available on IOS XR and so
+  still fails closed on totally unrecognized output.
+- **IOS XE login** is a separate, minimal login path
+  (`discovery._login_iosxe()`) from IOS XR's, since IOS XR's login waits
+  for an IOS-XR-specific prompt shape that classic IOS/IOS XE never
+  produces. It answers at most one optional `Username:` prompt and one
+  `Password:` prompt, reusing the exact same shared, already-tested
+  primitives as everywhere else (`terminal.wait_for_bootstrap_pattern()`,
+  `terminal.PASSWORD_PROMPT_RE`, `terminal.resolve_target_password_prompt()`)
+  — no separate telnet-specific password-attribution logic was needed: a
+  telnet device can never have a `jump_host` (the access-info schema
+  requires `transport: ssh` for that), so `resolve_target_password_prompt()`'s
+  existing "no jump host -> unambiguous" rule already answers a telnet
+  prompt correctly with zero telnet-specific code.
+- **Telnet is lab-only, not a secure transport.** It transmits everything,
+  including the password, in the clear, with no server authentication —
+  suitable only for isolated lab environments (e.g. a PAGENT-style device
+  console), never presented or used as a substitute for SSH in any
+  security-sensitive context.
+- **Identity resolution and unmanaged-neighbor handling are unchanged and
+  shared**: `resolve_remote_identity()` does not know or care which
+  protocol produced a Device ID, so a CDP-reported FQDN resolves via the
+  exact same short-name matching an LLDP FQDN already used. An unmanaged
+  CDP neighbor (e.g. an unmanaged switch visible only via CDP) is retained
+  as evidence and never auto-created as a topology device, exactly like an
+  unmanaged LLDP neighbor.
 
 ## Step 3.3: multi-device parallel execution
 

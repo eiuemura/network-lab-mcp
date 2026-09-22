@@ -1626,19 +1626,28 @@ def render_discovery_summary(result: "discovery.DiscoveryResult") -> str:
         "",
         f"  Access-info:          {result.access_info_name}",
         f"  IOS XR targets:       {result.iosxr_target_count}",
+        f"  IOS XE targets:       {result.iosxe_target_count}",
         f"  Connected:            {result.connected_count}",
         f"  LLDP observations:    {result.observation_count}",
+        f"  CDP observations:     {result.cdp_observation_count}",
         f"  Managed links:        {len(result.managed_links)}",
         f"  Unresolved neighbors: {len(grouped_unresolved)}",
         f"  Topology candidate:   {result.default_topology_name}",
     ]
     if result.conflicts:
         lines.append("")
-        lines.append(f"Link reconciliation conflicts ({len(result.conflicts)}, not added):")
+        lines.append(f"Protocol/link reconciliation conflicts ({len(result.conflicts)}, not added):")
         for conflict in result.conflicts:
             a_dev, a_intf = conflict.endpoint_a
             b_dev, b_intf = conflict.endpoint_b
-            lines.append(f"  {a_dev} {a_intf} <-> {b_dev} {b_intf}: inconsistent reciprocal observation")
+            if conflict.endpoint_a == conflict.endpoint_b:
+                lines.append(
+                    f"  {a_dev} {a_intf}: conflicting neighbor observations "
+                    f"({conflict.observation_a.source} -> {conflict.observation_a.remote_device_id_raw} "
+                    f"vs {conflict.observation_b.source} -> {conflict.observation_b.remote_device_id_raw})"
+                )
+            else:
+                lines.append(f"  {a_dev} {a_intf} <-> {b_dev} {b_intf}: inconsistent reciprocal observation")
     if grouped_unresolved:
         lines.append("")
         lines.append("Unresolved neighbors:")

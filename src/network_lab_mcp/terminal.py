@@ -732,7 +732,9 @@ def build_device_directory_deletion_plan(device_name: str) -> DeletionPlan:
                 "non-terminal-log entries."
             )
     if _device_has_active_session(device_name):
-        raise TerminalError(f"Cannot delete logging directory for '{device_name}' while a terminal log is active.")
+        raise TerminalError(
+            f"Cannot delete logging directory for '{device_name}' while a managed terminal session is still open."
+        )
     files = tuple(sorted((device_dir / name for name in eligible_names), key=str))
     return DeletionPlan(device_name, files, (device_name,))
 

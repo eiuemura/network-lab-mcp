@@ -1132,11 +1132,34 @@ def test_active_normal_terminal_blocks_device_directory(isolated_logs, lab_root,
     session = cfgmod.CliSession(lab_root)
     climain.execute_command_line(session, "delete logging DW1 directory")
     out = capsys.readouterr().out
-    assert out.startswith("%")
+    assert out.strip() == (
+        "% Cannot delete logging directory for 'DW1' while a managed terminal session is still open."
+    )
     assert "[y/N]" not in out
     assert (isolated_logs / "DW1").is_dir()
     assert any((isolated_logs / "DW1").iterdir())
     assert terminal._session_exists(terminal.derive_production_session_name("DW1"))
+
+
+def test_active_normal_terminal_blocks_device_directory_message_is_dynamic_per_device(
+    isolated_logs, lab_root, monkeypatch, capsys
+):
+    """Same condition as above, a different device ID (DW2 -- one of this
+    file's own reserved real-tmux writer-test device names, see
+    _WRITER_TEST_DEVICE_IDS's own comment; never an unrelated name like
+    'PAGENT' that other test files also use for real tmux sessions on the
+    same shared socket) -- proves the message text substitutes the device
+    ID dynamically, not hard-coded."""
+    _fake_transport(monkeypatch)
+    terminal.open_device_terminal("DW2", {"transport": "ssh", "address": "192.0.2.2"})
+    _first_log_filename(isolated_logs, "DW2")
+
+    session = cfgmod.CliSession(lab_root)
+    climain.execute_command_line(session, "delete logging DW2 directory")
+    out = capsys.readouterr().out
+    assert out.strip() == (
+        "% Cannot delete logging directory for 'DW2' while a managed terminal session is still open."
+    )
 
 
 def test_inactive_device_deletion_proceeds_while_another_device_is_active(
@@ -1206,7 +1229,9 @@ def test_discovery_bootstrap_active_log_blocks_device_directory(isolated_logs, l
     session = cfgmod.CliSession(lab_root)
     climain.execute_command_line(session, "delete logging DW1 directory")
     out = capsys.readouterr().out
-    assert out.startswith("%")
+    assert out.strip() == (
+        "% Cannot delete logging directory for 'DW1' while a managed terminal session is still open."
+    )
     assert "[y/N]" not in out
     assert (isolated_logs / "DW1").is_dir()
     assert terminal._session_exists(terminal.derive_discovery_session_name("DW1"))

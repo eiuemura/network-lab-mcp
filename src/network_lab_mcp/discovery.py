@@ -272,6 +272,35 @@ def _run_command_tolerant(device_id: str, command_text: str, prompt_re: re.Patte
         return ""
 
 
+def _disable_terminal_paging(device_id: str, prompt_re: re.Pattern) -> None:
+    """Send `terminal length 0` immediately after successful login and
+    confirm the device prompt has returned before any Discovery show
+    command is sent (Step 3.7a).
+
+    This is the fix for a real observed failure: a C9200L (IOS XE) ran
+    `show version` before pagination was disabled, its output stopped at
+    the device's own `--More--` pager prompt (which never printed the
+    expected exec prompt back), and the whole device's collection timed
+    out and failed. Disabling the pager up front -- rather than teaching
+    Discovery to detect and answer `--More--` -- keeps this a single,
+    narrow, one-time step reusing the exact same send/wait-for-prompt
+    primitive (`_run_command()`) every other command already uses, with
+    no separate pager state machine.
+
+    `terminal length 0` is sent exactly once per session (each collector
+    calls this exactly once, right after login) and is a session-level
+    EXEC setting only -- never persisted, never entered via configuration
+    mode. Fails closed: if the prompt does not return, this raises
+    (converted to DiscoveryError by the caller, exactly like any other
+    login/command failure) with a message that identifies *this* phase
+    specifically, and no Discovery show command is ever attempted while
+    the terminal's page-length state is unknown."""
+    try:
+        _run_command(device_id, "terminal length 0", prompt_re)
+    except terminal.TerminalError as exc:
+        raise terminal.TerminalError(f"Timed out disabling terminal paging: {exc}") from exc
+
+
 def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
     """IOS XR collection: log in, disable pagination, and collect the
     read-only commands -- `show version`/`show running-config` (unused
@@ -287,7 +316,7 @@ def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
         # Discovery sessions are temporary and closed right after
         # collection, so there is no need to restore terminal length
         # afterwards (see docs/architecture.md).
-        _run_command(device_id, "terminal length 0")
+        _disable_terminal_paging(device_id, _IOSXR_PROMPT_RE)
         show_version = _run_command(device_id, "show version")
         show_running_config = _run_command(device_id, "show running-config")
         show_lldp_neighbors = _run_command(device_id, "show lldp neighbors")
@@ -306,18 +335,22 @@ def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
 
 
 def _bootstrap_collect_iosxe(device_id: str, device_config: dict) -> dict:
-    """IOS XE collection: log in and collect `show version` (diagnostic
-    parity with the IOS XR path), both neighbor-discovery protocols (Step
-    3.7 Section 13: IOS XE now also gets LLDP, in addition to CDP --
-    `% LLDP is not enabled` is handled by the caller, not here, exactly
-    like CDP-unavailable already was), and the L3 enrichment commands
-    `show vrf` + `show ip interface brief` (collected tolerantly -- see
-    _run_command_tolerant()). `show running-config` is skipped since it is
-    unused downstream for IOS XR too (kept minimal per Section 12's
-    "collect at minimum" framing). Fails closed (DiscoveryError) on any
-    login, LLDP/CDP command, or timeout failure."""
+    """IOS XE collection: log in, disable pagination (Step 3.7a -- see
+    _disable_terminal_paging()'s own docstring for the real C9200L
+    failure this fixes; Step 3.6/3.7 never did this for IOS XE at all),
+    and collect `show version` (diagnostic parity with the IOS XR path),
+    both neighbor-discovery protocols (Step 3.7 Section 13: IOS XE now
+    also gets LLDP, in addition to CDP -- `% LLDP is not enabled` is
+    handled by the caller, not here, exactly like CDP-unavailable already
+    was), and the L3 enrichment commands `show vrf` + `show ip interface
+    brief` (collected tolerantly -- see _run_command_tolerant()). `show
+    running-config` is skipped since it is unused downstream for IOS XR
+    too (kept minimal per Section 12's "collect at minimum" framing).
+    Fails closed (DiscoveryError) on any login, paging, LLDP/CDP command,
+    or timeout failure."""
     try:
         hostname = _login_ios_style(device_id, device_config)
+        _disable_terminal_paging(device_id, _IOS_STYLE_PROMPT_RE)
         show_version = _run_command(device_id, "show version", _IOS_STYLE_PROMPT_RE)
         show_lldp_neighbors = _run_command(device_id, "show lldp neighbors", _IOS_STYLE_PROMPT_RE)
         show_cdp_neighbors = _run_command(device_id, "show cdp neighbors", _IOS_STYLE_PROMPT_RE)
@@ -338,13 +371,15 @@ def _bootstrap_collect_iosxe(device_id: str, device_config: dict) -> dict:
 def _bootstrap_collect_ios(device_id: str, device_config: dict) -> dict:
     """Classic IOS collection (Step 3.7 Section 12, deliberately minimal --
     preserving the same "collect at minimum" principle Step 3.6 used for
-    IOS XE): log in, `show version`, `show cdp neighbors` (classic IOS has
-    no LLDP support in this step -- Section 10), and the L3 enrichment
-    commands `show vrf` + `show ip interface brief` (tolerant). No `show
-    running-config` (unused downstream). Fails closed (DiscoveryError) on
-    any login, CDP command, or timeout failure."""
+    IOS XE): log in, disable pagination (Step 3.7a), `show version`, `show
+    cdp neighbors` (classic IOS has no LLDP support in this step --
+    Section 10), and the L3 enrichment commands `show vrf` + `show ip
+    interface brief` (tolerant). No `show running-config` (unused
+    downstream). Fails closed (DiscoveryError) on any login, paging, CDP
+    command, or timeout failure."""
     try:
         hostname = _login_ios_style(device_id, device_config)
+        _disable_terminal_paging(device_id, _IOS_STYLE_PROMPT_RE)
         show_version = _run_command(device_id, "show version", _IOS_STYLE_PROMPT_RE)
         show_cdp_neighbors = _run_command(device_id, "show cdp neighbors", _IOS_STYLE_PROMPT_RE)
         show_vrf = _run_command_tolerant(device_id, "show vrf", _IOS_STYLE_PROMPT_RE)

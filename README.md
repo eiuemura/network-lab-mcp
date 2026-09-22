@@ -1314,6 +1314,23 @@ committed active_access_info
   change, and access-info/credentials remain structurally impossible to
   reach through it either way.
 
+### Discovery terminal paging (Step 3.7a)
+
+Discovery disables terminal pagination (`terminal length 0`) immediately
+after successful login, before collecting any command output -- a real
+IOS XE C9200L run had `show version` stop at the device's own `--More--`
+pager prompt and time out, because IOS XE/classic IOS collection never
+sent this (IOS XR already did, since Step 3). This is Discovery-only and
+session-local: managed `terminal_open()` is unaffected. Investigation
+also confirmed (with deterministic tests, no real 25-second waits) that
+the shared command-wait primitive's existing 25-second timeout is a
+**fixed total deadline, not an inactivity timeout** -- this was
+characterized, not changed, in this step; see
+["Discovery disables terminal paging before collection"](docs/architecture.md)
+in the architecture doc for the full detail, including a noted (not
+implemented) follow-up: a command whose valid output genuinely exceeds
+the deadline would still time out today, independent of pagination.
+
 ## Step 3.3: multi-device parallel execution
 
 Network Lab MCP supports concurrent operations across different devices,

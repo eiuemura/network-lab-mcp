@@ -665,6 +665,58 @@ remain two separate, explicit collector functions (each listing its own
 small set of commands) rather than one parametrized collector -- Step 3.7
 explicitly avoids a generalized multi-vendor collection framework.
 
+### Discovery disables terminal paging before collection (Step 3.7a)
+
+A real IOS XE C9200L Discovery run failed: `show version`'s output
+stopped at the device's own `--More--` pager prompt (which never returns
+the expected exec prompt), and the whole device's collection timed out.
+IOS XR already sent `terminal length 0` immediately after login (since
+Step 3, via a bare inline `_run_command()` call); IOS XE and classic IOS
+never did. `_disable_terminal_paging(device_id, prompt_re)` is a small
+helper -- send `terminal length 0`, wait for the device's own prompt to
+return, fail closed (bounded `TerminalError`, converted to `DiscoveryError`
+with a phase-specific message) if it doesn't -- called exactly once,
+immediately after a successful login, by all three collectors
+(`_bootstrap_collect()`/`_bootstrap_collect_iosxe()`/
+`_bootstrap_collect_ios()`) before any other command. It is deliberately
+*not* a pager state machine (no `--More--` detection/Space-key handling):
+preventing the pager from ever activating is simpler and sufficient, and
+was not shown to be insufficient for any currently supported platform.
+Paging is Discovery-only and session-local (a plain EXEC-mode command,
+never entering configuration mode) -- managed `terminal_open()` never
+sends it, and there is no global pager state; each device's paging-disable
+step is fully independent, protected only by the existing per-device
+Discovery bootstrap session lock (Step 3.3, unchanged).
+
+**Timeout semantics, characterized (not changed):** `terminal.
+_wait_for_pattern()` -- the one shared command-wait primitive used by
+every Discovery login/command and by managed `terminal_open()`'s private
+authentication alike -- computes `deadline = time.monotonic() + timeout`
+exactly once and loops `while time.monotonic() < deadline`. This is a
+**fixed total deadline, not an inactivity timeout**: new pane content
+arriving only ever unlocks whether a match is considered at all (the
+existing stale-prompt-race guard against `baseline_text`), it never
+recomputes or extends `deadline`. Proven with deterministic tests
+(`tests/test_terminal_wait_timeout_semantics.py`, an injectable fake
+monotonic clock/sleep -- no real 25-second waits) covering a silent
+terminal, continuously-changing-but-never-matching output for the whole
+window, and activity followed by silence: all three time out at the same
+configured deadline, and a match that only becomes available *after* the
+deadline (proven by scheduling one at simulated t=26s against a 25s
+timeout) is never seen, because the loop has already exited by then. Step
+3.7a's own fix does not depend on or change this characterization: the
+real C9200L failure is fully explained by the pager stall (output stopped
+entirely, it did not continue arriving), so the documented "only change
+timeout semantics if output was demonstrably still arriving" carve-out
+does not apply here, and the 25-second value is unchanged. Separately
+noted (not implemented): since this *is* a fixed total deadline, a
+command whose valid output genuinely takes longer than the configured
+timeout to fully arrive (independent of any pager) would still time out --
+a real, distinct reliability question a possible future "Step 3.7b"
+(inactivity-based command timeout) could address, deliberately left
+unimplemented here to keep this fix narrowly scoped and independently
+reviewable.
+
 ### Shared safe SSH password-prompt attribution (Step 3.5)
 
 Both Discovery's bootstrap login and normal managed `terminal_open()`
@@ -772,15 +824,18 @@ committed active_access_info
     -> discovery._select_iosxr_targets() / _select_iosxe_targets() /
        _select_ios_targets() (type iosxr / iosxe / ios; host is skipped,
        not failed; nxos is skipped; unless zero targets of any kind remain)
-    -> discovery._bootstrap_collect() (iosxr: login, `terminal length 0`,
-       `show version`, `show running-config`, `show lldp neighbors`,
-       `show cdp neighbors`, `show ipv4 interface brief` tolerantly) /
-       _bootstrap_collect_iosxe() (iosxe: _login_ios_style(), `show
-       version`, `show lldp neighbors`, `show cdp neighbors`, `show vrf` +
-       `show ip interface brief` tolerantly) / _bootstrap_collect_ios()
-       (ios: _login_ios_style(), `show version`, `show cdp neighbors`,
-       `show vrf` + `show ip interface brief` tolerantly) -- all logged
-       persistently, see above
+    -> discovery._bootstrap_collect() (iosxr: login, _disable_terminal_
+       paging(), `show version`, `show running-config`, `show lldp
+       neighbors`, `show cdp neighbors`, `show ipv4 interface brief`
+       tolerantly) / _bootstrap_collect_iosxe() (iosxe: _login_ios_style(),
+       _disable_terminal_paging(), `show version`, `show lldp neighbors`,
+       `show cdp neighbors`, `show vrf` + `show ip interface brief`
+       tolerantly) / _bootstrap_collect_ios() (ios: _login_ios_style(),
+       _disable_terminal_paging(), `show version`, `show cdp neighbors`,
+       `show vrf` + `show ip interface brief` tolerantly) -- paging
+       disabled exactly once per session, immediately after login and
+       before any other command (Step 3.7a); all logged persistently, see
+       above
     -> discovery.parse_lldp_neighbors() / parse_cdp_neighbors()  (raw
        text -> NeighborObservation, tagged `source="lldp"`/`"cdp"`, never
        resolving identity itself)

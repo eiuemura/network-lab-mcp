@@ -313,3 +313,75 @@ def test_lldp_parse_failure_fails_discovery_without_touching_prior_candidate(lab
     # The real committed topology this run would have merged into is also
     # completely untouched -- discover_topology() never writes to disk.
     assert lab.load_topology("sample_lab", lab_root) == committed_before
+
+
+# ---- Step 3.7: `ios` type + L3 interface enrichment through the same ----
+# ---- candidate/commit/clear system, no special-casing anywhere         ----
+
+
+def test_ios_type_and_l3_interfaces_survive_candidate_only_then_clear(lab_root, monkeypatch):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    _run_discover(
+        session,
+        monkeypatch,
+        _fake_result(
+            devices={
+                "PAGENT": {
+                    "type": "ios",
+                    "interfaces": {"GigabitEthernet0/0.2000": {"ipv4_address": "10.20.0.10", "vrf": "tgn1"}},
+                }
+            },
+            managed_links=[],
+        ),
+    )
+
+    assert session.definition_candidate["devices"]["PAGENT"]["type"] == "ios"
+    assert session.definition_candidate["devices"]["PAGENT"]["interfaces"]["GigabitEthernet0/0.2000"] == {
+        "ipv4_address": "10.20.0.10",
+        "vrf": "tgn1",
+    }
+    assert not lab.topology_exists("discovered_lab", lab_root)
+
+    climain.execute_command_line(session, "clear")
+    assert not lab.topology_exists("discovered_lab", lab_root)
+
+
+def test_ios_type_and_l3_interfaces_survive_commit_and_reload(lab_root, monkeypatch):
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    _run_discover(
+        session,
+        monkeypatch,
+        _fake_result(
+            devices={
+                "PAGENT": {
+                    "type": "ios",
+                    "interfaces": {"GigabitEthernet0/0.2000": {"ipv4_address": "10.20.0.10", "vrf": "tgn1"}},
+                }
+            },
+            managed_links=[],
+        ),
+    )
+    climain.execute_command_line(session, "commit")
+
+    reloaded = lab.load_topology("discovered_lab", lab_root)
+    assert reloaded["devices"]["PAGENT"]["type"] == "ios"
+    assert reloaded["devices"]["PAGENT"]["interfaces"]["GigabitEthernet0/0.2000"]["ipv4_address"] == "10.20.0.10"
+
+
+def test_l3_enrichment_failure_for_one_device_does_not_lose_its_managed_link(lab_root, monkeypatch):
+    """Step 3.7 Section 38/69: L3 enrichment is additive/best-effort -- a
+    device with a valid managed link but no L3 result this run (its
+    'interfaces' key simply absent from DiscoveryResult.devices) must
+    still keep that link and device in the candidate."""
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    _run_discover(
+        session,
+        monkeypatch,
+        _fake_result(devices={"R1": {"type": "iosxr"}, "R2": {"type": "iosxr"}}),
+    )
+
+    assert len(session.definition_candidate["links"]) == 1
+    assert "interfaces" not in session.definition_candidate["devices"]["R1"]

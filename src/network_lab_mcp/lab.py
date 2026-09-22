@@ -21,6 +21,7 @@ docs/architecture.md for the full model):
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -133,6 +134,10 @@ def get_active_access_info_name(settings: dict) -> Optional[str]:
 DEVICE_TYPES: dict[str, str] = {
     "iosxr": "Cisco IOS XR",
     "iosxe": "Cisco IOS XE",
+    # Classic Cisco IOS (Step 3.7) -- explicitly its own type, never a
+    # compatibility label under `iosxe`. `ios` is the canonical name; do
+    # not add variants like `classic-ios`/`ios15`/`cisco-ios`.
+    "ios": "Cisco IOS",
     "nxos": "Cisco NX-OS",
     # Not a network device Step 3 will run CDP/LLDP discovery against. `host`
     # is a normal registered topology node -- discovery is intentionally
@@ -284,6 +289,60 @@ def validate_topology_links(topology_name: str, devices: dict, links: Any) -> No
         seen_keys.add(key)
 
 
+_INTERFACE_L3_FIELDS = ("ipv4_address", "vrf")
+
+
+def validate_topology_interfaces(topology_name: str, devices: dict) -> None:
+    """Validate each device's optional 'interfaces' mapping (Step 3.7 L3
+    enrichment): a stable, directly observed IPv4 address + VRF per
+    interface -- never operational state (up/down), never a prefix length
+    (deliberately out of scope for this step), and never link/connectivity
+    data (links remain the sole source of connectivity). Omitted entirely,
+    or an empty mapping, is valid -- existing topology files with no
+    'interfaces' key at all need no migration."""
+    for device_name, device in devices.items():
+        interfaces = (device or {}).get("interfaces")
+        if interfaces is None:
+            continue
+        if not isinstance(interfaces, dict):
+            raise LabConfigError(
+                f"Topology '{topology_name}' device '{device_name}' has an invalid 'interfaces' "
+                "section; expected a mapping."
+            )
+        for interface_name, fields in interfaces.items():
+            if not isinstance(interface_name, str) or not interface_name.strip():
+                raise LabConfigError(
+                    f"Topology '{topology_name}' device '{device_name}' has an interface with an "
+                    "empty or invalid name."
+                )
+            if not isinstance(fields, dict):
+                raise LabConfigError(
+                    f"Topology '{topology_name}' device '{device_name}' interface '{interface_name}' "
+                    "must be a mapping."
+                )
+            unknown = sorted(set(fields) - set(_INTERFACE_L3_FIELDS))
+            if unknown:
+                raise LabConfigError(
+                    f"Topology '{topology_name}' device '{device_name}' interface '{interface_name}' "
+                    f"has unsupported field(s): {', '.join(unknown)}."
+                )
+            for key in _INTERFACE_L3_FIELDS:
+                value = fields.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    raise LabConfigError(
+                        f"Topology '{topology_name}' device '{device_name}' interface '{interface_name}' "
+                        f"is missing a non-empty '{key}'."
+                    )
+            ipv4_address = fields["ipv4_address"]
+            try:
+                ipaddress.IPv4Address(ipv4_address)
+            except ValueError as exc:
+                raise LabConfigError(
+                    f"Topology '{topology_name}' device '{device_name}' interface '{interface_name}' has "
+                    f"an invalid 'ipv4_address' value '{ipv4_address}': {exc}"
+                ) from exc
+
+
 def validate_topology_data(name: str, data: Any) -> None:
     """Validate an in-memory topology mapping using the same rules `load_topology()`
     applies to a freshly loaded file.
@@ -299,6 +358,7 @@ def validate_topology_data(name: str, data: Any) -> None:
     validate_topology_no_access_fields(name, devices)
     validate_device_types(f"Topology '{name}'", devices)
     validate_topology_links(name, devices, data.get("links"))
+    validate_topology_interfaces(name, devices)
 
 
 def load_topology(name: str, lab_root: Path | None = None) -> dict:

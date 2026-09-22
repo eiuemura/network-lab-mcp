@@ -7,6 +7,8 @@ access-device, scenario, reference)."""
 
 from __future__ import annotations
 
+import pytest
+
 from network_lab_mcp.cli import grammar
 
 
@@ -199,12 +201,32 @@ def test_device_type_accepts_unambiguous_abbreviation():
     assert result_host.args == {"value": "host"}
 
 
-def test_device_type_rejects_ambiguous_abbreviation():
+def test_device_type_exact_ios_is_not_ambiguous_with_iosxr_iosxe():
+    """`ios` is a first-class exact type (Step 3.7) -- exact match must win
+    before abbreviation resolution, so it is never rejected merely because
+    it is also a prefix of `iosxr`/`iosxe`."""
     result = grammar.parse("device", "type ios")
+    assert result.ok
+    assert result.action == "device.set_type"
+    assert result.args["value"] == "ios"
+
+
+@pytest.mark.parametrize("prefix", ["i", "io"])
+def test_device_type_short_prefix_is_ambiguous_across_all_ios_variants(prefix):
+    result = grammar.parse("device", f"type {prefix}")
     assert not result.ok
     assert result.error.kind == "invalid"
     assert "Ambiguous" in result.error.detail
-    assert "iosxr" in result.error.detail and "iosxe" in result.error.detail
+    assert "iosxr" in result.error.detail and "iosxe" in result.error.detail and "ios" in result.error.detail
+
+
+def test_device_type_iosx_is_ambiguous_between_iosxr_and_iosxe_only():
+    """`iosx` does not prefix-match the exact `ios` token itself, so the
+    ambiguity is only between `iosxr`/`iosxe`."""
+    result = grammar.parse("device", "type iosx")
+    assert not result.ok
+    assert result.error.kind == "invalid"
+    assert "Matches: iosxe, iosxr." in result.error.detail
 
 
 def test_device_type_rejects_unknown_value():
@@ -282,7 +304,7 @@ def test_no_reference_completion_uses_candidate_references():
 def test_device_type_tab_completion_exposes_only_fixed_enum():
     ctx = make_ctx()
     result = grammar.complete("device", "type ", ctx)
-    assert set(result.candidates) == {"iosxr", "iosxe", "nxos", "host"}
+    assert set(result.candidates) == {"iosxr", "iosxe", "ios", "nxos", "host"}
 
     result_prefix = grammar.complete("access_device", "type n", ctx)
     assert result_prefix.candidates == ["nxos"]
@@ -420,6 +442,7 @@ def test_device_type_help_lists_fixed_enum_not_a_placeholder():
         assert values == {
             "iosxr": "Cisco IOS XR",
             "iosxe": "Cisco IOS XE",
+            "ios": "Cisco IOS",
             "nxos": "Cisco NX-OS",
             "host": "Generic host / endpoint",
         }

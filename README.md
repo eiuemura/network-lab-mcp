@@ -555,6 +555,9 @@ access-info), must be one of:
 
 - `iosxr` — Cisco IOS XR
 - `iosxe` — Cisco IOS XE
+- `ios` — Cisco IOS (Step 3.7: classic Cisco IOS is its own explicit type,
+  never a compatibility label under `iosxe` -- a device like a real-lab
+  PAGENT that actually runs classic IOS, not IOS XE, should be typed `ios`)
 - `nxos` — Cisco NX-OS
 - `host` — Generic host / endpoint
 
@@ -563,12 +566,15 @@ enum, applied by `lab.py` at topology and access-info load/write time (so a
 manually edited YAML file with an unsupported `type` is rejected in either
 place) and by the Step 2 CLI's `type` argument under both the topology
 device submode and the access-info device submode (so `type ?`/Tab only
-ever offer these four values, and an unambiguous abbreviation like `type
-nx` normalizes to `nxos`, or `type h` to `host`).
+ever offer these five values, and an unambiguous abbreviation like `type
+nx` normalizes to `nxos`, or `type h` to `host`; exact `ios` always wins
+over abbreviation resolution, so it is never rejected merely because it is
+also a prefix of `iosxr`/`iosxe` -- `type i`/`type io` are ambiguous across
+all three, and `type iosx` is ambiguous between just `iosxr`/`iosxe`).
 
 This enum is also how Step 3's `discover topology` selects its targets
-from the selected access-info's devices: `iosxr` (LLDP + CDP) and `iosxe`
-(CDP only) are supported Discovery targets (see
+from the selected access-info's devices: `iosxr` (LLDP + CDP), `iosxe`
+(LLDP + CDP), and `ios` (CDP only) are supported Discovery targets (see
 [Step 3](#step-3-ios-xr--lldp-topology-discovery) below); `host` is a
 normal registered topology node for which discovery is intentionally
 skipped, not an "unsupported type" error, and `nxos` is likewise skipped
@@ -963,11 +969,16 @@ add a new public MCP tool.
 
 ## Current limitations
 
-- Topology discovery (Step 3) supports IOS XR (LLDP + CDP) and IOS XE (CDP
-  only): no NX-OS discovery, no SNMP/NETCONF/RESTCONF, and no generic
+- Topology discovery (Step 3) supports IOS XR (LLDP + CDP), IOS XE (LLDP +
+  CDP), and classic IOS (CDP only -- no classic-IOS LLDP support in this
+  step): no NX-OS discovery, no SNMP/NETCONF/RESTCONF, and no generic
   discovery plugin framework. See
   ["Step 3: IOS XR + LLDP topology discovery"](#step-3-ios-xr--lldp-topology-discovery)
   below.
+- L3 topology enrichment (Step 3.7) deliberately stores only a directly
+  observed IPv4 address + VRF per interface: no prefix length, no
+  subnet/link inference from addresses, and no operational state
+  (up/down, holdtime, counters) is ever persisted into topology.
 - No automatic stale-link pruning after Discovery (definition deletion
   itself — `no access-info`/`topology`/`scenario`/`reference <name>` — is
   supported; see the CLI feature list above).
@@ -998,9 +1009,11 @@ add a new public MCP tool.
 
 ## Step 3: IOS XR + LLDP topology discovery
 
-Step 3's scope: **IOS XR devices (LLDP + CDP) and IOS XE devices (CDP
-only)**, direct SSH or existing single-hop ProxyJump (or telnet, for IOS
-XE — see ["CDP + IOS XE discovery"](#cdp--ios-xe-discovery-step-36)
+Step 3's scope: **IOS XR (LLDP + CDP), IOS XE (LLDP + CDP), and classic
+Cisco IOS (CDP only)**, direct SSH or existing single-hop ProxyJump (or
+telnet, for IOS XE/IOS — see
+["CDP + IOS XE discovery"](#cdp--ios-xe-discovery-step-36) and
+["Cisco IOS type + L3 enrichment"](#cisco-ios-type--l3-topology-enrichment-step-37)
 below), driven from the already-committed `active_access_info`. It never
 installs/activates a package, enables LLDP/CDP, or changes router
 configuration. NX-OS discovery, SNMP/NETCONF/RESTCONF, multi-hop jump
@@ -1014,7 +1027,10 @@ committed active_access_info
        terminal_open())
     -> per-type login + read-only collection: IOS XR gets `show version` /
        `show running-config` / `show lldp neighbors` / `show cdp
-       neighbors`; IOS XE gets `show version` / `show cdp neighbors` --
+       neighbors` / `show ipv4 interface brief`; IOS XE gets `show
+       version` / `show lldp neighbors` / `show cdp neighbors` / `show
+       vrf` / `show ip interface brief`; classic IOS gets `show version` /
+       `show cdp neighbors` / `show vrf` / `show ip interface brief` --
        captured to a persistent terminal log
     -> LLDP/CDP parsing -> normalized observations (each tagged with its
        own protocol)
@@ -1023,6 +1039,8 @@ committed active_access_info
     -> multi-protocol link reconciliation (reciprocal + cross-protocol
        dedup, parallel links preserved, conflicts reported, never
        silently resolved)
+    -> per-device L3 interface enrichment (additive, optional -- IPv4
+       address + VRF only, see below)
     -> topology candidate (same candidate/commit/clear system as any
        other topology edit)
     -> `show` / `show configuration` for review -> explicit `commit`
@@ -1030,28 +1048,30 @@ committed active_access_info
 
 - **`discover topology`** (global configuration mode only): reads
   *committed* `active_access_info` (never an uncommitted candidate
-  selection), selects its `type: iosxr` and `type: iosxe` devices
-  (`type: host` is skipped, not an error; `nxos` is unsupported and
-  skipped; zero supported targets of either kind is a hard failure), and
-  requires **all** of them to succeed -- any login/command/timeout
-  failure fails the whole operation before the prior candidate is
-  touched. On success it prints a Discovery summary and, if any neighbor
-  could not be resolved to a managed device, an explicit "Unresolved
-  neighbors" section (raw Device ID, observing device/interface, remote
-  port, capability) — then enters topology configuration mode with the
-  result applied as the candidate, exactly like a manually typed
-  `topology <name>`. It never commits and never changes `active_topology`
-  itself.
+  selection), selects its `type: iosxr`, `type: iosxe`, and `type: ios`
+  devices (`type: host` is skipped, not an error; `nxos` is unsupported
+  and skipped; zero supported targets of any kind is a hard failure), and
+  requires **all** of them to succeed for neighbor discovery -- any
+  login/command/timeout failure fails the whole operation before the
+  prior candidate is touched. L3 enrichment is the one exception: it is
+  additive/best-effort per device (see below), never a reason to fail the
+  whole operation. On success it prints a Discovery summary and, if any
+  neighbor could not be resolved to a managed device, an explicit
+  "Unresolved neighbors" section (raw Device ID, observing
+  device/interface, remote port, capability) — then enters topology
+  configuration mode with the result applied as the candidate, exactly
+  like a manually typed `topology <name>`. It never commits and never
+  changes `active_topology` itself.
 - **Managed vs. unresolved neighbors**: an LLDP or CDP neighbor is
   "managed" only if its Device ID resolves *uniquely* to one of the
-  selected access-info's own IOS XR/IOS XE devices (exact hostname match,
-  then case-normalized match, then a short-name/FQDN-style alias match —
-  never a substring search, never inferred from the logical device ID).
-  This is the same resolution rule for both protocols: a CDP Device ID is
-  commonly an FQDN (e.g. `ASR9001_R1.cisco.com`), resolved the same
-  short-name way an LLDP FQDN already was. Anything else (e.g. a real
-  external/unmanaged switch visible only via CDP) stays unresolved: it is
-  never invented as a managed topology device. Its raw evidence is
+  selected access-info's own IOS XR/IOS XE/IOS devices (exact hostname
+  match, then case-normalized match, then a short-name/FQDN-style alias
+  match — never a substring search, never inferred from the logical
+  device ID). This is the same resolution rule for both protocols: a CDP
+  Device ID is commonly an FQDN (e.g. `ASR9001_R1.cisco.com`), resolved
+  the same short-name way an LLDP FQDN already was. Anything else (e.g. a
+  real external/unmanaged switch visible only via CDP) stays unresolved:
+  it is never invented as a managed topology device. Its raw evidence is
   retained for the current `discover topology` run's own output and
   remains reviewable afterwards through the device's own persistent
   terminal log (`show logging <device-id> <log-file>`) — there is no
@@ -1156,11 +1176,13 @@ committed active_access_info
     Access-info:          test_lab
     IOS XR targets:       4
     IOS XE targets:       0
+    IOS targets:          0
     Connected:            4
     LLDP observations:    20
     CDP observations:     0
     Managed links:        8
     Unresolved neighbors: 2
+    L3 enrichment:        4/4 devices, 8 interfaces
     Topology candidate:   test_lab
 
   Unresolved neighbors:
@@ -1196,9 +1218,8 @@ committed active_access_info
 ### CDP + IOS XE discovery (Step 3.6)
 
 - **Protocol mapping is automatic, not a CLI choice**: `discover topology`
-  remains the only Discovery command. `iosxr` targets are collected via
-  LLDP *and* CDP; `iosxe` targets are collected via CDP only (no LLDP
-  support for IOS XE in this step). There is no `discover cdp` or
+  remains the only Discovery command; protocol/device-type selection
+  happens entirely internally. There is no `discover cdp` or
   protocol-selection flag.
 - **CDP parsing** handles both real row shapes: an IOS XR-style row
   entirely on one line, and an IOS/IOS XE-style row where a long/FQDN
@@ -1207,18 +1228,6 @@ committed active_access_info
   (or reporting zero neighbors) never fails that device's collection —
   unlike LLDP, which is expected to always be available on IOS XR and so
   still fails closed on totally unrecognized output.
-- **IOS XE login** is a separate, minimal login path
-  (`discovery._login_iosxe()`) from IOS XR's, since IOS XR's login waits
-  for an IOS-XR-specific prompt shape that classic IOS/IOS XE never
-  produces. It answers at most one optional `Username:` prompt and one
-  `Password:` prompt, reusing the exact same shared, already-tested
-  primitives as everywhere else (`terminal.wait_for_bootstrap_pattern()`,
-  `terminal.PASSWORD_PROMPT_RE`, `terminal.resolve_target_password_prompt()`)
-  — no separate telnet-specific password-attribution logic was needed: a
-  telnet device can never have a `jump_host` (the access-info schema
-  requires `transport: ssh` for that), so `resolve_target_password_prompt()`'s
-  existing "no jump host -> unambiguous" rule already answers a telnet
-  prompt correctly with zero telnet-specific code.
 - **Telnet is lab-only, not a secure transport.** It transmits everything,
   including the password, in the clear, with no server authentication —
   suitable only for isolated lab environments (e.g. a PAGENT-style device
@@ -1231,6 +1240,79 @@ committed active_access_info
   CDP neighbor (e.g. an unmanaged switch visible only via CDP) is retained
   as evidence and never auto-created as a topology device, exactly like an
   unmanaged LLDP neighbor.
+
+### Cisco IOS type + L3 topology enrichment (Step 3.7)
+
+- **`ios` is now a first-class device type**, distinct from `iosxe` --
+  classic Cisco IOS (e.g. a real-lab PAGENT running `Cisco IOS Software,
+  7200 Software`) is typed `ios`, never `iosxe` as a compatibility label.
+  See ["Device type enum"](#device-type-enum) above.
+- **Discovery protocol matrix**: `iosxr` (LLDP + CDP), `iosxe` (LLDP +
+  CDP, LLDP added in this step), `ios` (CDP only -- no classic-IOS LLDP
+  support in this step). `% LLDP is not enabled` on IOS XE means zero LLDP
+  observations, never a device failure -- CDP stays fully usable either
+  way. Its own shared, minimal login path
+  (`discovery._login_ios_style()`) is reused by both `iosxe` and `ios`
+  (renamed from Step 3.6's IOS-XE-only `_login_iosxe()` once classic IOS
+  started reusing the exact same login sequence).
+- **L3 interface enrichment**: additive topology context so Claude can
+  later reason about questions like "check reachability from each
+  router" -- for each interface with a directly observed IPv4 address,
+  topology may now store:
+
+  ```yaml
+  devices:
+    R1:
+      type: iosxr
+      interfaces:
+        GigabitEthernet0/0/0/2:
+          ipv4_address: 10.0.12.1
+          vrf: default
+    PAGENT:
+      type: ios
+      interfaces:
+        GigabitEthernet0/0.2000:
+          ipv4_address: 10.20.0.10
+          vrf: tgn1
+  ```
+
+  IOS XR collects this from `show ipv4 interface brief` directly; IOS
+  XE/IOS combine `show ip interface brief` (address) with `show vrf`
+  (non-default VRF membership -- an address-bearing interface not listed
+  in any named VRF is `default`), reconciling the two commands' interface
+  names through one small canonicalization helper (`Gi0/0` <->
+  `GigabitEthernet0/0`, etc.) rather than a second interface-normalization
+  mechanism.
+- **Deliberately excluded, on purpose**: no prefix length (only the
+  observed address value itself -- `/24`/`/30`/subnets are never
+  inferred), no operational state (`Up`/`Down`/holdtime/counters -- ask
+  the device directly for that instead), and no link is ever inferred
+  from address similarity -- links still come only from LLDP/CDP or an
+  explicit topology edit. `unassigned` becomes "no address", never the
+  literal string or a fabricated `0.0.0.0`. The same address may
+  legitimately repeat across different VRFs -- there is no global
+  IPv4-uniqueness check.
+- **Management address exclusion**: an observed address that exactly
+  matches the selected access-info's own connection address for that
+  device is never copied into topology L3 data (that's how MCP *reaches*
+  the device, not the lab's data-plane topology) -- the link, if that
+  interface happens to be one, is completely unaffected either way.
+- **Additive, never a Discovery blocker**: L3 enrichment failing or being
+  unavailable for one device (a genuinely unrecognized command response,
+  or a transport-level hang on the L3 commands specifically) only skips
+  that device's L3 enrichment, with a warning -- its LLDP/CDP-discovered
+  links, and every other device's L3 enrichment, are unaffected. An
+  interface not re-observed this run keeps whatever L3 data it already
+  had in the candidate (never silently erased just because this run
+  didn't touch it); an interface explicitly re-observed as `unassigned`
+  (or newly excluded as a management address) does have its own stale
+  entry removed.
+- **`get_active_topology()` needed no changes at all**: it already
+  returns the whole validated topology mapping verbatim, so committed
+  `interfaces`/`ipv4_address`/`vrf` data appears through the exact same
+  MCP-facing read Claude already uses -- no new MCP tool, no schema
+  change, and access-info/credentials remain structurally impossible to
+  reach through it either way.
 
 ## Step 3.3: multi-device parallel execution
 

@@ -58,6 +58,7 @@ def test_write_topology_rejects_access_fields(lab_root):
 def test_normalize_device_type_accepts_exact_and_case_insensitive():
     assert lab.normalize_device_type("iosxr") == "iosxr"
     assert lab.normalize_device_type("IOSXE") == "iosxe"
+    assert lab.normalize_device_type("Ios") == "ios"
     assert lab.normalize_device_type("NxOs") == "nxos"
     assert lab.normalize_device_type("host") == "host"
     assert lab.normalize_device_type("HOST") == "host"
@@ -69,9 +70,23 @@ def test_normalize_device_type_accepts_unambiguous_abbreviation():
     assert lab.normalize_device_type("h") == "host"
 
 
-def test_normalize_device_type_rejects_ambiguous_abbreviation():
+def test_normalize_device_type_exact_ios_wins_over_abbreviation_ambiguity():
+    """Step 3.7: exact match must win before abbreviation resolution --
+    `ios` is never rejected merely because it is also a prefix of
+    `iosxr`/`iosxe`."""
+    assert lab.normalize_device_type("ios") == "ios"
+
+
+@pytest.mark.parametrize("value", ["i", "io"])
+def test_normalize_device_type_rejects_ambiguous_short_prefix(value):
     with pytest.raises(lab.LabConfigError, match="Ambiguous"):
-        lab.normalize_device_type("ios")
+        lab.normalize_device_type(value)
+
+
+def test_normalize_device_type_rejects_ambiguous_iosx_between_iosxr_iosxe():
+    with pytest.raises(lab.LabConfigError, match="Ambiguous") as exc_info:
+        lab.normalize_device_type("iosx")
+    assert "iosxr" in str(exc_info.value) and "iosxe" in str(exc_info.value)
 
 
 def test_normalize_device_type_rejects_unknown_value():
@@ -80,7 +95,7 @@ def test_normalize_device_type_rejects_unknown_value():
 
 
 def test_load_topology_accepts_all_supported_device_types(lab_root):
-    for device_type in ("iosxr", "iosxe", "nxos", "host"):
+    for device_type in ("iosxr", "iosxe", "ios", "nxos", "host"):
         path = lab_root / "topologies" / f"types_{device_type}.yaml"
         path.write_text(
             f"name: types_{device_type}\ndevices:\n  R1:\n    type: {device_type}\nlinks: []\n",
@@ -143,6 +158,28 @@ def test_access_info_rejects_unsupported_device_type(lab_root):
     data = {"name": "bad", "devices": {"R1": {"type": "junos"}}}
     with pytest.raises(lab.LabConfigError, match="Invalid device type"):
         lab.write_access_info("bad", data, lab_root)
+
+
+@pytest.mark.parametrize("transport", ["ssh", "telnet"])
+def test_access_info_accepts_type_ios_over_ssh_or_telnet(lab_root, transport):
+    """Step 3.7: classic Cisco IOS is a first-class type, with the same
+    structural rules (credential/transport/port schema unchanged) as
+    every other network-device type -- sanitized fake credentials only,
+    never real PAGENT access-info content."""
+    data = {
+        "name": "with_ios",
+        "devices": {
+            "TEST-IOS": {
+                "type": "ios",
+                "address": "192.0.2.99",
+                "transport": transport,
+                "username": "fake-user",
+                "password": "fake-password",
+            }
+        },
+    }
+    lab.write_access_info("with_ios", data, lab_root)
+    assert lab.load_access_info("with_ios", lab_root)["devices"]["TEST-IOS"]["type"] == "ios"
     assert not (lab_root / "access-info" / "bad.yaml").exists()
 
 

@@ -74,6 +74,10 @@ def _fake_iosxe_collect_pagent(device_id, cfg):
     return {
         "hostname": "PAGENT",
         "show_version": "x",
+        # Step 3.7: IOS XE now also collects LLDP -- disabled here (the
+        # real, documented Cisco text), which must mean zero LLDP
+        # observations, never a device/collection failure.
+        "show_lldp_neighbors": "% LLDP is not enabled\n",
         "show_cdp_neighbors": f"{cdp_header}\n{row_r1}\n{row_r2}\n",
     }
 

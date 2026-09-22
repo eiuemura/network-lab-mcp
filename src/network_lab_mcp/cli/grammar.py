@@ -943,7 +943,7 @@ def _build_device_root() -> Node:
         "Set the device type",
         validate=validate_device_type,
         provider=provide_device_types,
-        hint="<iosxr|iosxe|nxos|host>",
+        hint="<iosxr|iosxe|ios|nxos|host>",
         enumerate_when_empty=True,
         value_help=dict(lab.DEVICE_TYPES),
     )
@@ -1071,7 +1071,7 @@ def _build_access_device_root() -> Node:
         "access_device.set_type",
         validate=validate_device_type,
         provider=provide_device_types,
-        hint="<iosxr|iosxe|nxos|host>",
+        hint="<iosxr|iosxe|ios|nxos|host>",
         enumerate_when_empty=True,
         value_help=dict(lab.DEVICE_TYPES),
     )

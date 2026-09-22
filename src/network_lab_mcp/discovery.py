@@ -1,10 +1,14 @@
-"""Step 3 scope: IOS XR + IOS XE topology discovery over LLDP and CDP.
+"""Step 3 scope: IOS XR + IOS XE + classic IOS topology discovery over LLDP
+and CDP, enriched with stable Layer-3 interface context (IPv4 address +
+VRF).
 
     committed active_access_info
         -> private bootstrap connection (terminal.open_bootstrap_terminal)
         -> per-type login + read-only collection (this module's minimal
-           command runner): IOS XR gets LLDP + CDP; IOS XE gets CDP only
-           (Step 3.6 Section 3 -- IOS XE has no LLDP support in this step)
+           command runner): IOS XR gets LLDP + CDP + `show ipv4 interface
+           brief`; IOS XE gets LLDP + CDP + `show vrf`/`show ip interface
+           brief`; classic IOS gets CDP + `show vrf`/`show ip interface
+           brief` (Step 3.7 Section 10 -- no classic-IOS LLDP in this step)
         -> normalized neighbor observations (parse_lldp_neighbors /
            parse_cdp_neighbors), each tagged with its own `source`
         -> identity resolution (resolve_remote_identity, protocol-agnostic)
@@ -13,6 +17,9 @@
            ends) becomes exactly one link; a local interface where LLDP and
            CDP disagree about the neighbor is reported as a conflict
            instead of silently picking one
+        -> per-device Layer-3 interface enrichment (optional, additive --
+           see "L3 topology enrichment" below): ipv4_address + vrf only,
+           never a prefix length, never operational (up/down) state
         -> DiscoveryResult (in-memory only)
 
 `discover_topology()` is the only entry point cli/main.py's `discover
@@ -22,15 +29,28 @@ file -- the caller (cli/config.py) is responsible for turning a
 DiscoveryResult into a topology *candidate*, exactly like any other
 topology edit, and nothing here special-cases commit/clear/root/exit/end.
 
-IOS XE login uses whatever transport the device's access-info specifies
-(ssh or telnet). Telnet is unauthenticated-in-transit and unencrypted --
-suitable only for isolated lab environments, never presented as a secure
-transport (see README.md/docs/architecture.md).
+IOS XE / classic IOS login uses whatever transport the device's
+access-info specifies (ssh or telnet). Telnet is unauthenticated-in-transit
+and unencrypted -- suitable only for isolated lab environments, never
+presented as a secure transport (see README.md/docs/architecture.md).
+
+L3 topology enrichment (Step 3.7) is deliberately additive, never a
+Discovery blocker: neighbor discovery (LLDP/CDP) remains the primary,
+required mechanism; if a device's optional L3 command(s) fail (transport
+timeout or unrecognized output), that one device's L3 enrichment is
+skipped (with a warning) while its LLDP/CDP-discovered links are kept.
+Only a stable, directly observed IPv4 address + VRF are stored -- never a
+prefix length, never inferred subnets, and never a link inferred from
+address similarity (links come from LLDP/CDP or an explicit topology edit
+only). A management-network address (the same address the selected
+access-info uses to *reach* that device) is deliberately excluded from
+topology L3 data -- see _build_device_interface_fields().
 
 Explicitly out of scope: NX-OS discovery, multi-hop jump hosts (telnet
 devices cannot have a jump_host at all -- see lab.validate_device_jump_
 host_references()), SNMP/NETCONF/RESTCONF, automatic topology activation/
-commit, and a generic discovery/plugin framework."""
+commit, IPv4 prefix-length/subnet inference, operational-state persistence,
+and a generic discovery/plugin framework."""
 
 from __future__ import annotations
 
@@ -62,20 +82,30 @@ _IOSXR_PROMPT_RE = re.compile(r"RP/\S+/CPU\d+:(?P<hostname>[^#\s]+)#\s*$", re.MU
 # place that recognizes it.
 _LOGIN_WAIT_RE = re.compile(f"(?:{terminal.PASSWORD_PROMPT_RE.pattern})|(?:{_IOSXR_PROMPT_RE.pattern})")
 
-# IOS XE (classic-IOS-style) exec prompt, e.g. "PAGENT#" or "PAGENT>" --
-# unlike IOS XR's "RP/.../CPU0:hostname#" shape, IOS XE's own prompt *is*
-# just the hostname, so the whole line must be exactly that (never matched
-# against a mid-table CDP row, which always has other fields after the
-# device ID on the same line -- see parse_cdp_neighbors()). A telnet/console
-# login may also show a "Username:" prompt before "Password:" (Step 3.6
-# Section 13); OpenSSH's own password prompt (terminal.PASSWORD_PROMPT_RE)
-# is reused unchanged since it is transport-agnostic text matching, not an
-# SSH-specific mechanism.
-_IOSXE_PROMPT_RE = re.compile(r"^(?P<hostname>[\w.-]+)[#>]\s*$", re.MULTILINE)
+# Classic-IOS-style exec prompt, e.g. "PAGENT#" or "PAGENT>" -- shared by
+# IOS XE *and* classic IOS (Step 3.7: the same login/prompt shape applies
+# to both, so this is deliberately not named "_IOSXE_..." even though it
+# was introduced for IOS XE in Step 3.6). Unlike IOS XR's
+# "RP/.../CPU0:hostname#" shape, this prompt *is* just the hostname, so the
+# whole line must be exactly that (never matched against a mid-table CDP
+# row, which always has other fields after the device ID on the same line
+# -- see parse_cdp_neighbors()). A telnet/console login may also show a
+# "Username:" prompt before "Password:" (Step 3.6 Section 13); OpenSSH's
+# own password prompt (terminal.PASSWORD_PROMPT_RE) is reused unchanged
+# since it is transport-agnostic text matching, not an SSH-specific
+# mechanism.
+_IOS_STYLE_PROMPT_RE = re.compile(r"^(?P<hostname>[\w.-]+)[#>]\s*$", re.MULTILINE)
 _USERNAME_PROMPT_RE = re.compile(r"[Uu]sername:\s*$", re.MULTILINE)
-_IOSXE_LOGIN_WAIT_RE = re.compile(
-    f"(?:{_USERNAME_PROMPT_RE.pattern})|(?:{terminal.PASSWORD_PROMPT_RE.pattern})|(?:{_IOSXE_PROMPT_RE.pattern})"
+_IOS_STYLE_LOGIN_WAIT_RE = re.compile(
+    f"(?:{_USERNAME_PROMPT_RE.pattern})|(?:{terminal.PASSWORD_PROMPT_RE.pattern})|(?:{_IOS_STYLE_PROMPT_RE.pattern})"
 )
+
+# Real, documented Cisco text for "the command ran, but LLDP is
+# administratively disabled" (Step 3.7 Section 13/56) -- this is NOT a
+# transport/command failure (the prompt returns normally), and it is NOT a
+# parser failure either; it must mean "zero LLDP observations", the same
+# way parse_cdp_neighbors() already treats CDP-unavailable leniently.
+_LLDP_UNAVAILABLE_RE = re.compile(r"LLDP is not enabled", re.IGNORECASE)
 
 
 class DiscoveryError(Exception):
@@ -140,22 +170,27 @@ def _login(device_id: str, device_config: dict) -> str:
     return match.group("hostname")
 
 
-def _login_iosxe(device_id: str, device_config: dict) -> str:
-    """IOS XE equivalent of _login(): the same bounded, at-most-one-
-    password-send flow, but for classic-IOS-style login instead of IOS
-    XR's. Works over either transport the device's access-info specifies
-    (ssh or telnet, both already handled uniformly by terminal.
-    open_bootstrap_terminal() -- see _build_transport_command()). A telnet
-    device structurally cannot have a jump_host_config (lab.py's schema
-    validation requires transport 'ssh' for that), so
-    resolve_target_password_prompt()'s "no jump_host_config -> unambiguous"
-    short-circuit already answers a telnet password prompt correctly with
-    no telnet-specific attribution logic needed.
+def _login_ios_style(device_id: str, device_config: dict) -> str:
+    """Shared classic-IOS-style login for both IOS XE *and* classic IOS
+    (Step 3.7 Section 11 -- renamed from Step 3.6's IOS-XE-only
+    `_login_iosxe()`, since the same login sequence genuinely applies to
+    both and keeping the old name would now be misleading, not because the
+    logic itself needed to change). The same bounded, at-most-one-
+    password-send flow as _login(), but for classic-IOS-style login
+    instead of IOS XR's. Works over either transport the device's
+    access-info specifies (ssh or telnet, both already handled uniformly
+    by terminal.open_bootstrap_terminal() -- see
+    _build_transport_command()). A telnet device structurally cannot have
+    a jump_host_config (lab.py's schema validation requires transport
+    'ssh' for that), so resolve_target_password_prompt()'s "no
+    jump_host_config -> unambiguous" short-circuit already answers a
+    telnet password prompt correctly with no telnet-specific attribution
+    logic needed.
 
     Also answers at most one optional "Username:" prompt, which only some
-    IOS XE login configurations show before "Password:"."""
+    IOS/IOS XE login configurations show before "Password:"."""
     terminal.open_bootstrap_terminal(device_id, device_config)
-    text = terminal.wait_for_bootstrap_pattern(device_id, _IOSXE_LOGIN_WAIT_RE, LOGIN_TIMEOUT_SECONDS)
+    text = terminal.wait_for_bootstrap_pattern(device_id, _IOS_STYLE_LOGIN_WAIT_RE, LOGIN_TIMEOUT_SECONDS)
     last_line = _last_nonblank_line(text)
     if _USERNAME_PROMPT_RE.search(last_line):
         username = device_config.get("username")
@@ -166,16 +201,16 @@ def _login_iosxe(device_id: str, device_config: dict) -> str:
             )
         terminal.send_to_bootstrap(device_id, str(username), None, True)
         text = terminal.wait_for_bootstrap_pattern(
-            device_id, _IOSXE_LOGIN_WAIT_RE, LOGIN_TIMEOUT_SECONDS, baseline_text=text
+            device_id, _IOS_STYLE_LOGIN_WAIT_RE, LOGIN_TIMEOUT_SECONDS, baseline_text=text
         )
         last_line = _last_nonblank_line(text)
     if terminal.PASSWORD_PROMPT_RE.search(last_line):
         password = _resolve_login_password(device_id, device_config, last_line)
         terminal.send_to_bootstrap(device_id, password, None, True)
-        text = terminal.wait_for_bootstrap_pattern(device_id, _IOSXE_PROMPT_RE, LOGIN_TIMEOUT_SECONDS)
-    match = _IOSXE_PROMPT_RE.search(_last_nonblank_line(text))
+        text = terminal.wait_for_bootstrap_pattern(device_id, _IOS_STYLE_PROMPT_RE, LOGIN_TIMEOUT_SECONDS)
+    match = _IOS_STYLE_PROMPT_RE.search(_last_nonblank_line(text))
     if not match:
-        raise DiscoveryError(f"Device '{device_id}': did not reach an IOS XE exec prompt after login.")
+        raise DiscoveryError(f"Device '{device_id}': did not reach an exec prompt after login.")
     return match.group("hostname")
 
 
@@ -218,13 +253,33 @@ def _run_command(
     return _extract_command_output(full_text, command_text, prompt_re)
 
 
+def _run_command_tolerant(device_id: str, command_text: str, prompt_re: re.Pattern) -> str:
+    """Like _run_command(), but for the *optional* L3 enrichment commands
+    only (Step 3.7 Section 38): a transport-level failure (the prompt never
+    returns -- e.g. an unsupported command that hangs rather than
+    returning an error line, or a genuinely broken session) must not fail
+    the whole device's collection just because L3 enrichment is best-
+    effort. Returns "" on that failure instead of raising -- an empty
+    string never looks like a recognized L3 table header, so the caller's
+    own L3 parser will treat it as "L3 unavailable/unparseable for this
+    device" (a warning, not a DiscoveryError) exactly like any other
+    unrecognized L3 output. This is deliberately NOT used for LLDP/CDP or
+    any of the existing required commands -- those keep failing the whole
+    device closed, unchanged from Step 3.6."""
+    try:
+        return _run_command(device_id, command_text, prompt_re)
+    except terminal.TerminalError:
+        return ""
+
+
 def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
     """IOS XR collection: log in, disable pagination, and collect the
     read-only commands -- `show version`/`show running-config` (unused
-    downstream today, kept for diagnostic parity/future use) plus both
+    downstream today, kept for diagnostic parity/future use), both
     neighbor-discovery protocols (Step 3.6 Section 3: IOS XR gets LLDP and
-    CDP). CDP being unavailable/disabled is not a collection failure (see
-    parse_cdp_neighbors()'s own lenient handling) -- only a login, other
+    CDP), and `show ipv4 interface brief` (Step 3.7 L3 enrichment,
+    collected tolerantly -- see _run_command_tolerant()). CDP/L3 being
+    unavailable is not a collection failure -- only a login, LLDP/CDP
     command, or timeout failure is (DiscoveryError). The caller is
     responsible for closing the bootstrap session either way."""
     try:
@@ -237,6 +292,7 @@ def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
         show_running_config = _run_command(device_id, "show running-config")
         show_lldp_neighbors = _run_command(device_id, "show lldp neighbors")
         show_cdp_neighbors = _run_command(device_id, "show cdp neighbors")
+        show_ipv4_interface_brief = _run_command_tolerant(device_id, "show ipv4 interface brief", _IOSXR_PROMPT_RE)
     except terminal.TerminalError as exc:
         raise DiscoveryError(f"Device '{device_id}': {exc}") from exc
     return {
@@ -245,26 +301,62 @@ def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
         "show_running_config": show_running_config,
         "show_lldp_neighbors": show_lldp_neighbors,
         "show_cdp_neighbors": show_cdp_neighbors,
+        "show_ipv4_interface_brief": show_ipv4_interface_brief,
     }
 
 
 def _bootstrap_collect_iosxe(device_id: str, device_config: dict) -> dict:
     """IOS XE collection: log in and collect `show version` (diagnostic
-    parity with the IOS XR path) plus `show cdp neighbors` -- IOS XE has no
-    LLDP support in this step (Step 3.6 Section 3), and `show running-
-    config` is skipped since it is unused downstream for IOS XR too (kept
-    minimal per Section 11's "collect at minimum" framing). Fails closed
-    (DiscoveryError) on any login, command, or timeout failure."""
+    parity with the IOS XR path), both neighbor-discovery protocols (Step
+    3.7 Section 13: IOS XE now also gets LLDP, in addition to CDP --
+    `% LLDP is not enabled` is handled by the caller, not here, exactly
+    like CDP-unavailable already was), and the L3 enrichment commands
+    `show vrf` + `show ip interface brief` (collected tolerantly -- see
+    _run_command_tolerant()). `show running-config` is skipped since it is
+    unused downstream for IOS XR too (kept minimal per Section 12's
+    "collect at minimum" framing). Fails closed (DiscoveryError) on any
+    login, LLDP/CDP command, or timeout failure."""
     try:
-        hostname = _login_iosxe(device_id, device_config)
-        show_version = _run_command(device_id, "show version", _IOSXE_PROMPT_RE)
-        show_cdp_neighbors = _run_command(device_id, "show cdp neighbors", _IOSXE_PROMPT_RE)
+        hostname = _login_ios_style(device_id, device_config)
+        show_version = _run_command(device_id, "show version", _IOS_STYLE_PROMPT_RE)
+        show_lldp_neighbors = _run_command(device_id, "show lldp neighbors", _IOS_STYLE_PROMPT_RE)
+        show_cdp_neighbors = _run_command(device_id, "show cdp neighbors", _IOS_STYLE_PROMPT_RE)
+        show_vrf = _run_command_tolerant(device_id, "show vrf", _IOS_STYLE_PROMPT_RE)
+        show_ip_interface_brief = _run_command_tolerant(device_id, "show ip interface brief", _IOS_STYLE_PROMPT_RE)
+    except terminal.TerminalError as exc:
+        raise DiscoveryError(f"Device '{device_id}': {exc}") from exc
+    return {
+        "hostname": hostname,
+        "show_version": show_version,
+        "show_lldp_neighbors": show_lldp_neighbors,
+        "show_cdp_neighbors": show_cdp_neighbors,
+        "show_vrf": show_vrf,
+        "show_ip_interface_brief": show_ip_interface_brief,
+    }
+
+
+def _bootstrap_collect_ios(device_id: str, device_config: dict) -> dict:
+    """Classic IOS collection (Step 3.7 Section 12, deliberately minimal --
+    preserving the same "collect at minimum" principle Step 3.6 used for
+    IOS XE): log in, `show version`, `show cdp neighbors` (classic IOS has
+    no LLDP support in this step -- Section 10), and the L3 enrichment
+    commands `show vrf` + `show ip interface brief` (tolerant). No `show
+    running-config` (unused downstream). Fails closed (DiscoveryError) on
+    any login, CDP command, or timeout failure."""
+    try:
+        hostname = _login_ios_style(device_id, device_config)
+        show_version = _run_command(device_id, "show version", _IOS_STYLE_PROMPT_RE)
+        show_cdp_neighbors = _run_command(device_id, "show cdp neighbors", _IOS_STYLE_PROMPT_RE)
+        show_vrf = _run_command_tolerant(device_id, "show vrf", _IOS_STYLE_PROMPT_RE)
+        show_ip_interface_brief = _run_command_tolerant(device_id, "show ip interface brief", _IOS_STYLE_PROMPT_RE)
     except terminal.TerminalError as exc:
         raise DiscoveryError(f"Device '{device_id}': {exc}") from exc
     return {
         "hostname": hostname,
         "show_version": show_version,
         "show_cdp_neighbors": show_cdp_neighbors,
+        "show_vrf": show_vrf,
+        "show_ip_interface_brief": show_ip_interface_brief,
     }
 
 
@@ -526,6 +618,244 @@ def parse_cdp_neighbors(raw_text: str, local_device_id: str) -> list[NeighborObs
 
 
 # --------------------------------------------------------------------------
+# L3 interface enrichment (Step 3.7): ipv4_address + vrf only, per
+# interface -- additive topology context, never a Discovery blocker, never
+# a link/connectivity source. See the module docstring's "L3 topology
+# enrichment" paragraph for the overall design.
+# --------------------------------------------------------------------------
+
+
+class L3ParseError(Exception):
+    """Raised when an L3 enrichment command's output cannot be recognized
+    at all (its own table header is missing) -- the fail-closed signal
+    that keeps a failed/unsupported command from being silently treated as
+    "zero interfaces". Caught by discover_topology() and turned into a
+    per-device skip + warning (Section 38/39), never a whole-Discovery
+    failure -- unlike LldpParseError, which still fails the whole
+    operation."""
+
+
+# A conservative, deliberately small set of known Cisco interface-name
+# abbreviations, each mapped to its one canonical full name (Step 3.7
+# Section 32) -- used only to let `show vrf`'s (possibly abbreviated)
+# Interfaces column match `show ip interface brief`'s (full-name) Interface
+# column for the same physical interface. An unrecognized prefix is left
+# completely unchanged (never guessed) -- this is intentionally not a
+# general-purpose interface-alias framework, just the smallest lookup
+# needed to reconcile these two specific commands' output.
+_INTERFACE_TYPE_ALIASES: dict[str, str] = {
+    "gi": "GigabitEthernet",
+    "gig": "GigabitEthernet",
+    "gigabitethernet": "GigabitEthernet",
+    "fa": "FastEthernet",
+    "fas": "FastEthernet",
+    "fastethernet": "FastEthernet",
+    "te": "TenGigabitEthernet",
+    "tengigabitethernet": "TenGigabitEthernet",
+    "fo": "FortyGigabitEthernet",
+    "fortygigabitethernet": "FortyGigabitEthernet",
+    "hu": "HundredGigE",
+    "hundredgige": "HundredGigE",
+    "tw": "TwoGigabitEthernet",
+    "twogigabitethernet": "TwoGigabitEthernet",
+    "et": "Ethernet",
+    "eth": "Ethernet",
+    "ethernet": "Ethernet",
+    "vl": "Vlan",
+    "vlan": "Vlan",
+    "lo": "Loopback",
+    "loopback": "Loopback",
+    "po": "Port-channel",
+    "port-channel": "Port-channel",
+    "se": "Serial",
+    "serial": "Serial",
+    "bv": "BVI",
+    "bvi": "BVI",
+    "tu": "Tunnel",
+    "tunnel": "Tunnel",
+}
+_INTERFACE_PREFIX_RE = re.compile(r"^([A-Za-z-]+)(.*)$")
+
+_DEFAULT_VRF = "default"
+
+
+def _canonicalize_interface_name(raw: str) -> str:
+    """Expand a KNOWN interface-type abbreviation (e.g. "Gi0/0",
+    "Fas 0/0") to its one canonical full name ("GigabitEthernet0/0",
+    "FastEthernet0/0"), preserving the slot/port/sub-interface suffix
+    (including a dotted sub-interface, e.g. ".2000") unchanged. An
+    embedded space (as CDP sometimes renders, e.g. "Fas 0/0") is removed
+    only as part of a *recognized* rewrite. An unrecognized prefix is
+    returned completely unchanged (including any embedded space) -- never
+    over-normalized."""
+    cleaned = raw.strip().replace(" ", "")
+    match = _INTERFACE_PREFIX_RE.match(cleaned)
+    if not match:
+        return raw.strip()
+    prefix, rest = match.group(1), match.group(2)
+    canonical = _INTERFACE_TYPE_ALIASES.get(prefix.lower())
+    if canonical is None:
+        return raw.strip()
+    return f"{canonical}{rest}"
+
+
+def parse_ipv4_interface_brief(raw_text: str) -> dict[str, tuple[str | None, str]]:
+    """Parse IOS XR's `show ipv4 interface brief` into
+    {interface: (ipv4_address_or_None, vrf_name)}. Only Interface/
+    IP-Address/Vrf-Name are read; Status/Protocol are ignored entirely
+    (Step 3.7 Section 29) regardless of how many words they take (e.g.
+    "Shutdown" vs. a multi-word status) -- Vrf-Name is always the *last*
+    whitespace token and IP-Address is always the second, which is robust
+    to that variation without depending on a fixed token count.
+
+    "unassigned" becomes None (Section 35) -- never the literal string,
+    never a fabricated address. Raises L3ParseError only when the
+    "Interface ... IP-Address ... Vrf-Name" header itself is never found
+    (e.g. an unsupported/mistyped command) -- a malformed individual row is
+    skipped, never fatal, and a header-found-but-zero-rows response
+    returns an empty dict successfully."""
+    interfaces: dict[str, tuple[str | None, str]] = {}
+    in_table = False
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not in_table:
+            if "Interface" in line and "IP-Address" in line and "Vrf-Name" in line:
+                in_table = True
+            continue
+        if not line:
+            break
+        tokens = line.split()
+        if len(tokens) < 4:
+            continue  # malformed row -- skip
+        interface_name, ip_address = tokens[0], tokens[1]
+        vrf_name = tokens[-1]
+        interfaces[interface_name] = (None if ip_address.lower() == "unassigned" else ip_address, vrf_name)
+    if not in_table:
+        raise L3ParseError(
+            "'show ipv4 interface brief' output was not recognized as valid IOS XR structure "
+            "(no 'Interface ... IP-Address ... Vrf-Name' table header found)."
+        )
+    return interfaces
+
+
+def parse_ip_interface_brief(raw_text: str) -> dict[str, str | None]:
+    """Parse classic IOS / IOS XE's `show ip interface brief` into
+    {canonical_interface_name: ipv4_address_or_None}. Only Interface/
+    IP-Address are read (the first two whitespace tokens); OK?/Method/
+    Status/Protocol are ignored entirely regardless of their own word
+    count (Status can legitimately be the two-word "administratively
+    down", which would otherwise make a fixed-token-count split brittle --
+    never needing to parse it at all sidesteps that entirely).
+
+    "unassigned" becomes None (Section 35). Raises L3ParseError only when
+    the "Interface ... IP-Address" header itself is never found."""
+    interfaces: dict[str, str | None] = {}
+    in_table = False
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not in_table:
+            if "Interface" in line and "IP-Address" in line:
+                in_table = True
+            continue
+        if not line:
+            break
+        tokens = line.split()
+        if len(tokens) < 2:
+            continue  # malformed row -- skip
+        interface_name = _canonicalize_interface_name(tokens[0])
+        ip_address = tokens[1]
+        interfaces[interface_name] = None if ip_address.lower() == "unassigned" else ip_address
+    if not in_table:
+        raise L3ParseError(
+            "'show ip interface brief' output was not recognized as valid structure "
+            "(no 'Interface ... IP-Address' table header found)."
+        )
+    return interfaces
+
+
+def parse_show_vrf(raw_text: str) -> dict[str, str]:
+    """Parse classic IOS / IOS XE's `show vrf` into
+    {canonical_interface_name: vrf_name} -- only non-default VRF
+    membership; an interface never listed here is assumed `default` by the
+    caller (Section 32/36), never guessed here.
+
+    The Name/Default-RD/Protocols/Interfaces columns are not fixed-width
+    (e.g. "<not set>" is itself two whitespace tokens), so each row is read
+    as: VRF name = the *first* token, interface = the *last* token,
+    tolerating any number of tokens in between. Some IOS versions wrap a
+    VRF's additional interfaces onto their own continuation line with the
+    VRF-name column blank -- recognized here as a line containing *only*
+    an interface token, associated with the immediately preceding VRF
+    name.
+
+    Raises L3ParseError only when the "Name ... Interfaces" header itself
+    is never found; a header-found-but-zero-non-default-VRF response
+    returns an empty dict successfully (this is the common case: most
+    interfaces belong to the default VRF, which never appears here)."""
+    vrf_by_interface: dict[str, str] = {}
+    in_table = False
+    pending_vrf_name: str | None = None
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not in_table:
+            if "Name" in line and "Interfaces" in line:
+                in_table = True
+            continue
+        if not line:
+            break
+        tokens = line.split()
+        if len(tokens) == 1:
+            if pending_vrf_name is not None:
+                vrf_by_interface[_canonicalize_interface_name(tokens[0])] = pending_vrf_name
+            continue
+        vrf_name = tokens[0]
+        interface_name = tokens[-1]
+        vrf_by_interface[_canonicalize_interface_name(interface_name)] = vrf_name
+        pending_vrf_name = vrf_name
+    if not in_table:
+        raise L3ParseError(
+            "'show vrf' output was not recognized as valid structure (no 'Name ... Interfaces' "
+            "table header found)."
+        )
+    return vrf_by_interface
+
+
+def _combine_ios_style_l3(
+    ip_brief: dict[str, str | None], vrf_by_interface: dict[str, str]
+) -> dict[str, tuple[str | None, str]]:
+    """Combine classic IOS/IOS XE's two required L3 sources (Section 31):
+    every interface `show ip interface brief` reports, paired with its VRF
+    from `show vrf` if listed there, else the literal `default` (Section
+    36) -- never guessed as default when `show vrf` itself failed to
+    parse (the caller only reaches this once *both* sources parsed
+    successfully; see discover_topology())."""
+    return {name: (ipv4, vrf_by_interface.get(name, _DEFAULT_VRF)) for name, ipv4 in ip_brief.items()}
+
+
+def _build_device_interface_fields(
+    raw_l3: dict[str, tuple[str | None, str]], management_address: str | None
+) -> dict[str, dict | None]:
+    """Turn one device's raw (interface -> (ipv4_or_None, vrf)) observation
+    into the topology candidate's own {interface: {ipv4_address, vrf} |
+    None} shape (Section 40/41): a real, non-management-address
+    observation becomes a dict to set; an explicitly-observed `unassigned`
+    interface, or one whose address matches the access-info connection
+    address for this same device (Section 27 -- never persist the
+    management address into topology L3 data), becomes an explicit `None`
+    removal signal so build_topology_devices_and_links() can safely drop
+    any stale prior value for that same interface without erasing
+    anything else."""
+    fields: dict[str, dict | None] = {}
+    for raw_name, (ipv4_address, vrf) in raw_l3.items():
+        canonical = _canonicalize_interface_name(raw_name)
+        if ipv4_address is None or ipv4_address == management_address:
+            fields[canonical] = None
+        else:
+            fields[canonical] = {"ipv4_address": ipv4_address, "vrf": vrf}
+    return fields
+
+
+# --------------------------------------------------------------------------
 # Identity resolution + link reconciliation
 # --------------------------------------------------------------------------
 
@@ -686,6 +1016,10 @@ class DiscoveryResult:
     observation_count: int
     iosxe_target_count: int = 0
     cdp_observation_count: int = 0
+    ios_target_count: int = 0
+    l3_enriched_device_count: int = 0
+    l3_interface_count: int = 0
+    l3_warnings: list[str] = field(default_factory=list)
     devices: dict[str, dict] = field(default_factory=dict)
     managed_links: list[ManagedLink] = field(default_factory=list)
     unresolved: list[UnresolvedNeighbor] = field(default_factory=list)
@@ -728,6 +1062,10 @@ def _select_iosxe_targets(access_data: dict) -> dict[str, dict]:
     return _select_targets_by_type(access_data, "iosxe")
 
 
+def _select_ios_targets(access_data: dict) -> dict[str, dict]:
+    return _select_targets_by_type(access_data, "ios")
+
+
 def discover_topology(lab_root=None) -> DiscoveryResult:
     """Run the full Discovery flow against committed running-config's
     selected access-info and return an in-memory DiscoveryResult.
@@ -739,10 +1077,12 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
     (DiscoveryError) before any bootstrap session is even considered for
     reconciliation -- there is no partial result.
 
-    Supported targets (Step 3.6 Section 3): IOS XR (LLDP + CDP) and IOS XE
-    (CDP only -- no LLDP support in this step). `nxos`/`host` and any
+    Supported targets (Step 3.7 Section 3/10): IOS XR (LLDP + CDP), IOS XE
+    (LLDP + CDP), and classic IOS (CDP only). `nxos`/`host` and any
     unrecognized type are silently skipped, not failed; only zero supported
-    targets of *either* kind fails."""
+    targets of *any* kind fails. L3 enrichment (IPv4 + VRF context) is
+    collected per device on top of neighbor discovery, additively -- see
+    the module docstring."""
     lab_root = lab_root or lab.find_lab_root()
     access_info_name = resolve_default_topology_name(lab_root)
     if not lab.access_info_exists(access_info_name, lab_root):
@@ -751,9 +1091,12 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
 
     iosxr_targets = _select_iosxr_targets(access_data)
     iosxe_targets = _select_iosxe_targets(access_data)
-    if not iosxr_targets and not iosxe_targets:
-        raise DiscoveryError(f"No supported IOS XR or IOS XE devices found in access-info '{access_info_name}'.")
-    all_targets: dict[str, dict] = {**iosxr_targets, **iosxe_targets}
+    ios_targets = _select_ios_targets(access_data)
+    if not iosxr_targets and not iosxe_targets and not ios_targets:
+        raise DiscoveryError(
+            f"No supported IOS XR, IOS XE, or IOS devices found in access-info '{access_info_name}'."
+        )
+    all_targets: dict[str, dict] = {**iosxr_targets, **iosxe_targets, **ios_targets}
 
     # Step 3.3: one device's collection (login + its own read-only commands)
     # still runs strictly sequentially within its own worker -- only
@@ -775,6 +1118,12 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
                 {
                     device_id: executor.submit(_bootstrap_collect_iosxe, device_id, device_cfg)
                     for device_id, device_cfg in iosxe_targets.items()
+                }
+            )
+            futures.update(
+                {
+                    device_id: executor.submit(_bootstrap_collect_ios, device_id, device_cfg)
+                    for device_id, device_cfg in ios_targets.items()
                 }
             )
         # The `with` block above only exits once every submitted future has
@@ -823,6 +1172,22 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
                 raise DiscoveryError(str(exc)) from exc
             observation_count += len(lldp_observations)
             observations.extend(lldp_observations)
+        elif device_id in iosxe_targets:
+            # Step 3.7 Section 13/15: "% LLDP is not enabled" (or any other
+            # unrecognized response) means zero LLDP observations, not a
+            # device/parser failure -- IOS XE's LLDP support is optional/
+            # commonly disabled, unlike IOS XR's. Bypassing the strict
+            # parser entirely for this known signal keeps
+            # parse_lldp_neighbors() itself, and IOS XR's own still-strict
+            # behavior, completely unchanged.
+            lldp_text = info.get("show_lldp_neighbors", "")
+            if not _LLDP_UNAVAILABLE_RE.search(lldp_text):
+                try:
+                    lldp_observations = parse_lldp_neighbors(lldp_text, device_id)
+                except LldpParseError as exc:
+                    raise DiscoveryError(str(exc)) from exc
+                observation_count += len(lldp_observations)
+                observations.extend(lldp_observations)
         cdp_observations = parse_cdp_neighbors(info.get("show_cdp_neighbors", ""), device_id)
         cdp_observation_count += len(cdp_observations)
         observations.extend(cdp_observations)
@@ -846,6 +1211,31 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
 
     devices = {device_id: {"type": "iosxr"} for device_id in iosxr_targets}
     devices.update({device_id: {"type": "iosxe"} for device_id in iosxe_targets})
+    devices.update({device_id: {"type": "ios"} for device_id in ios_targets})
+
+    # L3 enrichment (Step 3.7): additive, per-device, never a Discovery
+    # blocker -- an L3ParseError here only skips *this device's*
+    # enrichment (with a warning), never the whole operation, and never
+    # touches its already-collected LLDP/CDP links above.
+    l3_warnings: list[str] = []
+    l3_enriched_device_count = 0
+    l3_interface_count = 0
+    for device_id, info in collected.items():
+        management_address = all_targets[device_id].get("address")
+        try:
+            if device_id in iosxr_targets:
+                raw_l3 = parse_ipv4_interface_brief(info.get("show_ipv4_interface_brief", ""))
+            else:
+                ip_brief = parse_ip_interface_brief(info.get("show_ip_interface_brief", ""))
+                vrf_by_interface = parse_show_vrf(info.get("show_vrf", ""))
+                raw_l3 = _combine_ios_style_l3(ip_brief, vrf_by_interface)
+        except L3ParseError as exc:
+            l3_warnings.append(f"Device '{device_id}': L3 enrichment skipped: {exc}")
+            continue
+        interface_fields = _build_device_interface_fields(raw_l3, management_address)
+        devices[device_id]["interfaces"] = interface_fields
+        l3_enriched_device_count += 1
+        l3_interface_count += sum(1 for value in interface_fields.values() if value is not None)
 
     return DiscoveryResult(
         access_info_name=access_info_name,
@@ -855,6 +1245,10 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
         observation_count=observation_count,
         iosxe_target_count=len(iosxe_targets),
         cdp_observation_count=cdp_observation_count,
+        ios_target_count=len(ios_targets),
+        l3_enriched_device_count=l3_enriched_device_count,
+        l3_interface_count=l3_interface_count,
+        l3_warnings=l3_warnings,
         devices=devices,
         managed_links=links,
         unresolved=unresolved,
@@ -892,11 +1286,34 @@ def build_topology_devices_and_links(result: DiscoveryResult, existing_candidate
     already present (compared by its unordered (device, interface)
     endpoint pair) -- see "Existing target topology behavior" (section 60).
     Pure/no I/O: the caller (cli/config.py) is responsible for actually
-    writing the result into `session.definition_candidate`."""
+    writing the result into `session.definition_candidate`.
+
+    `fields["interfaces"]` (Step 3.7 L3 enrichment), when present, is
+    merged *per interface*, never with a blanket top-level dict.update()
+    like every other field: a plain update() would silently replace the
+    entire existing interfaces mapping, discarding L3 data for any
+    interface not re-observed this run (Section 40 -- absence/failure must
+    never erase previous data). Each interface's own value is either a
+    dict to set/overwrite, or `None` -- an explicit removal signal (Section
+    41, from an interface explicitly re-observed as `unassigned` or
+    excluded as a management address) that safely drops just that one
+    interface's stale entry. A device with no L3 result at all this run
+    (enrichment skipped/failed) simply has no "interfaces" key in
+    `fields`, so its existing interfaces are left completely untouched."""
     devices = dict(existing_candidate.get("devices") or {})
     for device_id, fields in result.devices.items():
         merged = dict(devices.get(device_id) or {})
-        merged.update(fields)
+        new_interfaces = fields.get("interfaces")
+        other_fields = {key: value for key, value in fields.items() if key != "interfaces"}
+        merged.update(other_fields)
+        if new_interfaces is not None:
+            merged_interfaces = dict(merged.get("interfaces") or {})
+            for interface_name, interface_value in new_interfaces.items():
+                if interface_value is None:
+                    merged_interfaces.pop(interface_name, None)
+                else:
+                    merged_interfaces[interface_name] = interface_value
+            merged["interfaces"] = merged_interfaces
         devices[device_id] = merged
 
     links = list(existing_candidate.get("links") or [])

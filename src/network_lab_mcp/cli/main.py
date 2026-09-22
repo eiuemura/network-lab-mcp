@@ -1627,13 +1627,21 @@ def render_discovery_summary(result: "discovery.DiscoveryResult") -> str:
         f"  Access-info:          {result.access_info_name}",
         f"  IOS XR targets:       {result.iosxr_target_count}",
         f"  IOS XE targets:       {result.iosxe_target_count}",
+        f"  IOS targets:          {result.ios_target_count}",
         f"  Connected:            {result.connected_count}",
         f"  LLDP observations:    {result.observation_count}",
         f"  CDP observations:     {result.cdp_observation_count}",
         f"  Managed links:        {len(result.managed_links)}",
         f"  Unresolved neighbors: {len(grouped_unresolved)}",
+        f"  L3 enrichment:        {result.l3_enriched_device_count}/{result.connected_count} devices, "
+        f"{result.l3_interface_count} interfaces",
         f"  Topology candidate:   {result.default_topology_name}",
     ]
+    if result.l3_warnings:
+        lines.append("")
+        lines.append(f"L3 enrichment warnings ({len(result.l3_warnings)}):")
+        for warning in result.l3_warnings:
+            lines.append(f"  {warning}")
     if result.conflicts:
         lines.append("")
         lines.append(f"Protocol/link reconciliation conflicts ({len(result.conflicts)}, not added):")

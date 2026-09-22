@@ -479,7 +479,7 @@ access-info) — it does not change what MCP tools, logs, or errors expose.
 | Command | Effect |
 |---------|--------|
 | `running-config` | Enter running-config selection mode (`network-lab(config-running)#`). |
-| `discover topology` | Run Step 3 IOS XR + LLDP discovery against the committed `active_access_info` and apply the result as a topology candidate (new or merged into an existing one) — see README.md's "Step 3: IOS XR + LLDP topology discovery". Enters topology definition mode on success. Never commits, never selects `active_topology`. Blocked (like opening any other definition) if a *different* definition is currently open and dirty. |
+| `discover topology` | Run Step 3 IOS XR/IOS XE/IOS LLDP+CDP discovery (plus optional L3 interface enrichment, Step 3.7) against the committed `active_access_info` and apply the result as a topology candidate (new or merged into an existing one) — see README.md's "Step 3: IOS XR + LLDP topology discovery". Enters topology definition mode on success. Never commits, never selects `active_topology`. Blocked (like opening any other definition) if a *different* definition is currently open and dirty. |
 | `access-info <name>` | Create or edit an access-info definition; `<name>` existing loads it, otherwise starts a new one. Enters access-info definition mode. |
 | `topology <name>` | Create or edit a topology definition (see "Case-only topology-name collision safeguard" below). Enters topology definition mode. |
 | `scenario <name>` | Create or edit a scenario definition. Enters scenario definition mode. |
@@ -609,7 +609,7 @@ missing value there is left exactly as before (not papered over).
 
 | Command | Effect |
 |---------|--------|
-| `type <iosxr\|iosxe\|nxos\|host>` | Device type. See "Device type enum" below. |
+| `type <iosxr\|iosxe\|ios\|nxos\|host>` | Device type. See "Device type enum" below. |
 | `show running-config` | Just *this device's* full committed block from the topology above — empty if this device (or the whole topology) has never been committed. |
 | `show` / `show configuration` | Just this device's uncommitted field(s) (only `type` is modeled here). |
 | `commit` | Validate and persist; stays in this device's mode. |
@@ -644,7 +644,7 @@ access-info has no `edit` command in this phase — see
 
 | Command | Effect |
 |---------|--------|
-| `type <iosxr\|iosxe\|nxos\|host>` | Device type. See "Device type enum" below; validated against the same SSOT as topology device mode. |
+| `type <iosxr\|iosxe\|ios\|nxos\|host>` | Device type. See "Device type enum" below; validated against the same SSOT as topology device mode. |
 | `address <value>` | Device management address. |
 | `transport <ssh\|telnet>` | Device transport. Validated immediately (invalid input is rejected with a caret, not accepted into the candidate). |
 | `port <1-65535>` | Device port. Validated immediately. |
@@ -959,7 +959,7 @@ Dynamic completion is available for:
 | `jump-host <name>` (access-device) | Jump host names already defined in the same access-info candidate |
 | `transport <value>` | `ssh`, `telnet` |
 | `transport <value>` (jump-host) | `ssh` only |
-| `type <value>` | `iosxr`, `iosxe`, `nxos`, `host` |
+| `type <value>` | `iosxr`, `iosxe`, `ios`, `nxos`, `host` |
 | `type <value>` (jump-host) | `host` only |
 
 Object-identifier completion is case-sensitive and always displays the

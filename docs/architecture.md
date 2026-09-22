@@ -635,20 +635,35 @@ prompt."
 
 `_run_command()`/`_extract_command_output()` take the "end of output"
 prompt regex as a parameter (default: IOS XR's) rather than hard-coding
-it, which is what lets `_bootstrap_collect_iosxe()` (Step 3.6) reuse the
-exact same send/wait/slice runner with IOS XE's own prompt shape
-(`_IOSXE_PROMPT_RE`, matching a classic-IOS-style `hostname#`/`hostname>`
-line in full) instead of writing a second command runner.
+it, which is what lets `_bootstrap_collect_iosxe()`/`_bootstrap_collect_
+ios()` reuse the exact same send/wait/slice runner with the shared
+classic-IOS-style prompt shape (`_IOS_STYLE_PROMPT_RE`, matching a
+`hostname#`/`hostname>` line in full) instead of writing a second command
+runner. `_run_command_tolerant()` (Step 3.7) wraps this the same way for
+the *optional* L3 enrichment commands only: it catches `TerminalError` and
+returns `""` instead of raising, so a transport-level hang on one of
+those specific commands degrades to "L3 unavailable for this device"
+rather than failing the whole device -- every other command (login, LLDP,
+CDP, `terminal length 0`) is untouched and still fails the whole device
+closed exactly as before.
 
-IOS XE login (`_login_iosxe()`, Step 3.6) is a separate, small function
-from `_login()` -- not a generalized/parameterized version of it -- since
-IOS XR's `_login()` waits for an IOS-XR-specific prompt shape that classic
-IOS/IOS XE never produces. It answers at most one optional `Username:`
-prompt (some IOS XE login configurations show one, some don't) and one
-`Password:` prompt, reusing `_resolve_login_password()`/`terminal.
+Classic-IOS-style login (`_login_ios_style()`) is a separate, small
+function from `_login()` -- not a generalized/parameterized version of it
+-- since IOS XR's `_login()` waits for an IOS-XR-specific prompt shape
+that classic IOS/IOS XE never produces. It answers at most one optional
+`Username:` prompt (some login configurations show one, some don't) and
+one `Password:` prompt, reusing `_resolve_login_password()`/`terminal.
 resolve_target_password_prompt()` unchanged for the password itself --
 see the next section for why no telnet-specific attribution logic was
-needed.
+needed. Introduced in Step 3.6 as `_login_iosxe()` (IOS XE only); renamed
+in Step 3.7 to `_login_ios_style()` once classic IOS started reusing the
+exact same login sequence unchanged -- the old name would have been
+actively misleading once a second, non-XE caller existed. This is the
+"shared IOS-style login primitive" refactor, deliberately scoped to just
+the login step: `_bootstrap_collect_iosxe()` and `_bootstrap_collect_ios()`
+remain two separate, explicit collector functions (each listing its own
+small set of commands) rather than one parametrized collector -- Step 3.7
+explicitly avoids a generalized multi-vendor collection framework.
 
 ### Shared safe SSH password-prompt attribution (Step 3.5)
 
@@ -754,14 +769,18 @@ in parallel):
 
 ```
 committed active_access_info
-    -> discovery._select_iosxr_targets() / _select_iosxe_targets()
-       (type iosxr / iosxe; host is skipped, not failed; nxos is skipped;
-       unless zero targets of either kind remain)
+    -> discovery._select_iosxr_targets() / _select_iosxe_targets() /
+       _select_ios_targets() (type iosxr / iosxe / ios; host is skipped,
+       not failed; nxos is skipped; unless zero targets of any kind remain)
     -> discovery._bootstrap_collect() (iosxr: login, `terminal length 0`,
        `show version`, `show running-config`, `show lldp neighbors`,
-       `show cdp neighbors`) / _bootstrap_collect_iosxe() (iosxe:
-       _login_iosxe(), `show version`, `show cdp neighbors`) -- all
-       logged persistently, see above
+       `show cdp neighbors`, `show ipv4 interface brief` tolerantly) /
+       _bootstrap_collect_iosxe() (iosxe: _login_ios_style(), `show
+       version`, `show lldp neighbors`, `show cdp neighbors`, `show vrf` +
+       `show ip interface brief` tolerantly) / _bootstrap_collect_ios()
+       (ios: _login_ios_style(), `show version`, `show cdp neighbors`,
+       `show vrf` + `show ip interface brief` tolerantly) -- all logged
+       persistently, see above
     -> discovery.parse_lldp_neighbors() / parse_cdp_neighbors()  (raw
        text -> NeighborObservation, tagged `source="lldp"`/`"cdp"`, never
        resolving identity itself)
@@ -772,6 +791,10 @@ committed active_access_info
        protocols -> ManagedLink list + LinkConflict list; the same link
        seen via both protocols dedupes to one, a same-interface
        cross-protocol disagreement is a conflict)
+    -> discovery.parse_ipv4_interface_brief() / parse_ip_interface_brief()
+       + parse_show_vrf()  (raw text -> {interface: (ipv4_or_None, vrf)};
+       L3ParseError skips just this device's enrichment, never the whole
+       operation -- see "L3 interface enrichment" below)
     -> discovery.DiscoveryResult  (in-memory only)
     -> cli/config.py CliSession.apply_discovery_result()  (opens/creates
        the topology candidate via the *same* plan_topology_definition()/
@@ -779,11 +802,15 @@ committed active_access_info
        <name>`, then merges in discovery.build_topology_devices_and_links())
 ```
 
-Step 3.6 adds CDP + IOS XE support entirely inside `discovery.py` (plus a
-few new summary lines in `cli/main.py`'s `render_discovery_summary()`):
-`mcp_server.py` has zero diff and `cli/grammar.py` is unchanged --
-`discover topology` remains the only Discovery command, with protocol/
-device-type selection happening internally, never as a CLI choice.
+Step 3.6 added CDP + IOS XE support, and Step 3.7 added classic IOS (`ios`)
+support plus L3 interface enrichment, entirely inside `discovery.py` (plus
+a few new summary lines in `cli/main.py`'s `render_discovery_summary()`
+and a new `lab.validate_topology_interfaces()`): `mcp_server.py` has zero
+diff and `cli/grammar.py` needed only its two hard-coded `type` hint
+strings extended (the `type ?` help/completion themselves already
+delegate to `lab.DEVICE_TYPES`) -- `discover topology` remains the only
+Discovery command, with protocol/device-type selection happening
+internally, never as a CLI choice.
 
 `discovery.py` owns every Discovery-specific behavior (bootstrap
 connectivity reuses `terminal.py`'s primitives, but the login sequence,
@@ -842,9 +869,9 @@ mutation, exactly like the pre-Step-3.3 sequential loop.
 protocol -- the function never looks at `NeighborObservation.source`)
 against an in-memory `{logical_device_id: observed_hostname}` map built
 from each bootstrap session's own login prompt (the IOS XR prompt for
-`iosxr` targets, `_login_iosxe()`'s exec prompt for `iosxe` targets), in
-this order, each step requiring a *unique* match or the neighbor stays
-unresolved:
+`iosxr` targets, `_login_ios_style()`'s shared exec prompt for `iosxe`/
+`ios` targets), in this order, each step requiring a *unique* match or the
+neighbor stays unresolved:
 
 1. exact observed-hostname match
 2. case-normalized exact match
@@ -862,7 +889,7 @@ like one that resolves to none -- unresolved, never guessed.
 ### Managed vs. unresolved neighbors, and where their evidence lives
 
 A resolved neighbor that is also one of *this run's* selected IOS XR/IOS
-XE targets becomes a candidate topology device/link. Everything else --
+XE/IOS targets becomes a candidate topology device/link. Everything else --
 external routers/switches visible only via LLDP/CDP but not in the
 selected access-info, or genuinely ambiguous -- is an **unresolved
 neighbor**: never invented as a managed topology device, but not silently
@@ -921,6 +948,100 @@ A link's identity is its unordered pair of `(device, interface)`
 endpoints, so two parallel links between the same router pair on
 different interfaces are never deduplicated together.
 
+### L3 interface enrichment (Step 3.7)
+
+Additive topology context -- IPv4 address + VRF per interface, so Claude
+can reason about questions like "check reachability from each router"
+directly from `get_active_topology()` without first having to interact
+with a device just to learn its addressing:
+
+```
+Discovery
+   |
+   +--> neighbor evidence (LLDP/CDP)
+   |        |
+   |        v
+   |     links (connectivity)
+   |
+   +--> L3 interface evidence (show ipv4 interface brief /
+   |     show ip interface brief + show vrf)
+   |        |
+   |        v
+   |     interface attributes (ipv4_address, vrf)
+   |
+   v
+topology candidate
+```
+
+Both enter the same topology candidate, but they answer different
+questions: links are connectivity (who is physically/logically attached
+to whom); IPv4/VRF are L3 context on an interface, independent of
+whether that interface happens to also be a link endpoint. Neither is
+ever derived from the other -- an IP address is never used to infer a
+link, and a link is never used to fabricate an address.
+
+Only a directly observed IPv4 address + VRF are stored -- deliberately
+never a prefix length (no `/24`/`/30` inference from the address value,
+no subnet calculation), and never operational state (`Up`/`Down`,
+holdtime, counters): those interface-brief commands' Status/Protocol
+columns are read only far enough to skip past them (see
+`parse_ip_interface_brief()`'s own docstring on why a fixed token count
+would be brittle against IOS's two-word `administratively down` status),
+never persisted.
+
+**Interface-name canonicalization** (`_canonicalize_interface_name()`,
+Step 3.7): classic IOS/IOS XE's `show vrf` and `show ip interface brief`
+can report the *same* interface in different abbreviated forms (e.g.
+`show vrf`'s Interfaces column showing `Gi0/0` while `show ip interface
+brief` shows `GigabitEthernet0/0`) -- a small, fixed lookup table expands
+known abbreviations to one canonical full name so the two commands'
+output can be matched up; an unrecognized prefix is left completely
+unchanged rather than guessed. This is a new, small SSOT (no such
+normalization existed before Step 3.7 -- Step 3.6's CDP/LLDP dedup never
+needed to compare interface names *across* commands, only within one
+device's own single command output) -- introduced once, reused for both
+`show vrf`/`show ip interface brief` reconciliation and as the
+canonical key written into a device's `interfaces` mapping.
+
+**Management-address exclusion**: access-info is *how* MCP reaches a
+device; topology is *what the network looks like* -- an observed
+interface IPv4 address that exactly equals the selected access-info's own
+connection address for that same device is deliberately never copied into
+topology L3 data (`_build_device_interface_fields()`), regardless of
+whether that interface also happens to be a link endpoint (the link
+itself, if any, is completely unaffected by this exclusion).
+
+**Fail-closed distinction, per device, per L3 source** (Section 15/38/39
+of the Step 3.7 task): IOS XR's single `show ipv4 interface brief` either
+parses (its own header recognized) or the device's L3 enrichment is
+skipped entirely; IOS XE/IOS require *both* `show vrf` and `show ip
+interface brief` to parse -- one failing skips L3 enrichment for that
+whole device rather than guessing every unlisted interface is `default`
+VRF. Either way this is captured as an `L3ParseError`, caught only in
+`discover_topology()`'s own per-device L3 loop -- it never escalates to a
+`DiscoveryError` (which would fail the *whole* run) and never touches
+that device's already-collected LLDP/CDP links. A transport-level failure
+specifically on one of the *optional* L3 commands (the prompt never
+returns) is tolerated the same way via `_run_command_tolerant()` (returns
+`""`, which then naturally fails L3 parsing, not the whole device) --
+contrast with LLDP/CDP/login/`terminal length 0`, which remain
+whole-device-fatal on a transport failure exactly as before Step 3.7.
+
+**Per-interface candidate merge, not a wholesale replace** (Section 40/41):
+this is the one field `build_topology_devices_and_links()` treats
+specially. Every other device field uses a plain `dict.update()` (last
+value wins) when merging a `DiscoveryResult` into an existing candidate --
+but doing that to `interfaces` would silently discard L3 data for any
+interface not re-observed this particular run (e.g. one whose device
+failed L3 enrichment just this once). Instead, `fields["interfaces"]`
+(when present at all -- a device with no L3 result this run has no such
+key, so its existing candidate interfaces are left completely untouched)
+is merged interface-by-interface: a dict value sets/overwrites that one
+interface, and a `None` value is an explicit removal signal (used only
+when an interface was *positively* re-observed as `unassigned`, or newly
+excluded as a management address) that drops just that one interface's
+stale entry -- `dict.pop(name, None)`, safe even if it was never present.
+
 ### Topology candidate merge is conservative
 
 `build_topology_devices_and_links()` only ever *adds* to whatever
@@ -933,7 +1054,22 @@ system already documented above (candidate/original/dirty tracking,
 `show`/`show configuration`/`show running-config`/`commit`/`clear`/
 `root`/`exit`/`end`) -- `discover topology` is, structurally, just another
 way to populate a topology candidate, the same way the external YAML
-editor is.
+editor is. The one field with special merge semantics (`interfaces`) is
+described above.
+
+Topology's own schema validation (`lab.validate_topology_interfaces()`)
+keeps this bounded: only `ipv4_address` + `vrf`, both required non-empty
+strings when an interface entry exists at all, `ipv4_address` checked as
+a real IPv4 address (`ipaddress.IPv4Address`) -- no other field is
+accepted (a future prefix-length field, if ever added, needs its own
+validator update, deliberately not designed for in advance). Existing
+topology files with no `interfaces` key anywhere remain valid with zero
+migration. Because `lab.get_active_topology()` already returns the whole
+validated topology mapping verbatim (it never filters fields -- topology
+structurally cannot carry access-info's private fields at all, see
+`validate_topology_no_access_fields()`), committed L3 data appears
+through the exact same MCP-facing read Claude already uses with zero
+changes to `lab.py`'s `get_active_topology()` or `mcp_server.py`.
 
 ## Step 2 / 2.5: the human configuration/control plane
 

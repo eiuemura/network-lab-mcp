@@ -760,7 +760,7 @@ function -- translating a rejected outcome into their own wording
 (`DiscoveryError` vs. `TerminalError`), never re-implementing the
 attribution rule itself.
 
-### Managed-terminal private authentication (Step 3.5)
+### Managed-terminal private authentication (Step 3.5, extended in Step 3.8)
 
 `terminal_open()` previously never automated a password prompt at all --
 only Discovery's separate bootstrap login did -- so the first real
@@ -769,23 +769,75 @@ Claude saw the device's own SSH password prompt and had to stop and ask
 the human for the router's password. Since the active access-info
 definition already privately holds that password, the credential belongs
 to Network Lab MCP, not the AI, so `terminal_open()` now completes
-authentication itself.
+authentication itself. Step 3.8 closed the one remaining transport gap
+this left: managed Telnet sessions (e.g. a real-lab PAGENT) still stopped
+at `Password:` and asked a human, even though SSH managed sessions and
+Discovery's own Telnet login both already authenticated privately.
 
 `terminal._authenticate_managed_session()` runs after the managed session
 is created or reused, still inside the existing Step 3.3 per-device lock
 (so a concurrent `terminal_open(R1)` from two callers can never send its
 password twice, while a different device continues to authenticate fully
-in parallel):
+in parallel), and now dispatches by the device's own configured
+transport: `_authenticate_managed_ssh_session()` (Step 3.5, unchanged) for
+`ssh`, `_authenticate_managed_telnet_session()` (Step 3.8, new) for
+`telnet`, nothing for any other/unknown transport. Splitting by transport
+-- rather than one function trying to recognize both vocabularies --
+keeps SSH's OpenSSH-specific prompt/failure text and Telnet's classic-
+IOS-style prompt/failure text from leaking into each other.
 
-- **Transport-level, not device-CLI-specific.** It recognizes only
+- **Transport-level (SSH), not device-CLI-specific.** SSH recognizes only
   OpenSSH's own password prompt and a small, stable set of OpenSSH's own
   authentication-failure messages (`Permission denied`, `Authentication
   failed`, `Connection refused`, ...) -- never an IOS XR (or any other
   vendor) CLI prompt. This keeps it safe for every device type
   `terminal_open()` supports, and preserves the project's existing "Claude
   reads the pane" model for anything this cannot resolve on its own (a
-  host-key confirmation prompt, a device-CLI-level interaction, telnet --
-  Step 3.5 is SSH-only; telnet behavior is completely unchanged).
+  host-key confirmation prompt, a device-CLI-level interaction).
+- **Narrowly device-shaped (Telnet), by design.** Unlike SSH, Telnet has no
+  client-side wrapping text to recognize generically -- login is a plain
+  conversation with the device itself. Step 3.8 deliberately does not
+  generalize this into an interactive-login framework: it answers only an
+  optional `Username:` prompt followed by `Password:` (the exact sequence
+  Discovery's own `_login_ios_style()` already proved for classic-IOS-style
+  lab devices), requires positively reaching the shared `IOS_STYLE_PROMPT_RE`
+  exec-prompt shape to consider login complete (stricter than SSH's more
+  lenient "anything else counts as progress" model), and recognizes a
+  small, fixed set of classic-IOS-style login-failure text
+  (`_TELNET_AUTH_FAILURE_RE`: "% Bad passwords", "% Login invalid",
+  "Connection closed by foreign host" -- the first and third observed
+  directly against a real device during this feature's own development).
+  Once the exec prompt is reached, authentication automation stops
+  watching entirely -- never a persistent prompt-answering loop over the
+  life of the session, and never enable/TACACS/OTP/MFA automation.
+  `USERNAME_PROMPT_RE`/`IOS_STYLE_PROMPT_RE` moved from `discovery.py` to
+  `terminal.py` this step (Discovery's own names now alias them) once
+  managed Telnet auth needed the exact same two patterns -- one
+  definition, not two independently-maintained copies; Discovery's
+  session lifecycle (temporary, closed after collection) and managed
+  terminal_open()'s (persistent, tmux SSOT, reused across calls) remain
+  otherwise completely separate, only the login primitive is shared.
+- **A real regex-flag bug found and fixed along the way.** `_wait_for_
+  pattern()`'s multi-line tail matching requires `re.MULTILINE` on the
+  pattern it is given; combining several already-`re.MULTILINE` patterns'
+  own `.pattern` text into a *new* `re.compile()` call (as `_LOGIN_WAIT_RE`
+  /`_IOS_STYLE_LOGIN_WAIT_RE`/`_MANAGED_LOGIN_WAIT_RE` all do, to build one
+  "any of these" pattern) does not carry that flag forward -- without
+  re-applying it explicitly on the combined pattern, `$` only anchors to
+  the true end of the whole captured string, so a match on a line that is
+  not the literal last line (e.g. once the device's own prompt has already
+  appeared after it) silently fails. This had been latent and harmless in
+  Discovery's own login (its final "did we reach the prompt" check
+  already used the standalone, correctly-flagged `_IOS_STYLE_PROMPT_RE`
+  directly, not the combined pattern) -- but Step 3.8's Telnet auth needed
+  the *combined* pattern for its final post-password wait too (to detect
+  a re-appearing password prompt -- rejected -- as fast and explicitly as
+  SSH already does), which is what surfaced it. Fixed by re-applying
+  `re.MULTILINE` (and `re.IGNORECASE`, similarly lost, where a combined
+  sub-pattern needs it) on all three combined patterns -- a pure
+  correctness fix with no behavior change for any already-passing case
+  (confirmed by the full regression suite), not a timeout-semantics
+  redesign.
 - **New vs. existing session.** A brand-new session's connection is still
   in flight, so this polls briefly (bounded) for a prompt/failure to first
   appear. An already-existing session's pane is already settled, so this

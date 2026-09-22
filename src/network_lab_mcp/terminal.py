@@ -96,6 +96,20 @@ class TerminalError(Exception):
 PASSWORD_PROMPT_RE = re.compile(r"[Pp]assword:\s*$", re.MULTILINE)
 SSH_HOP_PASSWORD_PROMPT_RE = re.compile(r"(?P<hop_user>[^\s@]+)@(?P<hop_host>[^\s']+)'s password:\s*$")
 
+# Shared classic-IOS-style login text (Step 3.8): originally introduced in
+# discovery.py (Step 3.6/3.7, for Discovery's own IOS XE/IOS Telnet-or-SSH
+# login) and moved here once managed terminal_open()'s Telnet authentication
+# (below) needed the exact same two patterns -- one definition, not two
+# independently-maintained copies. `discovery.py`'s own `_USERNAME_PROMPT_RE`/
+# `_IOS_STYLE_PROMPT_RE` now alias these. `IOS_STYLE_PROMPT_RE` matches a
+# classic-IOS-style exec prompt in full (just "hostname#"/"hostname>", unlike
+# IOS XR's "RP/.../CPU0:hostname#" shape) -- this is the one place a vendor
+# prompt shape is recognized outside discovery.py, and only for the narrow,
+# already-proven classic-IOS-style Telnet targets this project supports (see
+# the Telnet authentication section below), never a generic CLI parser.
+USERNAME_PROMPT_RE = re.compile(r"[Uu]sername:\s*$", re.MULTILINE)
+IOS_STYLE_PROMPT_RE = re.compile(r"^(?P<hostname>[\w.-]+)[#>]\s*$", re.MULTILINE)
+
 
 @dataclass(frozen=True)
 class PasswordPromptOutcome:
@@ -906,7 +920,17 @@ _SSH_AUTH_FAILURE_RE = re.compile(
     r"Connection timed out|Host key verification failed",
     re.IGNORECASE,
 )
-_MANAGED_LOGIN_WAIT_RE = re.compile(f"(?:{PASSWORD_PROMPT_RE.pattern})|(?:{_SSH_AUTH_FAILURE_RE.pattern})")
+# re.MULTILINE + re.IGNORECASE re-applied on the combined pattern (Step
+# 3.8 finding): both flags are set individually on PASSWORD_PROMPT_RE/
+# _SSH_AUTH_FAILURE_RE, but combining their `.pattern` text into a new
+# re.compile() call does not carry those flags forward -- without
+# re.MULTILINE here, `$` only anchors to the true end of the whole
+# captured string, so a match on a line that is not the very last line at
+# capture time (e.g. once something else has already been appended after
+# it) silently fails.
+_MANAGED_LOGIN_WAIT_RE = re.compile(
+    f"(?:{PASSWORD_PROMPT_RE.pattern})|(?:{_SSH_AUTH_FAILURE_RE.pattern})", re.MULTILINE | re.IGNORECASE
+)
 # Matches literally any visible content -- used only together with
 # _wait_for_pattern()'s own baseline-diff requirement, so this really means
 # "wait until the pane changes at all", with no vendor-specific assumption
@@ -922,6 +946,24 @@ def _last_nonblank_line(text: str) -> str:
 
 
 def _authenticate_managed_session(
+    device_name: str, device_config: dict, session_name: str, *, newly_created: bool
+) -> None:
+    """Dispatch managed private authentication by transport (Step 3.8):
+    `ssh` reuses the existing Step 3.5 flow unchanged
+    (`_authenticate_managed_ssh_session()`); `telnet` uses the new Step 3.8
+    flow (`_authenticate_managed_telnet_session()`); any other/unknown
+    transport does nothing, exactly as before Step 3.8. Splitting by
+    transport here -- rather than inside one large function -- keeps each
+    flow's own prompt/failure vocabulary (OpenSSH's for SSH, classic-IOS-
+    style for Telnet) from leaking into the other."""
+    transport = device_config.get("transport")
+    if transport == "ssh":
+        _authenticate_managed_ssh_session(device_name, device_config, session_name, newly_created=newly_created)
+    elif transport == "telnet":
+        _authenticate_managed_telnet_session(device_name, device_config, session_name, newly_created=newly_created)
+
+
+def _authenticate_managed_ssh_session(
     device_name: str, device_config: dict, session_name: str, *, newly_created: bool
 ) -> None:
     """Complete SSH password authentication for a managed session if (and
@@ -942,9 +984,6 @@ def _authenticate_managed_session(
     capture -- if that does not show a password prompt right now (the
     ordinary case: already authenticated, or showing unrelated output),
     nothing further happens: no send, no wait, no disturbance."""
-    if device_config.get("transport") != "ssh":
-        return  # Step 3.5 scope: SSH only; telnet behavior is unchanged.
-
     if newly_created:
         try:
             text = _wait_for_pattern(session_name, _MANAGED_LOGIN_WAIT_RE, _MANAGED_LOGIN_TIMEOUT_SECONDS)
@@ -994,6 +1033,148 @@ def _authenticate_managed_session(
 
 
 # --------------------------------------------------------------------------
+# Private managed-terminal Telnet authentication (Step 3.8)
+#
+# Closes the last transport inconsistency: SSH managed sessions (Step 3.5)
+# and Discovery's own Telnet login (discovery._login_ios_style(), Step
+# 3.6/3.7) both already authenticate privately -- managed Telnet sessions
+# did not. A real Claude Code -> Network Lab MCP acceptance test hit this
+# exact gap on a real PAGENT-style device: terminal_open() reached
+# "Password:" over Telnet and simply stopped, leaving the AI to ask a
+# human for the password.
+#
+# Deliberately narrow, matching this project's real target (Cisco IOS-
+# style Telnet lab sessions, e.g. PAGENT): only an optional "Username:"
+# prompt followed by "Password:" is ever answered, each at most once, and
+# only the shared IOS_STYLE_PROMPT_RE exec-prompt shape counts as having
+# reached a usable terminal -- not a generic interactive-login framework,
+# not TACACS/OTP/MFA/enable-password automation, and once that exec prompt
+# is reached this stops watching entirely (never a persistent prompt-
+# answering loop over the life of the session). Reuses
+# resolve_target_password_prompt() unchanged for the password itself: a
+# Telnet device structurally cannot have a jump_host_config (lab.py's
+# schema validation requires transport 'ssh' for that), so its "no
+# jump_host_config -> unambiguous" branch already answers a Telnet
+# password prompt correctly with no Telnet-specific attribution logic.
+# --------------------------------------------------------------------------
+
+# A small, stable set of classic-IOS-style Telnet login-failure text --
+# deliberately not a large error-string catalog (see module docstring
+# above): observed directly against a real device during this feature's
+# own development ("% Bad passwords", "Connection closed by foreign
+# host." after repeated bad attempts) plus the commonly documented
+# "% Login invalid". Never a generic device-CLI error catalog -- this is
+# specifically about Telnet *login* failing, nothing else.
+_TELNET_AUTH_FAILURE_RE = re.compile(
+    r"%\s*Bad passwords|%\s*Login invalid|Connection closed by foreign host",
+    re.IGNORECASE,
+)
+# re.MULTILINE + re.IGNORECASE re-applied on the combined pattern -- see
+# _MANAGED_LOGIN_WAIT_RE's own comment above for why this is required, not
+# optional.
+_TELNET_MANAGED_LOGIN_WAIT_RE = re.compile(
+    f"(?:{USERNAME_PROMPT_RE.pattern})|(?:{PASSWORD_PROMPT_RE.pattern})|(?:{IOS_STYLE_PROMPT_RE.pattern})|"
+    f"(?:{_TELNET_AUTH_FAILURE_RE.pattern})",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _authenticate_managed_telnet_session(
+    device_name: str, device_config: dict, session_name: str, *, newly_created: bool
+) -> None:
+    """Complete classic-IOS-style Telnet login for a managed session if
+    (and only if) it is currently, or imminently, sitting at a bounded
+    Username:/Password: login prompt -- never otherwise. Fails closed
+    (TerminalError, always sanitized: never includes the username,
+    password, or any other access-info content) on a missing configured
+    username/password, a repeated identical prompt after one send, or an
+    explicit Telnet login-failure message. Sends the username (if
+    prompted) and the password each at most once per call.
+
+    `newly_created` mirrors `_authenticate_managed_ssh_session()`'s own
+    contract exactly, for the same reason: a brand-new session's Telnet
+    connection is still in flight (and may still be printing transport
+    preamble text like "Trying .../Connected to.../Escape character is
+    '^]'." -- never mistaken for login completion, since none of it
+    matches the bounded login/failure patterns below), so this polls
+    briefly for a recognizable state to first appear; an already-existing
+    session's pane is already settled, so this takes exactly one
+    immediate read-only capture -- if that is not clearly a Username:/
+    Password: prompt right now, nothing further happens at all (no
+    guessing at ambiguous CLI output)."""
+    if newly_created:
+        try:
+            text = _wait_for_pattern(session_name, _TELNET_MANAGED_LOGIN_WAIT_RE, _MANAGED_LOGIN_TIMEOUT_SECONDS)
+        except TerminalError:
+            return  # no recognizable login/prompt/failure state within the bounded wait -- proceed
+    else:
+        text = _capture_pane(session_name, HISTORY_LIMIT)
+
+    last_line = _last_nonblank_line(text)
+
+    if USERNAME_PROMPT_RE.search(last_line):
+        username = device_config.get("username")
+        if not username:
+            raise TerminalError(
+                f"Device '{device_name}': a username prompt appeared but no username is configured "
+                "in the active access-info definition."
+            )
+        _send_literal_text(session_name, str(username))
+        _send_enter(session_name)
+        try:
+            text = _wait_for_pattern(
+                session_name, _TELNET_MANAGED_LOGIN_WAIT_RE, _MANAGED_LOGIN_TIMEOUT_SECONDS, baseline_text=text
+            )
+        except TerminalError as exc:
+            raise TerminalError(
+                f"Device '{device_name}': timed out waiting for a response after the username."
+            ) from exc
+        last_line = _last_nonblank_line(text)
+
+    if not PASSWORD_PROMPT_RE.search(last_line):
+        if _TELNET_AUTH_FAILURE_RE.search(text):
+            raise TerminalError(f"Device '{device_name}': Telnet login failed.")
+        return  # not currently at a password prompt -- nothing to do
+
+    outcome = resolve_target_password_prompt(device_config, last_line)
+    if not outcome.matched_target:
+        raise TerminalError(
+            f"Device '{device_name}': cannot safely complete authentication ({outcome.reason})."
+        )
+    if not outcome.password:
+        raise TerminalError(
+            f"Device '{device_name}': a password prompt appeared but no private password is "
+            "configured in the active access-info definition."
+        )
+
+    baseline = text
+    _send_literal_text(session_name, outcome.password)
+    _send_enter(session_name)
+    try:
+        settled = _wait_for_pattern(
+            session_name, _TELNET_MANAGED_LOGIN_WAIT_RE, _MANAGED_AUTH_SETTLE_TIMEOUT_SECONDS, baseline_text=baseline
+        )
+    except TerminalError as exc:
+        raise TerminalError(f"Device '{device_name}': timed out waiting for authentication to complete.") from exc
+
+    settled_last_line = _last_nonblank_line(settled)
+    if IOS_STYLE_PROMPT_RE.search(settled_last_line):
+        return  # success -- reached the device's own exec prompt
+    if PASSWORD_PROMPT_RE.search(settled_last_line):
+        # The same prompt reappeared -- the password was rejected. Never
+        # send it again: one attempt per call (Section 25/46).
+        raise TerminalError(f"Device '{device_name}': Telnet authentication failed (password rejected).")
+    if _TELNET_AUTH_FAILURE_RE.search(settled):
+        raise TerminalError(f"Device '{device_name}': Telnet authentication failed.")
+    # Unlike SSH's more lenient "anything else counts as progress" model,
+    # Telnet requires positively reaching the known exec-prompt shape --
+    # the narrower, already-proven signal Discovery's own Telnet login
+    # relies on (see IOS_STYLE_PROMPT_RE's own docstring) -- rather than
+    # assuming an unrecognized response means success.
+    raise TerminalError(f"Device '{device_name}': did not reach a device prompt after Telnet login.")
+
+
+# --------------------------------------------------------------------------
 # Public production API (used by the terminal_* MCP tools)
 # --------------------------------------------------------------------------
 
@@ -1010,13 +1191,15 @@ def open_device_terminal(device_name: str, device_config: dict) -> dict:
     finishes), while different devices continue to authenticate fully in
     parallel.
 
-    Step 3.5: completes private SSH password authentication using the
-    device's own access-info password if (and only if) the target's own
-    password prompt actually appears -- see
-    _authenticate_managed_session()'s own docstring for the exact rule.
-    If *this* call created a new session and authentication definitively
-    fails, that now-unusable session is closed (never a pre-existing
-    session this call merely reused)."""
+    Completes private authentication using the device's own access-info
+    credentials if (and only if) a recognized login prompt actually
+    appears -- SSH password authentication (Step 3.5) or Telnet
+    username/password login (Step 3.8), depending on the device's own
+    configured transport; see _authenticate_managed_session()'s own
+    docstring for the exact per-transport rules. If *this* call created a
+    new session and authentication definitively fails, that now-unusable
+    session is closed (never a pre-existing session this call merely
+    reused)."""
     session_name = derive_production_session_name(device_name)
     with _session_lock(session_name):
         transport, command = _build_transport_command(device_config)

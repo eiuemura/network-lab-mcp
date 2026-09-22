@@ -763,14 +763,17 @@ selection", not an error.
 
 ### Private managed-terminal authentication
 
-Network Lab MCP can complete target SSH password authentication using the
-selected private access-info definition. Credentials remain inside Network
-Lab MCP and are not exposed to the AI/MCP client:
+Network Lab MCP can complete target authentication for a managed terminal
+over **either transport** using the selected private access-info
+definition — SSH password authentication (Step 3.5), or classic-IOS-style
+Telnet username/password login (Step 3.8, for devices like a real-lab
+PAGENT). Credentials remain inside Network Lab MCP and are not exposed to
+the AI/MCP client:
 
 ```
 Claude
    |
-   | terminal_open(R1)
+   | terminal_open(PAGENT)
    v
 Network Lab MCP
    |
@@ -779,33 +782,47 @@ Network Lab MCP
    |        +--> private username/password
    |
    v
-native SSH in tmux
+native SSH/Telnet in tmux
    |
-   +--> verify target password prompt
+   +--> verify target login prompt (SSH password prompt, or Telnet
+   |    Username:/Password:)
    |
-   +--> send password privately
+   +--> send credentials privately
    |
    v
 authenticated terminal
 ```
 
-The password never crosses the MCP boundary. `terminal_open()` recognizes
-only OpenSSH's own client-side password prompt (never a device-CLI-specific
-prompt, so this works for every device type, not just IOS XR) and only
-answers it once that prompt can be confidently attributed to the *target*
-device — a jump host's own password prompt (single-hop ProxyJump) is never
-answered; that hop must still use non-interactive key/agent authentication,
-exactly as Discovery's own bootstrap login already requires. Key/agent
-authentication that succeeds without ever showing a password prompt is
-completely unaffected — no password is sent. If authentication definitively
-fails or is rejected, `terminal_open()` fails with a sanitized error (never
-the password itself) and, if it created a new session for this attempt,
-closes it; a pre-existing session is never destroyed just because a later
-open encounters an unusual state, and an already-authenticated session
-stays fully idempotent (no send, no disturbance). See
+Neither transport's credentials ever cross the MCP boundary.
+`terminal_open()` recognizes only OpenSSH's own client-side password
+prompt for SSH (never a device-CLI-specific prompt, so this works for
+every device type, not just IOS XR) and only answers it once that prompt
+can be confidently attributed to the *target* device — a jump host's own
+password prompt (single-hop ProxyJump) is never answered; that hop must
+still use non-interactive key/agent authentication, exactly as Discovery's
+own bootstrap login already requires. Key/agent authentication that
+succeeds without ever showing a password prompt is completely
+unaffected — no password is sent. For Telnet, only the same bounded
+classic-IOS-style login sequence Discovery's own Telnet login already
+proved is automated (optional `Username:`, then `Password:`, then the
+device's own exec prompt) — never a generic prompt-answering loop, and
+never enable/TACACS/OTP/MFA automation. If authentication definitively
+fails or is rejected (either transport), `terminal_open()` fails with a
+sanitized error (never the credential itself) and, if it created a new
+session for this attempt, closes it; a pre-existing session is never
+destroyed just because a later open encounters an unusual state, and an
+already-authenticated session stays fully idempotent (no send, no
+disturbance) — including one already sitting at a login prompt from
+before an MCP server restart, which a later `terminal_open()` may safely
+resume and complete. See
 ["Managed-terminal private authentication"](docs/architecture.md) in the
 architecture doc for the full design, including the shared prompt-
 attribution logic reused from Discovery.
+
+Telnet itself remains unencrypted, transmitting the login and all session
+content in the clear — Step 3.8 only keeps the credential private from
+the AI/MCP client, it does not (and cannot) make Telnet a secure
+transport. Telnet remains appropriate only for isolated lab environments.
 
 ### Access-info lookup is no longer global
 

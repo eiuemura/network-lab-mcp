@@ -80,7 +80,17 @@ _IOSXR_PROMPT_RE = re.compile(r"RP/\S+/CPU\d+:(?P<hostname>[^#\s]+)#\s*$", re.MU
 # terminal.PASSWORD_PROMPT_RE's own docstring -- OpenSSH's client-side
 # prompt text is identical regardless of caller, so there is exactly one
 # place that recognizes it.
-_LOGIN_WAIT_RE = re.compile(f"(?:{terminal.PASSWORD_PROMPT_RE.pattern})|(?:{_IOSXR_PROMPT_RE.pattern})")
+# re.MULTILINE is required here (Step 3.8 finding): without it, the `$` in
+# each combined sub-pattern only anchors to the true end of the whole
+# captured string, not the end of each line -- meaning a match on a line
+# that is *not* the very last line of the captured pane text (e.g. once
+# something else has already been appended after it) silently fails. Both
+# constituent patterns already carry their own re.MULTILINE individually,
+# but that flag is lost when their `.pattern` text is combined into a new
+# re.compile() call -- it must be re-applied on the combined pattern too.
+_LOGIN_WAIT_RE = re.compile(
+    f"(?:{terminal.PASSWORD_PROMPT_RE.pattern})|(?:{_IOSXR_PROMPT_RE.pattern})", re.MULTILINE
+)
 
 # Classic-IOS-style exec prompt, e.g. "PAGENT#" or "PAGENT>" -- shared by
 # IOS XE *and* classic IOS (Step 3.7: the same login/prompt shape applies
@@ -94,10 +104,19 @@ _LOGIN_WAIT_RE = re.compile(f"(?:{terminal.PASSWORD_PROMPT_RE.pattern})|(?:{_IOS
 # own password prompt (terminal.PASSWORD_PROMPT_RE) is reused unchanged
 # since it is transport-agnostic text matching, not an SSH-specific
 # mechanism.
-_IOS_STYLE_PROMPT_RE = re.compile(r"^(?P<hostname>[\w.-]+)[#>]\s*$", re.MULTILINE)
-_USERNAME_PROMPT_RE = re.compile(r"[Uu]sername:\s*$", re.MULTILINE)
+#
+# Both now live in terminal.py (Step 3.8): managed terminal_open()'s own
+# Telnet authentication needed the exact same two patterns, so they moved
+# to the one shared lower-level module rather than being duplicated --
+# these names are kept as aliases so nothing else in this file (or its
+# tests) needs to change.
+_IOS_STYLE_PROMPT_RE = terminal.IOS_STYLE_PROMPT_RE
+_USERNAME_PROMPT_RE = terminal.USERNAME_PROMPT_RE
+# re.MULTILINE re-applied on the combined pattern -- see _LOGIN_WAIT_RE's
+# own comment above for why.
 _IOS_STYLE_LOGIN_WAIT_RE = re.compile(
-    f"(?:{_USERNAME_PROMPT_RE.pattern})|(?:{terminal.PASSWORD_PROMPT_RE.pattern})|(?:{_IOS_STYLE_PROMPT_RE.pattern})"
+    f"(?:{_USERNAME_PROMPT_RE.pattern})|(?:{terminal.PASSWORD_PROMPT_RE.pattern})|(?:{_IOS_STYLE_PROMPT_RE.pattern})",
+    re.MULTILINE,
 )
 
 # Real, documented Cisco text for "the command ran, but LLDP is

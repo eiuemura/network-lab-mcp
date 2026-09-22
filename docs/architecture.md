@@ -298,54 +298,85 @@ cross-device first-bootstrap race is handled separately, by making
 second lock. `terminal_list()` stays unlocked: it is a read-only query
 that tmux itself answers atomically.
 
-### Live read-only human monitoring (Step 3.4)
+### Live read-only human monitoring (Step 3.4 / 3.4a)
 
 ```
-             AI / MCP
-                |
-          terminal tools
-                |
-                v
-         managed tmux session
-                ^
-                |
-         read-only capture
-                |
-       human monitor CLI (`monitor terminal <device-id>`)
+                        AI / MCP
+                           |
+                    managed terminal
+                           |
+                           v
+                  network-lab-device-R1
+                           |
+                           |
+                           +------+
+                                  |
+                                  v
+                         monitor terminal R1
+                                  ^
+                           +------+
+                           |
+                  network-lab-discovery-R1
+                           ^
+                           |
+                    Discovery engine
 ```
 
-`monitor terminal <device-id>` (EXEC only) gives a human the same live view
-of a device's managed production session the AI already has, without ever
-becoming a second writer to it. It is built entirely on
-`terminal.capture_device_terminal_view()` -- a new, small, pure observation
-function alongside the existing production API, using only
-`_pane_state()`/`_capture_pane()` (has-session/list-panes/capture-pane
-equivalents), never `send-keys`/`new-session`/`kill-session`. It is
-deliberately not wrapped in the Step 3.3 per-device lock: every call it
-makes is already a plain read, the only "race" it could have (the session
-disappearing between its own two tmux calls) is exactly the WAITING
-transition it is designed to tolerate rather than prevent, and since
-`monitor terminal` normally runs in a separate `./run_cli.sh` process with
-its own empty, process-local lock registry, taking that lock here could
-not provide real cross-process exclusion anyway.
+`monitor terminal <device-id>` (EXEC only) gives a human a live view of
+whichever Network Lab MCP terminal session currently has priority for that
+device, without ever becoming a second writer to it. It is device-oriented,
+not tmux-session-oriented: source priority is
 
-The monitor models exactly three states -- `waiting` (no session exists),
-`active` (session/pane alive), `ended` (pane exists but its process
-exited, via tmux's `remain-on-exit`) -- deliberately nothing richer (no
-attempt to infer router/BGP/SSH-auth state from tmux). Monitor lifetime is
-independent of session lifetime by design: it starts in `waiting` if
-opened before a session exists, survives disappearance/`ended` without
-exiting, and automatically resumes `active` display the instant a
-same-named session reappears; only the human quitting (`q`/`Q`/Ctrl-C)
-ends it. The UI itself is a small `prompt_toolkit` `Application`
-(full-screen, with its own `refresh_interval` driving periodic
-re-observation -- no manual polling thread, no `termios`/`tty`/`fcntl` of
-our own), matching the CLI's existing prompt_toolkit-only terminal
-handling.
+    managed session  >  Discovery session  >  waiting
+
+It is built entirely on `terminal.capture_device_terminal_view()` -- a
+small, pure observation function alongside the existing production API,
+which tries the normal managed session
+(`derive_production_session_name()`) first and only falls back to a
+Discovery bootstrap session (`derive_discovery_session_name()`) for the
+same device if no managed session currently exists, via one shared
+private helper (`_observe_named_session()`) for both -- no second
+observation implementation. Both paths use only `_pane_state()`/
+`_capture_pane()` (has-session/list-panes/capture-pane equivalents), never
+`send-keys`/`new-session`/`kill-session`; observing a Discovery session
+never creates one (only `discover_topology()` does that) and never delays
+its cleanup. It is deliberately not wrapped in the Step 3.3 per-device
+lock: every call it makes is already a plain read, the only "race" it
+could have (a session disappearing between its own two tmux calls, in
+either namespace) is exactly the WAITING/fallback transition it is
+designed to tolerate rather than prevent, and since `monitor terminal`
+normally runs in a separate `./run_cli.sh` process with its own empty,
+process-local lock registry, taking that lock here could not provide real
+cross-process exclusion anyway.
+
+The monitor models exactly three states -- `waiting` (neither session
+exists), `active` (the selected session/pane is alive), `ended` (pane
+exists but its process exited, via tmux's `remain-on-exit`) -- deliberately
+nothing richer (no attempt to infer router/BGP/SSH-auth state from tmux),
+plus which session `status` describes (`source`: `"managed"`,
+`"discovery"`, or `"none"`). Priority is re-evaluated fresh on every
+observation, so a managed session appearing while Discovery is being shown
+(or disappearing and falling back to a still-active Discovery session)
+needs no monitor restart -- the very next refresh reflects it. Monitor
+lifetime is independent of session lifetime by design: it starts in
+`waiting` if opened before either session exists, survives disappearance/
+`ended` in either namespace without exiting, and automatically resumes
+live display once a session (managed or Discovery) exists again; only the
+human quitting (`q`/`Q`/Ctrl-C) ends it. The UI itself is a small
+`prompt_toolkit` `Application` (full-screen, with its own `refresh_interval`
+driving periodic re-observation -- no manual polling thread, no
+`termios`/`tty`/`fcntl` of our own), matching the CLI's existing
+prompt_toolkit-only terminal handling.
 
 Multiple monitors -- of the same or different devices, from separate CLI
 processes -- are fully independent: tmux remains the only session state,
 so there is no monitor registry, daemon, or IPC layer to keep in sync.
+`monitor terminal <device-id>`'s target eligibility (the committed active
+topology's devices, union'd with devices that already have an existing
+managed *or* Discovery session) is likewise read fresh each time, so a
+device being discovered for the first time -- not yet in any committed
+topology -- is still a valid target the moment its Discovery session
+exists.
 
 ### Structurally separate session namespaces
 

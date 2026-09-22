@@ -908,14 +908,21 @@ def close_device_terminal(device_name: str) -> dict:
 
 @dataclass(frozen=True)
 class TerminalMonitorSnapshot:
-    """One read-only observation of a device's production session, for a
+    """One read-only observation of a device's terminal activity, for a
     live human monitor view. `status` is exactly one of:
 
-        "waiting"  no production session currently exists for this device
-        "active"   the session/pane exists and its process is still running
-        "ended"    the session/pane exists but its process has exited
-                   (tmux's `remain-on-exit`) -- `pane_text` is its last
-                   content, not live output
+        "waiting"  neither a production nor a Discovery session currently
+                   exists for this device
+        "active"   the selected session/pane exists and its process is
+                   still running
+        "ended"    the selected session/pane exists but its process has
+                   exited (tmux's `remain-on-exit`) -- `pane_text` is its
+                   last content, not live output
+
+    `source` (Step 3.4a) says which session `status`/`pane_text` describe:
+    "managed" (the normal production session), "discovery" (a Discovery
+    bootstrap session, in the absence of a managed one), or "none" (status
+    is always "waiting" then).
 
     `pane_text` is the *current visible pane*, not the full scrollback
     transcript (that role belongs to the persistent per-session log file,
@@ -923,34 +930,81 @@ class TerminalMonitorSnapshot:
 
     device_id: str
     status: str
+    source: str
     pane_text: str
 
 
-def capture_device_terminal_view(device_name: str, lines: int = DEFAULT_READ_LINES) -> TerminalMonitorSnapshot:
-    """Observe a device's production session for `monitor terminal`
-    (Step 3.4). Never creates, closes, or sends anything -- see the module
-    section docstring above.
-
-    `_pane_state()` alone already tells us both "does the session exist"
-    and "is its pane alive": it returns "unknown" on any has-session/
-    list-panes failure (including simply not existing), so this collapses
-    "target absent" and "an ordinary transient tmux observation hiccup"
-    into the same WAITING status by design -- a minimal three-state model
-    (Step 3.4 Section 26), not a distinction a passive human monitor
-    needs. A capture that fails after a "running"/"exited" state was just
-    observed (the target vanished in between, e.g. terminal_close() ran
-    concurrently) is exactly the same tolerated race, not an error --
-    silently downgraded to WAITING rather than raised."""
-    session_name = derive_production_session_name(device_name)
+def _observe_named_session(session_name: str, lines: int) -> tuple[str, str] | None:
+    """Read-only has-session/list-panes/capture-pane observation of one
+    already-derived session name. Returns None if the session does not
+    exist, or on an ordinary transient tmux observation hiccup
+    indistinguishable from that (see _pane_state()'s own "unknown" case)
+    -- including the target vanishing between the state check and the
+    capture (e.g. a concurrent terminal_close()/Discovery cleanup) -- the
+    caller's fallback/WAITING handling either way; this never raises for
+    that. Otherwise returns (status, pane_text) with status "active" or
+    "ended"."""
     state = _pane_state(session_name)
     if state == "unknown":
-        return TerminalMonitorSnapshot(device_name, "waiting", "")
+        return None
     try:
         pane_text = _capture_pane(session_name, lines)
     except TerminalError:
-        return TerminalMonitorSnapshot(device_name, "waiting", "")
-    status = "ended" if state == "exited" else "active"
-    return TerminalMonitorSnapshot(device_name, status, pane_text)
+        return None
+    return ("ended" if state == "exited" else "active", pane_text)
+
+
+def capture_device_terminal_view(device_name: str, lines: int = DEFAULT_READ_LINES) -> TerminalMonitorSnapshot:
+    """Observe the currently preferred terminal activity for a device, for
+    `monitor terminal` (Step 3.4 / 3.4a). Never creates, closes, or sends
+    anything -- see the module section docstring above.
+
+    Source priority, re-evaluated fresh on every call (so a managed
+    session appearing/disappearing, or a Discovery session appearing/
+    disappearing, is picked up on the very next observation with no
+    special-casing needed):
+
+        managed session > Discovery session > waiting
+
+    A normal managed production session (derive_production_session_name())
+    is preferred whenever it exists; only when it does not is a Discovery
+    bootstrap session (derive_discovery_session_name()) for the same
+    device considered instead -- reusing the exact same SSOT session-name
+    helpers and observation primitive (_observe_named_session()) either
+    way, never a second implementation. This never creates a Discovery
+    session merely by being asked to observe one: discover_topology() (via
+    terminal.open_bootstrap_terminal()) remains the only thing that ever
+    creates one, and this monitor never delays or blocks its cleanup --
+    it is a plain read, so a concurrent kill-session (e.g. Discovery's own
+    cleanup) is just the ordinary vanished-target race
+    _observe_named_session() already tolerates."""
+    managed = _observe_named_session(derive_production_session_name(device_name), lines)
+    if managed is not None:
+        status, pane_text = managed
+        return TerminalMonitorSnapshot(device_name, status, "managed", pane_text)
+    discovered = _observe_named_session(derive_discovery_session_name(device_name), lines)
+    if discovered is not None:
+        status, pane_text = discovered
+        return TerminalMonitorSnapshot(device_name, status, "discovery", pane_text)
+    return TerminalMonitorSnapshot(device_name, "waiting", "none", "")
+
+
+def discovery_device_name(session_name: str) -> str:
+    """Recover the device name encoded in a Discovery bootstrap session
+    name -- the Discovery-namespace counterpart of production_device_name()."""
+    if not is_discovery_session(session_name):
+        raise TerminalError(f"'{session_name}' is not a Discovery session.")
+    return session_name[len(DISCOVERY_PREFIX) :]
+
+
+def list_discovery_device_ids() -> list[str]:
+    """Device IDs that currently have an active Discovery bootstrap
+    session. Step 3.4a `monitor terminal` target-eligibility use only
+    (a device being discovered for the first time may not yet be in the
+    committed active topology at all) -- never a public MCP/terminal_*
+    surface, and this enumeration itself never creates, closes, or
+    observes pane content for anything."""
+    return [discovery_device_name(name) for name in _list_sessions(DISCOVERY_PREFIX)]
 
 
 # --------------------------------------------------------------------------

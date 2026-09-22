@@ -42,6 +42,12 @@ def _cleanup_device_sessions():
     yield
     for session in terminal.list_device_sessions():
         terminal.close_device_terminal(session["device"])
+    # Step 3.4a source-priority tests also open Discovery-namespace fakes
+    # directly (never through discover_topology()) -- clean those up too,
+    # so a still-running one never leaks into (and is wrongly reused by)
+    # the next test.
+    for device_id in terminal.list_discovery_device_ids():
+        terminal._close_session(terminal.derive_discovery_session_name(device_id))
     # A few tests deliberately create a session via terminal._create_session()
     # directly (to control whether the *pane's own process* dies, for
     # ENDED-state testing) rather than through _ensure_managed_session(),
@@ -57,6 +63,10 @@ def _open_fake(device: str, script: str = "sleep 5") -> None:
     )
 
 
+def _open_discovery_fake(device: str, script: str = "sleep 5") -> None:
+    terminal._ensure_managed_session(terminal.derive_discovery_session_name(device), ["bash", "-c", script])
+
+
 # ==========================================================================
 # Observation backend: WAITING / ACTIVE / ENDED (Sections 26, 42-45)
 # ==========================================================================
@@ -65,6 +75,7 @@ def _open_fake(device: str, script: str = "sleep 5") -> None:
 def test_waiting_when_no_session_exists():
     snapshot = terminal.capture_device_terminal_view("R1")
     assert snapshot.status == "waiting"
+    assert snapshot.source == "none"
     assert snapshot.pane_text == ""
 
 
@@ -72,6 +83,7 @@ def test_active_when_session_exists():
     _open_fake("R1")
     snapshot = terminal.capture_device_terminal_view("R1")
     assert snapshot.status == "active"
+    assert snapshot.source == "managed"
 
 
 def test_waiting_again_after_session_disappears():
@@ -128,6 +140,79 @@ def _wait_until(predicate, timeout: float = _TIMEOUT, interval: float = 0.05) ->
 
 
 # ==========================================================================
+# Step 3.4a: source priority (managed > discovery > waiting)
+# (Sections 38-40, 44)
+# ==========================================================================
+
+
+def test_managed_priority_when_both_managed_and_discovery_exist():
+    _open_discovery_fake("R1", "echo disco; sleep 5")
+    _open_fake("R1", "echo managed; sleep 5")
+    snapshot = terminal.capture_device_terminal_view("R1")
+    assert snapshot.source == "managed"
+    assert snapshot.status == "active"
+    assert "managed" in snapshot.pane_text
+    assert "disco" not in snapshot.pane_text
+
+
+def test_discovery_fallback_when_managed_absent():
+    _open_discovery_fake("R1", "echo disco-only; sleep 5")
+    snapshot = terminal.capture_device_terminal_view("R1")
+    assert snapshot.source == "discovery"
+    assert snapshot.status == "active"
+    assert "disco-only" in snapshot.pane_text
+
+
+def test_waiting_when_neither_managed_nor_discovery_exist():
+    snapshot = terminal.capture_device_terminal_view("R1")
+    assert snapshot.source == "none"
+    assert snapshot.status == "waiting"
+    # UI wording for this case is covered by test_render_waiting_text.
+
+
+def test_discovery_disappears_managed_absent_converges_to_waiting():
+    _open_discovery_fake("R1", "echo disco; sleep 5")
+    assert terminal.capture_device_terminal_view("R1").source == "discovery"
+    terminal._close_session(terminal.derive_discovery_session_name("R1"))
+    snapshot = terminal.capture_device_terminal_view("R1")
+    assert snapshot.source == "none"
+    assert snapshot.status == "waiting"
+
+
+def test_discovery_takeover_when_managed_disappears_leaving_discovery():
+    _open_discovery_fake("R1", "echo disco; sleep 5")
+    _open_fake("R1", "echo managed; sleep 5")
+    assert terminal.capture_device_terminal_view("R1").source == "managed"
+    terminal.close_device_terminal("R1")
+    snapshot = terminal.capture_device_terminal_view("R1")
+    assert snapshot.source == "discovery"
+    assert snapshot.status == "active"
+    assert "disco" in snapshot.pane_text
+
+
+def test_managed_takeover_when_it_appears_while_discovery_active():
+    _open_discovery_fake("R1", "echo disco; sleep 5")
+    assert terminal.capture_device_terminal_view("R1").source == "discovery"
+    _open_fake("R1", "echo managed; sleep 5")
+    snapshot = terminal.capture_device_terminal_view("R1")
+    assert snapshot.source == "managed"
+    assert "managed" in snapshot.pane_text
+
+
+def test_discovery_race_target_vanishes_mid_observation(monkeypatch):
+    _open_discovery_fake("R1")
+
+    def _vanished_capture(session_name, lines):
+        raise terminal.TerminalError(f"Session '{session_name}' does not exist.")
+
+    monkeypatch.setattr(terminal, "_capture_pane", _vanished_capture)
+    snapshot = terminal.capture_device_terminal_view("R1")
+    assert snapshot.status == "waiting"
+    assert snapshot.source == "none"
+    assert snapshot.pane_text == ""
+
+
+# ==========================================================================
 # Capture race: target vanishes between the state check and the capture
 # (Section 27/49)
 # ==========================================================================
@@ -157,31 +242,51 @@ def test_capture_race_recovers_once_capture_succeeds_again():
 
 def test_render_waiting_text(monkeypatch):
     monkeypatch.setattr(
-        terminal, "capture_device_terminal_view", lambda d: terminal.TerminalMonitorSnapshot(d, "waiting", "")
+        terminal,
+        "capture_device_terminal_view",
+        lambda d: terminal.TerminalMonitorSnapshot(d, "waiting", "none", ""),
     )
     text = climain._render_monitor_view("R1")
     assert "Monitoring terminal R1" in text
     assert "Read-only" in text
-    assert "waiting for managed terminal session" in text
+    assert "waiting for terminal activity" in text
+    assert "managed terminal session" not in text
+    assert "Source:" not in text
 
 
-def test_render_active_text(monkeypatch):
+def test_render_active_managed_text(monkeypatch):
     monkeypatch.setattr(
         terminal,
         "capture_device_terminal_view",
-        lambda d: terminal.TerminalMonitorSnapshot(d, "active", "RP/0/RP0/CPU0:R1#show version"),
+        lambda d: terminal.TerminalMonitorSnapshot(d, "active", "managed", "RP/0/RP0/CPU0:R1#show version"),
     )
     text = climain._render_monitor_view("R1")
     assert "Status: active" in text
+    assert "Source: managed" in text
     assert "RP/0/RP0/CPU0:R1#show version" in text
+
+
+def test_render_active_discovery_text(monkeypatch):
+    monkeypatch.setattr(
+        terminal,
+        "capture_device_terminal_view",
+        lambda d: terminal.TerminalMonitorSnapshot(d, "active", "discovery", "RP/0/RP0/CPU0:R1#show lldp neighbors"),
+    )
+    text = climain._render_monitor_view("R1")
+    assert "Status: active" in text
+    assert "Source: discovery" in text
+    assert "RP/0/RP0/CPU0:R1#show lldp neighbors" in text
 
 
 def test_render_ended_text(monkeypatch):
     monkeypatch.setattr(
-        terminal, "capture_device_terminal_view", lambda d: terminal.TerminalMonitorSnapshot(d, "ended", "last output")
+        terminal,
+        "capture_device_terminal_view",
+        lambda d: terminal.TerminalMonitorSnapshot(d, "ended", "managed", "last output"),
     )
     text = climain._render_monitor_view("R1")
     assert "terminal session ended" in text
+    assert "Source: managed" in text
     assert "last output" in text
 
 
@@ -441,6 +546,88 @@ def test_monitor_never_calls_any_mutating_terminal_helper():
             with create_app_session(input=pipe_input, output=DummyOutput()):
                 climain.run_terminal_monitor(device, refresh_interval=0.02)
 
+    assert calls == []
+
+
+def test_monitor_never_calls_any_mutating_helper_across_discovery_and_managed():
+    """Step 3.4a Section 47: extends the zero-write proof to the new
+    source-fallback path, exercising the *real* capture_device_terminal_
+    view() (not a fake) through WAITING -> DISCOVERY ACTIVE -> WAITING ->
+    MANAGED ACTIVE -> quit, asserting zero calls to any mutating helper in
+    either namespace."""
+    device = "R1"
+    tracked_names = [
+        "open_device_terminal",
+        "send_to_device",
+        "close_device_terminal",
+        "_ensure_managed_session",
+        "_send_literal_text",
+        "_send_special_keys",
+        "_send_enter",
+        "_create_session",
+        "_create_logged_session",
+        "_close_session",
+        "_start_session_logging",
+        "open_bootstrap_terminal",
+        "send_to_bootstrap",
+        "close_bootstrap_terminal",
+    ]
+    calls: list[str] = []
+
+    def _tracked(name, fn):
+        def wrapper(*args, **kwargs):
+            calls.append(name)
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    seen_discovery_active = threading.Event()
+    seen_waiting_after_discovery = threading.Event()
+    seen_managed_active = threading.Event()
+    real_capture = terminal.capture_device_terminal_view
+
+    def tracking_capture(dev):
+        snapshot = real_capture(dev)
+        if snapshot.source == "discovery":
+            seen_discovery_active.set()
+        elif snapshot.source == "none" and seen_discovery_active.is_set():
+            seen_waiting_after_discovery.set()
+        elif snapshot.source == "managed":
+            seen_managed_active.set()
+        return snapshot
+
+    terminal._ensure_tmux_environment()  # see the sibling test's own note above
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(terminal, "capture_device_terminal_view", tracking_capture)
+        for name in tracked_names:
+            mp.setattr(terminal, name, _tracked(name, getattr(terminal, name)))
+
+        def driver(pipe_input):
+            import time
+
+            discovery_session = terminal.derive_discovery_session_name(device)
+            managed_session = terminal.derive_production_session_name(device)
+
+            terminal._run(["new-session", "-d", "-s", discovery_session, "-x", "220", "-y", "50", "bash", "-c", "sleep 5"])
+            assert seen_discovery_active.wait(timeout=_TIMEOUT)
+            terminal._run(["kill-session", "-t", discovery_session], check=False)
+            assert seen_waiting_after_discovery.wait(timeout=_TIMEOUT)
+
+            terminal._run(["new-session", "-d", "-s", managed_session, "-x", "220", "-y", "50", "bash", "-c", "sleep 5"])
+            assert seen_managed_active.wait(timeout=_TIMEOUT)
+            terminal._run(["kill-session", "-t", managed_session], check=False)
+            time.sleep(0.1)
+            pipe_input.send_text("q")
+
+        with create_pipe_input() as pipe_input:
+            threading.Thread(target=driver, args=(pipe_input,), daemon=True).start()
+            with create_app_session(input=pipe_input, output=DummyOutput()):
+                climain.run_terminal_monitor(device, refresh_interval=0.02)
+
+    assert seen_discovery_active.is_set()
+    assert seen_waiting_after_discovery.is_set()
+    assert seen_managed_active.is_set()
     assert calls == []
 
 

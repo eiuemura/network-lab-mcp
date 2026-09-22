@@ -95,16 +95,18 @@ class CliContext:
     running_access_info_names: tuple[str, ...] = ()
     running_scenario_names: tuple[str, ...] = ()
     running_reference_names: tuple[str, ...] = ()
-    # `monitor terminal <device-id>` (EXEC only, Step 3.4): every device
-    # eligible to be monitored right now -- the committed active
+    # `monitor terminal <device-id>` (EXEC only, Step 3.4/3.4a): every
+    # device eligible to be monitored right now -- the committed active
     # topology's own devices, union'd with any device that already has an
     # existing production terminal session (so a session the AI opened
     # for a device outside the *current* topology selection, or one whose
-    # topology selection changed since, stays a valid target -- see
-    # cli/main.py's _monitor_terminal_target_names()). Deliberately
-    # committed-only: an uncommitted topology candidate's devices are
-    # never offered here. Never Discovery bootstrap sessions -- those are
-    # a structurally separate namespace this never reads from.
+    # topology selection changed since, stays a valid target), union'd
+    # with any device that currently has an active Discovery bootstrap
+    # session (Step 3.4a: a device being discovered for the first time may
+    # not yet be in the committed topology at all -- see cli/main.py's
+    # _monitor_terminal_target_names()). Deliberately committed-only for
+    # the topology part: an uncommitted topology candidate's devices are
+    # never offered here.
     monitor_terminal_device_ids: tuple[str, ...] = ()
 
 

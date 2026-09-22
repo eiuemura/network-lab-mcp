@@ -225,13 +225,19 @@ def _running_selectable_names(
 
 
 def _monitor_terminal_target_names(session: cfgmod.CliSession) -> tuple[str, ...]:
-    """`monitor terminal <device-id>` (Step 3.4): every device eligible to
-    be monitored right now -- see grammar.CliContext.monitor_terminal_
+    """`monitor terminal <device-id>` (Step 3.4/3.4a): every device eligible
+    to be monitored right now -- see grammar.CliContext.monitor_terminal_
     device_ids's docstring for the exact rule. Used both to build that
     completion field and, independently, by h_monitor_terminal() to
     re-validate the typed device_id at execution time (completion hints
     are never trusted as authoritative, matching every other identifier
-    in this CLI)."""
+    in this CLI).
+
+    Step 3.4a adds existing Discovery-session device IDs to the union: a
+    device being discovered for the very first time may not yet be in the
+    committed active topology (discover_topology()'s targets come from
+    access-info, not the topology), so without this a brand-new device's
+    live Discovery activity could never be monitored at all."""
     committed_devices: tuple[str, ...] = ()
     try:
         settings = lab.read_settings(session.lab_root)
@@ -241,7 +247,8 @@ def _monitor_terminal_target_names(session: cfgmod.CliSession) -> tuple[str, ...
     except lab.LabConfigError:
         pass
     session_devices = tuple(s["device"] for s in terminal.list_device_sessions())
-    return tuple(dict.fromkeys((*committed_devices, *session_devices)))
+    discovery_devices = tuple(terminal.list_discovery_device_ids())
+    return tuple(dict.fromkeys((*committed_devices, *session_devices, *discovery_devices)))
 
 
 def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
@@ -1135,7 +1142,12 @@ def _render_monitor_view(device_id: str) -> str:
     """Pure observe-then-render step, deliberately separate from the
     periodic refresh loop below so it -- and therefore every monitor
     lifecycle transition -- is directly unit-testable without any real
-    time passing (Step 3.4 Section 53)."""
+    time passing (Step 3.4 Section 53).
+
+    Step 3.4a: the wording no longer implies a managed session
+    specifically (a Discovery bootstrap session is now an equally valid
+    source -- see terminal.capture_device_terminal_view()'s priority
+    docstring), and an active/ended source names which one it is."""
     snapshot = terminal.capture_device_terminal_view(device_id)
     lines = [
         f"Monitoring terminal {device_id}",
@@ -1143,12 +1155,13 @@ def _render_monitor_view(device_id: str) -> str:
         "",
     ]
     if snapshot.status == "waiting":
-        lines.append("Status: waiting for managed terminal session")
+        lines.append("Status: waiting for terminal activity")
     else:
         if snapshot.status == "ended":
             lines.append("Status: terminal session ended -- waiting for session to return")
         else:
             lines.append("Status: active")
+        lines.append(f"Source: {snapshot.source}")
         lines.append("")
         lines.append(_MONITOR_DIVIDER)
         lines.append(snapshot.pane_text)

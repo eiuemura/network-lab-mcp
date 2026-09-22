@@ -1164,9 +1164,11 @@ same device        -> operations remain serialized / safe
 
 ## Step 3.4: live read-only terminal monitoring
 
-Network engineers can monitor the same persistent tmux device sessions
-used by the AI. Monitoring remains active across session loss and
-automatically resumes when the managed session returns.
+`monitor terminal <device>` continuously observes Network Lab MCP terminal
+activity for a device. A normal managed terminal is preferred; when none
+exists, an active Discovery bootstrap session is shown instead. If neither
+exists, the monitor waits and automatically resumes when activity appears.
+Monitoring remains active across session loss and source changes alike.
 
 ```
 network-lab# monitor terminal R1
@@ -1175,6 +1177,7 @@ Monitoring terminal R1
 Read-only -- press q to quit
 
 Status: active
+Source: managed
 ----------------------------------------------------------------
 RP/0/RP0/CPU0:R1#show version
 ...
@@ -1183,22 +1186,30 @@ RP/0/RP0/CPU0:R1#
 ```
 
 - **EXEC-only, strictly read-only.** `monitor terminal <device-id>` opens a
-  live view of the exact same `network-lab-device-<device-id>` tmux session
-  the AI's `terminal_open()`/`terminal_send()`/`terminal_read()` use --
+  live view of the currently preferred terminal session for that device --
   never `tmux attach-session`, never a keystroke forwarded to the pane. It
-  never creates, closes, or reconnects a session, and adds no new MCP tool
-  (still exactly seven).
+  never creates, closes, or reconnects a session (managed or Discovery), and
+  adds no new MCP tool (still exactly seven).
+- **Source priority: managed session > Discovery session > waiting**
+  (Step 3.4a). It shows the normal managed session
+  (`network-lab-device-<device-id>`) whenever one exists; only when it
+  doesn't does it fall back to an active Discovery bootstrap session
+  (`network-lab-discovery-<device-id>`, created by `discover topology`) for
+  the same device. Priority is re-evaluated on every refresh, so watching a
+  device being discovered for the first time, then having the AI open a
+  normal session for it afterward, needs no monitor restart -- the view just
+  switches from `Source: discovery` to `Source: managed`.
 - **Monitor lifetime is independent of session lifetime.** It may be
-  started before a session even exists (`Status: waiting for managed
-  terminal session`), survives `terminal_close()`/the SSH process exiting/
-  the whole session disappearing without exiting, and automatically resumes
-  live display the instant a same-named session reappears -- only `q`/`Q`
-  (no Enter needed) or Ctrl-C ends it.
+  started before any session exists (`Status: waiting for terminal
+  activity`), survives session loss (managed or Discovery, including
+  Discovery's own normal cleanup) without exiting, and automatically resumes
+  live display -- only `q`/`Q` (no Enter needed) or Ctrl-C ends it.
 - **Several devices can be watched at once, independently.** Separate
   `./run_cli.sh` terminal windows can each run `monitor terminal <device>`
-  for a different device while the AI investigates all of them
-  concurrently (Step 3.3) -- one monitor quitting, or one device's session
-  churn, never affects another monitor, the AI's own operations, or Discovery.
+  for a different device while the AI investigates all of them concurrently
+  (Step 3.3) or Discovery collects them concurrently -- one monitor
+  quitting, or one device's session churn, never affects another monitor,
+  the AI's own operations, or Discovery's own cleanup.
 
 Example: while the AI operates R1 and R2 concurrently, a network engineer can
 watch both live:

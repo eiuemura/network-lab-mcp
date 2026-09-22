@@ -138,15 +138,25 @@ def test_existing_session_device_outside_topology_is_offered(lab_root, monkeypat
     assert set(ctx.monitor_terminal_device_ids) == {"R1", "R2", "R9_SESSION_ONLY"}
 
 
-def test_discovery_bootstrap_session_is_never_offered(lab_root, monkeypatch):
-    # list_device_sessions() only ever enumerates the production namespace
-    # (see terminal.py); this asserts _monitor_terminal_target_names()
-    # does not separately reach into the Discovery namespace either.
+def test_discovery_only_device_is_offered(lab_root, monkeypatch):
+    # Step 3.4a: a device being discovered for the first time may not yet
+    # be in the committed topology or have a managed session at all -- its
+    # live Discovery activity must still be a valid monitor target.
     monkeypatch.setattr("network_lab_mcp.terminal.list_device_sessions", lambda: [])
+    monkeypatch.setattr("network_lab_mcp.terminal.list_discovery_device_ids", lambda: ["R9_DISCOVERY_ONLY"])
     session = cfgmod.CliSession(lab_root)
     ctx = climain.build_context(session)
     assert "R1" in ctx.monitor_terminal_device_ids  # sanity: fixture still works
-    assert not any("discovery" in name.lower() for name in ctx.monitor_terminal_device_ids)
+    assert "R9_DISCOVERY_ONLY" in ctx.monitor_terminal_device_ids
+    assert set(ctx.monitor_terminal_device_ids) == {"R1", "R2", "R9_DISCOVERY_ONLY"}
+
+
+def test_no_extra_devices_offered_when_no_discovery_sessions_exist(lab_root, monkeypatch):
+    monkeypatch.setattr("network_lab_mcp.terminal.list_device_sessions", lambda: [])
+    monkeypatch.setattr("network_lab_mcp.terminal.list_discovery_device_ids", lambda: [])
+    session = cfgmod.CliSession(lab_root)
+    ctx = climain.build_context(session)
+    assert set(ctx.monitor_terminal_device_ids) == {"R1", "R2"}
 
 
 def test_unknown_arbitrary_device_prints_bounded_error(lab_root, monkeypatch, capsys):

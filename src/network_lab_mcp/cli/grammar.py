@@ -95,6 +95,17 @@ class CliContext:
     running_access_info_names: tuple[str, ...] = ()
     running_scenario_names: tuple[str, ...] = ()
     running_reference_names: tuple[str, ...] = ()
+    # `monitor terminal <device-id>` (EXEC only, Step 3.4): every device
+    # eligible to be monitored right now -- the committed active
+    # topology's own devices, union'd with any device that already has an
+    # existing production terminal session (so a session the AI opened
+    # for a device outside the *current* topology selection, or one whose
+    # topology selection changed since, stays a valid target -- see
+    # cli/main.py's _monitor_terminal_target_names()). Deliberately
+    # committed-only: an uncommitted topology candidate's devices are
+    # never offered here. Never Discovery bootstrap sessions -- those are
+    # a structurally separate namespace this never reads from.
+    monitor_terminal_device_ids: tuple[str, ...] = ()
 
 
 # A provider receives the already-committed raw tokens of the command so
@@ -271,6 +282,10 @@ def provide_access_info_jump_host_names(ctx: CliContext, prefix: str, committed:
 
 def provide_log_device_ids(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     return [n for n in ctx.log_device_ids if n.startswith(prefix)]
+
+
+def provide_monitor_terminal_device_ids(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    return [n for n in ctx.monitor_terminal_device_ids if n.startswith(prefix)]
 
 
 def provide_log_files(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
@@ -624,6 +639,28 @@ def _build_exec_root() -> Node:
         include_running_config_definition_views=True,
     )
     _add_delete_subtree(root)
+
+    # `monitor terminal <device-id>` (EXEC only, Step 3.4): a read-only
+    # human observation view of the same production tmux session
+    # terminal_open()/terminal_send()/terminal_read() use -- never
+    # creatable (observing never creates a session), dynamically
+    # enumerated from the effective, committed-only eligible target set
+    # (see CliContext.monitor_terminal_device_ids's own docstring).
+    # Execution (cli/main.py's h_monitor_terminal) re-derives and
+    # re-validates that same set independently at run time; this
+    # provider only ever drives Tab/`?`.
+    monitor_node = root.add_literal("monitor", "Monitor a live terminal session")
+    monitor_terminal_node = monitor_node.add_literal("terminal", "Monitor a device's live terminal session")
+    monitor_terminal_arg = Argument(
+        "device_id",
+        "Device to monitor",
+        provider=provide_monitor_terminal_device_ids,
+        hint="<device-id>",
+        enumerate_when_empty=True,
+    )
+    monitor_terminal_next = monitor_terminal_node.add_argument(monitor_terminal_arg)
+    monitor_terminal_next.set_command("exec.monitor_terminal", "Monitor a device's live terminal session")
+
     _add_help_subtree(root, "exec")
 
     exit_node = root.add_literal("exit", "Exit the CLI")

@@ -361,7 +361,7 @@ def test_delete_keyword_no_new_abbreviation_ambiguity():
     assert result.action == "exec.delete_logging_all"
     ctx = grammar.CliContext()
     tokens = [line.token for line in grammar.help("exec", "", ctx).lines]
-    assert tokens == ["configure", "show", "delete", "help", "exit", "quit"]
+    assert tokens == ["configure", "show", "delete", "monitor", "help", "exit", "quit"]
 
 
 def test_directory_keyword_abbreviation_resolves():

@@ -160,8 +160,40 @@ network-lab(config)# show version
 | `delete logging <device-id> all` | Delete every eligible stored terminal log for one device, leaving its directory in place. Requires confirmation. |
 | `delete logging <device-id> directory` | Delete a device's eligible logs, then remove its now-empty logging directory. Requires confirmation. |
 | `delete logging <device-id> <log-file>` | Delete exactly one eligible stored terminal log, by its exact filename (same completion/eligibility rules as `show logging`). Requires confirmation. |
+| `monitor terminal <device-id>` | Open a live, read-only view of a device's managed production terminal session — see "`monitor terminal`" below. `<device-id>` Tab/`?`-completes from the committed active topology's devices, union'd with any device that already has an existing session. |
 | `help` / `help <topic>` | Network Lab MCP Quick Start/usage help — see "`?` vs. `help`" above. Not the same as bare `?`. |
 | `exit` / `quit` | Terminate the CLI process. Only reachable in EXEC mode, where by construction no candidate configuration exists. |
+
+### `monitor terminal`
+
+`monitor terminal <device-id>` opens a continuously-refreshing, read-only
+view of the exact same managed tmux session (`network-lab-device-<device-id>`)
+that `terminal_open()`/`terminal_send()`/`terminal_read()` use — the same
+terminal an AI/MCP client is driving, observed live by a human. It is EXEC-only
+and strictly observational:
+
+- Never sends anything to the pane, never creates or closes a session. Only
+  `has-session`/`list-panes`/`capture-pane`-style read-only introspection.
+- Works even if no session exists yet for the device — it shows
+  `Status: waiting for managed terminal session` and starts displaying output
+  automatically the moment one is opened (by the AI, or by a human running
+  `terminal_open()`-equivalent activity elsewhere).
+- Session loss (`terminal_close()`, the SSH/telnet process exiting, the whole
+  tmux session disappearing) never exits the monitor — it returns to
+  `Status: waiting for managed terminal session` (or, if the pane still exists
+  but its process has exited, `Status: terminal session ended — waiting for
+  session to return`, showing its last content) and automatically resumes
+  showing live output once a session under the same name reappears.
+- Only the human can end it: press `q` or `Q` (no Enter needed) or Ctrl-C.
+  Every other keystroke is ignored and never reaches the device. Quitting
+  returns cleanly to `network-lab#`; command history and CLI state are
+  unaffected.
+- Multiple monitors — of the same or different devices, from separate
+  `./run_cli.sh` processes or CLI sessions — are independent; none of them
+  affect each other, the AI's own terminal operations, or Discovery.
+- `<device-id>` must be either a device in the *committed* active topology or
+  a device that already has a managed session; an unrecognized name is
+  rejected immediately rather than waiting forever.
 
 ### `show logging`
 

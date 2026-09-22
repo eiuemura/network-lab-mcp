@@ -298,6 +298,55 @@ cross-device first-bootstrap race is handled separately, by making
 second lock. `terminal_list()` stays unlocked: it is a read-only query
 that tmux itself answers atomically.
 
+### Live read-only human monitoring (Step 3.4)
+
+```
+             AI / MCP
+                |
+          terminal tools
+                |
+                v
+         managed tmux session
+                ^
+                |
+         read-only capture
+                |
+       human monitor CLI (`monitor terminal <device-id>`)
+```
+
+`monitor terminal <device-id>` (EXEC only) gives a human the same live view
+of a device's managed production session the AI already has, without ever
+becoming a second writer to it. It is built entirely on
+`terminal.capture_device_terminal_view()` -- a new, small, pure observation
+function alongside the existing production API, using only
+`_pane_state()`/`_capture_pane()` (has-session/list-panes/capture-pane
+equivalents), never `send-keys`/`new-session`/`kill-session`. It is
+deliberately not wrapped in the Step 3.3 per-device lock: every call it
+makes is already a plain read, the only "race" it could have (the session
+disappearing between its own two tmux calls) is exactly the WAITING
+transition it is designed to tolerate rather than prevent, and since
+`monitor terminal` normally runs in a separate `./run_cli.sh` process with
+its own empty, process-local lock registry, taking that lock here could
+not provide real cross-process exclusion anyway.
+
+The monitor models exactly three states -- `waiting` (no session exists),
+`active` (session/pane alive), `ended` (pane exists but its process
+exited, via tmux's `remain-on-exit`) -- deliberately nothing richer (no
+attempt to infer router/BGP/SSH-auth state from tmux). Monitor lifetime is
+independent of session lifetime by design: it starts in `waiting` if
+opened before a session exists, survives disappearance/`ended` without
+exiting, and automatically resumes `active` display the instant a
+same-named session reappears; only the human quitting (`q`/`Q`/Ctrl-C)
+ends it. The UI itself is a small `prompt_toolkit` `Application`
+(full-screen, with its own `refresh_interval` driving periodic
+re-observation -- no manual polling thread, no `termios`/`tty`/`fcntl` of
+our own), matching the CLI's existing prompt_toolkit-only terminal
+handling.
+
+Multiple monitors -- of the same or different devices, from separate CLI
+processes -- are fully independent: tmux remains the only session state,
+so there is no monitor registry, daemon, or IPC layer to keep in sync.
+
 ### Structurally separate session namespaces
 
 Two structurally distinct namespaces exist, chosen by the type of caller

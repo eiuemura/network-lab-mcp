@@ -878,6 +878,82 @@ def close_device_terminal(device_name: str) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Read-only human observation (Step 3.4: `monitor terminal <device-id>`)
+#
+# Deliberately separate from terminal_read()/read_device(): that is an MCP
+# *operation* (part of the interactive AI terminal contract); this is a
+# passive, continuously-repeated human view of the exact same production
+# session, with its own three-state model (waiting/active/ended) a live
+# monitor UI needs and terminal_read() has no reason to expose. Pure
+# observation: has-session/list-panes/capture-pane only, in that order,
+# never send-keys/new-session/kill-session -- see cli/main.py's monitor UI,
+# which never calls anything else here.
+#
+# Deliberately NOT wrapped in _session_lock(): every call this makes is
+# already a plain read (no check-then-act mutation to protect), so the
+# only "race" possible is the session disappearing between this
+# function's own two tmux calls -- which is exactly the WAITING
+# transition the monitor is designed to tolerate (see
+# capture_device_terminal_view()'s docstring), not a bug to prevent.
+# Holding the per-device lock here would additionally serialize a
+# continuously-polling human monitor against the AI's own interactive
+# terminal_send()/terminal_read() for that device for no correctness
+# benefit -- and since `monitor terminal` normally runs in a separate
+# `./run_cli.sh` process with its own empty, process-local lock registry
+# (Step 3.3's locks are in-memory, not cross-process), taking the lock
+# here could not provide real cross-process exclusion even if it were
+# otherwise desirable.
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TerminalMonitorSnapshot:
+    """One read-only observation of a device's production session, for a
+    live human monitor view. `status` is exactly one of:
+
+        "waiting"  no production session currently exists for this device
+        "active"   the session/pane exists and its process is still running
+        "ended"    the session/pane exists but its process has exited
+                   (tmux's `remain-on-exit`) -- `pane_text` is its last
+                   content, not live output
+
+    `pane_text` is the *current visible pane*, not the full scrollback
+    transcript (that role belongs to the persistent per-session log file,
+    see _start_session_logging()) -- always "" for "waiting"."""
+
+    device_id: str
+    status: str
+    pane_text: str
+
+
+def capture_device_terminal_view(device_name: str, lines: int = DEFAULT_READ_LINES) -> TerminalMonitorSnapshot:
+    """Observe a device's production session for `monitor terminal`
+    (Step 3.4). Never creates, closes, or sends anything -- see the module
+    section docstring above.
+
+    `_pane_state()` alone already tells us both "does the session exist"
+    and "is its pane alive": it returns "unknown" on any has-session/
+    list-panes failure (including simply not existing), so this collapses
+    "target absent" and "an ordinary transient tmux observation hiccup"
+    into the same WAITING status by design -- a minimal three-state model
+    (Step 3.4 Section 26), not a distinction a passive human monitor
+    needs. A capture that fails after a "running"/"exited" state was just
+    observed (the target vanished in between, e.g. terminal_close() ran
+    concurrently) is exactly the same tolerated race, not an error --
+    silently downgraded to WAITING rather than raised."""
+    session_name = derive_production_session_name(device_name)
+    state = _pane_state(session_name)
+    if state == "unknown":
+        return TerminalMonitorSnapshot(device_name, "waiting", "")
+    try:
+        pane_text = _capture_pane(session_name, lines)
+    except TerminalError:
+        return TerminalMonitorSnapshot(device_name, "waiting", "")
+    status = "ended" if state == "exited" else "active"
+    return TerminalMonitorSnapshot(device_name, status, pane_text)
+
+
+# --------------------------------------------------------------------------
 # Private Discovery bootstrap connectivity (see discovery.py)
 #
 # Not exposed as an MCP tool and not reachable through terminal_open()'s

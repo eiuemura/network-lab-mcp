@@ -1162,6 +1162,56 @@ same device        -> operations remain serialized / safe
   still fails the whole `discover topology` run with zero candidate
   mutation, exactly like before.
 
+## Step 3.4: live read-only terminal monitoring
+
+Network engineers can monitor the same persistent tmux device sessions
+used by the AI. Monitoring remains active across session loss and
+automatically resumes when the managed session returns.
+
+```
+network-lab# monitor terminal R1
+
+Monitoring terminal R1
+Read-only -- press q to quit
+
+Status: active
+----------------------------------------------------------------
+RP/0/RP0/CPU0:R1#show version
+...
+RP/0/RP0/CPU0:R1#
+----------------------------------------------------------------
+```
+
+- **EXEC-only, strictly read-only.** `monitor terminal <device-id>` opens a
+  live view of the exact same `network-lab-device-<device-id>` tmux session
+  the AI's `terminal_open()`/`terminal_send()`/`terminal_read()` use --
+  never `tmux attach-session`, never a keystroke forwarded to the pane. It
+  never creates, closes, or reconnects a session, and adds no new MCP tool
+  (still exactly seven).
+- **Monitor lifetime is independent of session lifetime.** It may be
+  started before a session even exists (`Status: waiting for managed
+  terminal session`), survives `terminal_close()`/the SSH process exiting/
+  the whole session disappearing without exiting, and automatically resumes
+  live display the instant a same-named session reappears -- only `q`/`Q`
+  (no Enter needed) or Ctrl-C ends it.
+- **Several devices can be watched at once, independently.** Separate
+  `./run_cli.sh` terminal windows can each run `monitor terminal <device>`
+  for a different device while the AI investigates all of them
+  concurrently (Step 3.3) -- one monitor quitting, or one device's session
+  churn, never affects another monitor, the AI's own operations, or Discovery.
+
+Example: while the AI operates R1 and R2 concurrently, a network engineer can
+watch both live:
+
+```
+# Terminal 1                          # Terminal 2
+./run_cli.sh                          ./run_cli.sh
+network-lab# monitor terminal R1      network-lab# monitor terminal R2
+```
+
+See ["`monitor terminal`"](docs/cli_reference.md#monitor-terminal) in the CLI
+reference for the full behavior.
+
 ## MCP SDK
 
 Network Lab MCP uses the official

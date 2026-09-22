@@ -497,7 +497,7 @@ def test_bare_question_mark_still_shows_command_syntax_not_quick_start():
     ctx = make_ctx()
     result = grammar.help("exec", "", ctx)
     tokens = [line.token for line in result.lines]
-    assert tokens == ["configure", "show", "delete", "help", "exit", "quit"]
+    assert tokens == ["configure", "show", "delete", "monitor", "help", "exit", "quit"]
 
 
 def test_bare_help_parses_as_its_own_complete_command():

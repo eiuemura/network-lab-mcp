@@ -28,9 +28,12 @@ from typing import Callable, Optional
 
 import yaml
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import run_in_terminal
+from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.history import History
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import Window
+from prompt_toolkit.layout.controls import FormattedTextControl
 
 import network_lab_mcp
 from network_lab_mcp import discovery
@@ -221,6 +224,26 @@ def _running_selectable_names(
     return tuple(all_names)
 
 
+def _monitor_terminal_target_names(session: cfgmod.CliSession) -> tuple[str, ...]:
+    """`monitor terminal <device-id>` (Step 3.4): every device eligible to
+    be monitored right now -- see grammar.CliContext.monitor_terminal_
+    device_ids's docstring for the exact rule. Used both to build that
+    completion field and, independently, by h_monitor_terminal() to
+    re-validate the typed device_id at execution time (completion hints
+    are never trusted as authoritative, matching every other identifier
+    in this CLI)."""
+    committed_devices: tuple[str, ...] = ()
+    try:
+        settings = lab.read_settings(session.lab_root)
+        topology_name = lab.get_active_topology_name(settings)
+        topology = lab.load_topology(topology_name, session.lab_root)
+        committed_devices = tuple((topology.get("devices") or {}).keys())
+    except lab.LabConfigError:
+        pass
+    session_devices = tuple(s["device"] for s in terminal.list_device_sessions())
+    return tuple(dict.fromkeys((*committed_devices, *session_devices)))
+
+
 def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
     lab_root = session.lab_root
     candidate_references: tuple[str, ...] = ()
@@ -260,6 +283,8 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
     running_scenario_names = _running_selectable_names(session, "scenario", scenario_names_list)
     running_reference_names = _running_selectable_names(session, "reference", reference_names_list)
 
+    monitor_terminal_device_ids = _monitor_terminal_target_names(session)
+
     return grammar.CliContext(
         topology_names=topology_names_list,
         scenario_names=scenario_names_list,
@@ -280,6 +305,7 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
         running_access_info_names=running_access_info_names,
         running_scenario_names=running_scenario_names,
         running_reference_names=running_reference_names,
+        monitor_terminal_device_ids=monitor_terminal_device_ids,
     )
 
 
@@ -1075,6 +1101,107 @@ def h_show_version(session: cfgmod.CliSession, args: dict) -> None:
 
 
 # --------------------------------------------------------------------------
+# `monitor terminal <device-id>` (EXEC only, Step 3.4) -- a live, read-only
+# human view of the exact same production tmux session terminal_open()/
+# terminal_send()/terminal_read() use. Passive observation only: it never
+# sends anything to the pane and never creates/closes a session (see
+# terminal.capture_device_terminal_view()'s own docstring for the full
+# read-only rationale, including why it deliberately does not take the
+# Step 3.3 per-device lock).
+#
+# Monitor lifetime is intentionally independent of session lifetime: the
+# monitor stays open through WAITING (no session yet/anymore) and ENDED
+# (pane dead, remain-on-exit) alike, and automatically resumes showing
+# live output the moment a same-named session reappears -- only an
+# explicit q/Q/Ctrl-C ends it. This is a small prompt_toolkit
+# `Application` (full-screen, so exiting cleanly restores the normal CLI
+# scrollback exactly like `less`/`top` do), not a custom terminal-control
+# loop -- no termios/tty/fcntl of our own, preserving the CLI's existing
+# cross-platform prompt_toolkit-only terminal handling. `refresh_interval`
+# is prompt_toolkit's own periodic-redraw mechanism (a scheduled asyncio
+# callback, not a manual busy loop); each redraw re-observes the pane
+# fresh, so no separate polling thread is needed either.
+# --------------------------------------------------------------------------
+
+# Human-observation cadence: frequent enough to feel live, far below a
+# busy loop (a handful of tmux subprocess calls per second at most, only
+# while a human actually has a monitor open).
+_MONITOR_REFRESH_INTERVAL = 0.3
+
+_MONITOR_DIVIDER = "-" * 70
+
+
+def _render_monitor_view(device_id: str) -> str:
+    """Pure observe-then-render step, deliberately separate from the
+    periodic refresh loop below so it -- and therefore every monitor
+    lifecycle transition -- is directly unit-testable without any real
+    time passing (Step 3.4 Section 53)."""
+    snapshot = terminal.capture_device_terminal_view(device_id)
+    lines = [
+        f"Monitoring terminal {device_id}",
+        "Read-only -- press q to quit",
+        "",
+    ]
+    if snapshot.status == "waiting":
+        lines.append("Status: waiting for managed terminal session")
+    else:
+        if snapshot.status == "ended":
+            lines.append("Status: terminal session ended -- waiting for session to return")
+        else:
+            lines.append("Status: active")
+        lines.append("")
+        lines.append(_MONITOR_DIVIDER)
+        lines.append(snapshot.pane_text)
+        lines.append(_MONITOR_DIVIDER)
+    return "\n".join(lines)
+
+
+def _build_monitor_application(device_id: str, refresh_interval: float) -> Application:
+    """Construct (but do not run) the monitor's Application -- separated
+    from run_terminal_monitor() so tests can inspect its key bindings
+    without entering the blocking full-screen event loop."""
+    kb = KeyBindings()
+
+    @kb.add("q")
+    @kb.add("Q")
+    @kb.add("c-c")
+    def _(event) -> None:
+        # Exits only this Application (event.app), never the surrounding
+        # CLI process/PromptSession -- see run_terminal_monitor().
+        event.app.exit()
+
+    control = FormattedTextControl(text=lambda: _render_monitor_view(device_id))
+    return Application(
+        layout=Layout(Window(content=control, wrap_lines=True)),
+        key_bindings=kb,
+        full_screen=True,
+        refresh_interval=refresh_interval,
+    )
+
+
+def run_terminal_monitor(device_id: str, *, refresh_interval: float = _MONITOR_REFRESH_INTERVAL) -> None:
+    """Blocking: runs the monitor until the user quits it (q/Q/Ctrl-C).
+    Every other keystroke is simply unbound -- this Application's only
+    control is a non-editable FormattedTextControl, so there is no text
+    buffer for a stray key to be inserted into, and nothing here ever
+    forwards a keystroke to tmux. Exiting restores the CLI's normal
+    scrollback (full_screen's alternate-screen-buffer swap) and adds
+    nothing to CLI command history -- this loop never touches
+    PromptSession/history at all."""
+    _build_monitor_application(device_id, refresh_interval).run()
+
+
+def h_monitor_terminal(session: cfgmod.CliSession, args: dict) -> None:
+    _require_interactive(args)
+    device_id = args["device_id"]
+    if device_id not in _monitor_terminal_target_names(session):
+        raise terminal.TerminalError(
+            f"Device '{device_id}' is not in the active topology and has no existing terminal session."
+        )
+    run_terminal_monitor(device_id)
+
+
+# --------------------------------------------------------------------------
 # `show logging` (EXEC only) -- read-only terminal transcript log listing.
 # --------------------------------------------------------------------------
 
@@ -1662,6 +1789,7 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "exec.show_running_config_reference": h_show_running_config_reference,
     "exec.show_running_config_reference_name": h_show_running_config_reference_name,
     "exec.show_version": h_show_version,
+    "exec.monitor_terminal": h_monitor_terminal,
     "exec.show_logging": h_show_logging,
     "exec.show_logging_summary": h_show_logging_summary,
     "exec.show_logging_device": h_show_logging_device,

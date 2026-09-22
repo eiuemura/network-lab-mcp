@@ -19,9 +19,13 @@ completing the IOS XR-style navigation model (`root`/`exit`/`end`, `commit`
 staying in the current mode, uncommitted-changes-only `show
 configuration`), explicitly selecting access-info in running-config, and
 adding single-hop OpenSSH ProxyJump support via access-info `jump_hosts`),
-and **Step 3** (IOS XR + LLDP topology discovery via `discover topology`,
-persistent terminal session logging, and `show logging`). See
-[Step 3: IOS XR + LLDP topology discovery](#step-3-ios-xr--lldp-topology-discovery)
+**Step 3** (IOS XR + LLDP topology discovery via `discover topology`,
+persistent terminal session logging, and `show logging`), and **Step 3.3**
+(safe multi-device parallel execution: different devices' MCP terminal
+operations and Discovery collection run concurrently, while each device's
+own operations stay serialized). See
+[Step 3: IOS XR + LLDP topology discovery](#step-3-ios-xr--lldp-topology-discovery),
+[Step 3.3: multi-device parallel execution](#step-33-multi-device-parallel-execution),
 and [Current limitations](#current-limitations).
 
 ## Configuration model
@@ -1120,6 +1124,43 @@ committed active_access_info
 
   (`--tb=line`, and never `--showlocals`, so a real device's password
   never ends up in a failure traceback.)
+
+## Step 3.3: multi-device parallel execution
+
+Network Lab MCP supports concurrent operations across different devices,
+while each individual device's session remains serialized and isolated:
+multiple devices can be investigated concurrently, but the same device
+never has two operations racing each other. The public MCP interface is
+unchanged (still exactly the same seven tools) -- an MCP client gets
+parallelism by issuing multiple existing tool calls concurrently (e.g.
+`terminal_send(R1, ...)` and `terminal_send(R2, ...)` at the same time),
+not through a new batch/parallel tool.
+
+```
+different devices -> may execute concurrently
+same device        -> operations remain serialized / safe
+```
+
+- **MCP dispatch already supports this.** The MCP SDK in use dispatches
+  each tool call as its own concurrent task and runs a synchronous tool
+  function (every tool here) on a worker thread rather than blocking
+  other requests, so no change to `mcp_server.py`'s dispatch model was
+  needed.
+- **terminal.py** now serializes same-device `open`/`send`/`read`/`close`
+  through one lock per managed device, closing two real check-then-act
+  races (duplicate session creation on a concurrent same-device
+  `terminal_open()`, and a rare cross-device race on the very first
+  session the tmux server ever creates) without a global lock that would
+  serialize every device. See ["Concurrency model"](docs/architecture.md)
+  in the architecture doc for the full design.
+- **`discover topology`** now collects each device's `show version`/
+  `show running-config`/`show lldp neighbors` concurrently (bounded, one
+  worker per device up to a small internal limit), while a single
+  device's own command sequence stays exactly as ordered as before.
+  Aggregation and error reporting stay deterministic regardless of which
+  device's collection happens to finish first, and any device's failure
+  still fails the whole `discover topology` run with zero candidate
+  mutation, exactly like before.
 
 ## MCP SDK
 

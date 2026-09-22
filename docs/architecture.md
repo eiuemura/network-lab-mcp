@@ -244,6 +244,60 @@ attempt to parse device prompts (IOS XR or otherwise). Instead, Claude Code
 reads the pane with `terminal_read()`, decides what a prompt means, and
 responds with `terminal_send()` — the same loop a human operator would use.
 
+### Concurrency model (Step 3.3)
+
+The core invariant: **different devices execute concurrently; the same
+device's operations are serialized.**
+
+```
+R1 ---------------->
+R2 ---------------->        different devices: parallel
+R3 ---------------->
+
+R1 open/send/read/close      same device: serialized through one lock
+```
+
+**MCP boundary.** The public MCP interface stays exactly the seven tools
+listed above -- there is no `terminal_send_parallel()` or batch API.
+Parallelism is a property of the existing tools' execution, not a new tool.
+Investigation of the MCP SDK in use (`mcp` 2.2.0) found that this already
+works with no change to `mcp_server.py`'s dispatch model: every incoming
+`tools/call` request (other than the connection handshake) is spawned as
+its own `anyio` task rather than awaited in place
+(`mcp.shared.jsonrpc_dispatcher.JSONRPCDispatcher._dispatch_request()`),
+and each `@mcp.tool()` function here is a plain synchronous `def`, which the
+framework invokes via `anyio.to_thread.run_sync()` -- offloaded to a real
+worker thread, never blocking the event loop other requests share. Two
+different-device tool calls issued back-to-back by an MCP client can
+therefore already overlap.
+
+**terminal.py serialization.** `terminal.py` keeps no session registry of
+its own (tmux remains the sole source of truth), so most operations are
+naturally device-isolated -- every tmux command is scoped to one session
+name derived from the device. Two real races existed before Step 3.3,
+both from check-then-act patterns:
+
+- Same-device `open`/`send`/`read`/`close` could interleave (e.g. two
+  concurrent `terminal_open()` calls for the same device could both see no
+  existing session and both try to create it, the second failing on
+  tmux's own duplicate-session error instead of reusing the first).
+- The very first session ever created in the tmux server's lifetime could
+  race across two *different* devices' simultaneous first opens (both
+  see an empty server and both try to create the shared bootstrap
+  session).
+
+The fix is one `threading.Lock` per underlying tmux session name
+(`terminal._session_lock()`, a small process-lifetime registry keyed by
+the already-validated session name -- never a single lock shared by every
+device, which would serialize all devices and defeat the point). Each
+public per-session operation (`open_device_terminal`, `send_to_device`,
+`read_device`, `close_device_terminal`, and the private Discovery bootstrap
+equivalents) holds that one lock for its whole body. The rare
+cross-device first-bootstrap race is handled separately, by making
+`_ensure_tmux_environment()` tolerate losing that race rather than by a
+second lock. `terminal_list()` stays unlocked: it is a read-only query
+that tmux itself answers atomically.
+
 ### Structurally separate session namespaces
 
 Two structurally distinct namespaces exist, chosen by the type of caller
@@ -467,6 +521,48 @@ here) and is the *only* new module Step 3 adds; `cli/config.py`'s
 `apply_discovery_result()` is the only new candidate-mutation logic, and
 it is a thin adapter onto the pre-existing topology candidate machinery
 -- there is no separate Discovery datastore, history table, or schema.
+
+### Parallel per-device collection (Step 3.3)
+
+`_bootstrap_collect()` for each device now runs on a bounded
+`concurrent.futures.ThreadPoolExecutor` (`DISCOVERY_MAX_WORKERS = 8` --
+small, internal, not a CLI/config knob; comfortably covers real lab scale
+while bounding concurrent SSH/tmux session creation) instead of a plain
+sequential loop:
+
+```
+R1 collect -----|
+R2 collect -----|
+R3 collect -----| concurrent, bounded by DISCOVERY_MAX_WORKERS
+R4 collect -----|
+                |
+                v
+     every future finished (success or failure)
+                |
+                v
+     close every target's bootstrap session (unconditional cleanup,
+     unchanged ownership: one outer step closes all of them, exactly
+     as the previous sequential loop's own try/finally did)
+                |
+                v
+     aggregate results in original target order, never completion
+     order -- parsing/identity/reconciliation are unchanged and still
+     run only after every device's result (or first failure) is known
+```
+
+Parallelism is device-level only: within one device, `_bootstrap_collect()`
+itself is untouched (login, then `terminal length 0`, `show version`,
+`show running-config`, `show lldp neighbors`, strictly in that order, in
+that device's own worker). Workers are value-oriented -- each returns its
+own collected dict; nothing here mutates a shared candidate, link list, or
+conflict list from more than one thread. Aggregation and error attribution
+are always by original target order, not by whichever thread happened to
+finish first, so scheduler order can never change which device's result
+lands where or which device's failure is the one reported. Any collection
+failure -- expected (`DiscoveryError`) or an unexpected worker exception,
+which is still converted to a bounded `DiscoveryError` rather than leaking
+a raw traceback -- still fails the whole operation with zero candidate
+mutation, exactly like the pre-Step-3.3 sequential loop.
 
 ### Identity resolution is bounded and fails closed
 

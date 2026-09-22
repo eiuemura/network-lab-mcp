@@ -24,6 +24,7 @@ activation/commit, and a generic discovery/plugin framework.
 
 from __future__ import annotations
 
+import concurrent.futures
 import re
 from dataclasses import dataclass, field
 
@@ -31,6 +32,13 @@ from network_lab_mcp import lab, terminal
 
 LOGIN_TIMEOUT_SECONDS = 30
 COMMAND_TIMEOUT_SECONDS = 25
+
+# Step 3.3: bounds how many devices' bootstrap collection runs concurrently.
+# Small and internal, not a public CLI/config knob (see task boundaries) --
+# 8 comfortably covers real lab scale (a handful to a dozen managed
+# devices) while keeping concurrent SSH/tmux session creation bounded
+# rather than launching one thread per arbitrary target count.
+DISCOVERY_MAX_WORKERS = 8
 
 # Matches an IOS XR exec prompt, e.g. "RP/0/RP0/CPU0:APJC_JP_OSK_R1#", and
 # captures the hostname -- this doubles as both "the prompt has returned"
@@ -470,13 +478,50 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
     if not iosxr_targets:
         raise DiscoveryError(f"No supported IOS XR devices found in access-info '{access_info_name}'.")
 
-    collected: dict[str, dict] = {}
+    # Step 3.3: one device's collection (login + the three read-only
+    # commands) still runs strictly sequentially within its own worker --
+    # only *different* devices' collectors run concurrently, bounded by
+    # DISCOVERY_MAX_WORKERS. Workers return a value (_bootstrap_collect's
+    # dict) and touch only their own device's bootstrap session; nothing
+    # here is mutated by more than one worker, and no candidate/topology
+    # state is touched until every result has been collected below.
+    worker_count = min(len(iosxr_targets), DISCOVERY_MAX_WORKERS)
+    futures: dict[str, concurrent.futures.Future] = {}
     try:
-        for device_id, device_cfg in iosxr_targets.items():
-            collected[device_id] = _bootstrap_collect(device_id, device_cfg)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                device_id: executor.submit(_bootstrap_collect, device_id, device_cfg)
+                for device_id, device_cfg in iosxr_targets.items()
+            }
+        # The `with` block above only exits once every submitted future has
+        # finished (successfully or not) -- so every bootstrap session below
+        # is either fully collected or has already failed, never still
+        # in flight, exactly like the previous sequential loop's own
+        # try/finally guarantee.
     finally:
         for device_id in iosxr_targets:
             terminal.close_bootstrap_terminal(device_id)
+
+    # Deterministic aggregation and error attribution: always in original
+    # target order, never in whatever order the thread pool happened to
+    # finish them -- so which device's failure surfaces first, and the
+    # eventual candidate's own device/link ordering, never depends on
+    # scheduling. The first target-order failure is raised and stops
+    # aggregation immediately, matching the previous sequential loop's own
+    # fail-fast behavior exactly (it also never populated `collected` past
+    # the first failing device).
+    collected: dict[str, dict] = {}
+    for device_id in iosxr_targets:
+        try:
+            collected[device_id] = futures[device_id].result()
+        except DiscoveryError:
+            raise
+        except Exception as exc:
+            # A worker crash (not a DiscoveryError) is a bug, not an
+            # anticipated device/login/command failure -- still fails
+            # Discovery closed, through the same bounded error type, without
+            # leaking a raw traceback to the caller.
+            raise DiscoveryError(f"Device '{device_id}': unexpected collection failure: {exc}") from exc
 
     identity_map = {device_id: info["hostname"] for device_id, info in collected.items()}
 

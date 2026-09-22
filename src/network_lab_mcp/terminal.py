@@ -27,6 +27,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -134,6 +135,43 @@ def production_device_name(session_name: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# Per-session serialization (Step 3.3)
+#
+# Different devices execute concurrently; the same device's operations must
+# not race each other (tmux send/capture/kill against one pane, and the
+# check-then-create in _ensure_managed_session()). One threading.Lock per
+# underlying tmux session name (production/validation/Discovery names are
+# already namespace-disjoint, so this is naturally one lock per managed
+# device *and* transport role) serializes exactly the operations that share
+# that one session, while leaving different devices' locks fully
+# independent -- never a single global lock around all terminal work (that
+# would serialize every device, defeating the point).
+#
+# Locks are never removed: the set of distinct session names touched over
+# one process's lifetime is bounded by the active topology / Discovery
+# targets, not by unbounded external input (every session name reaching
+# _session_lock() already passed derive_*_session_name()'s
+# _validate_identifier()), so a simple process-lifetime registry is
+# sufficient -- see Step 3.3 task Section 10. `_registry_guard` protects
+# only the dict's own get-or-create step, never the caller's actual
+# operation, so acquiring a per-session lock is never itself a point of
+# cross-device contention.
+# --------------------------------------------------------------------------
+
+_session_locks: dict[str, threading.Lock] = {}
+_registry_guard = threading.Lock()
+
+
+def _session_lock(session_name: str) -> threading.Lock:
+    with _registry_guard:
+        lock = _session_locks.get(session_name)
+        if lock is None:
+            lock = threading.Lock()
+            _session_locks[session_name] = lock
+        return lock
+
+
+# --------------------------------------------------------------------------
 # Low-level tmux invocation
 # --------------------------------------------------------------------------
 
@@ -203,11 +241,24 @@ def _ensure_tmux_environment() -> bool:
     Returns True if a temporary bootstrap session had to be created to start
     the dedicated tmux server. The bootstrap session is internal only and is
     never exposed through any public tool.
+
+    The "does any session exist yet" check below is the one place a
+    different-device race can still reach across two distinct per-device
+    locks (Step 3.3): two different devices' first-ever opens can both see
+    an empty server and both try to create the *same* shared bootstrap
+    session name. Rather than adding a second, separate global lock just
+    for this rare one-time window, tolerate the race directly -- a losing
+    caller's own create fails, but by then the server unquestionably has a
+    session (the winner's), so it simply proceeds.
     """
     bootstrap_created = False
     if not _server_has_any_session():
-        _create_session(BOOTSTRAP_SESSION, ["cat"])
-        bootstrap_created = True
+        try:
+            _create_session(BOOTSTRAP_SESSION, ["cat"])
+            bootstrap_created = True
+        except TerminalError:
+            if not _server_has_any_session():
+                raise
     # Idempotent: safe to run on every call, including when the server and its
     # managed panes already existed before this process started.
     _run(["set-option", "-g", "history-limit", str(HISTORY_LIMIT)])
@@ -755,39 +806,56 @@ def _build_transport_command(device_config: dict, *, accept_new_host_keys: bool 
 
 
 def open_device_terminal(device_name: str, device_config: dict) -> dict:
-    """Open (or reuse) the production terminal session for an active-topology device."""
+    """Open (or reuse) the production terminal session for an active-topology device.
+
+    Serialized per-device (Step 3.3): a concurrent open/send/read/close for
+    this same device waits its turn instead of racing this one's
+    check-then-create against it; a different device's call uses a
+    different lock and proceeds independently."""
     session_name = derive_production_session_name(device_name)
-    transport, command = _build_transport_command(device_config)
-    reused = _ensure_managed_session(session_name, command, log_device_name=device_name)
-    return {
-        "device": device_name,
-        "session_name": session_name,
-        "reused": reused,
-        "transport": transport,
-    }
+    with _session_lock(session_name):
+        transport, command = _build_transport_command(device_config)
+        reused = _ensure_managed_session(session_name, command, log_device_name=device_name)
+        return {
+            "device": device_name,
+            "session_name": session_name,
+            "reused": reused,
+            "transport": transport,
+        }
 
 
 def send_to_device(device_name: str, text: str | None, keys: list[str] | None, enter: bool) -> dict:
-    """Send input to a device's production session: text, then keys, then Enter (in that order)."""
+    """Send input to a device's production session: text, then keys, then Enter
+    (in that order). Serialized per-device (Step 3.3): see open_device_terminal()."""
     session_name = derive_production_session_name(device_name)
-    if text:
-        _send_literal_text(session_name, text)
-    if keys:
-        _send_special_keys(session_name, keys)
-    if enter:
-        _send_enter(session_name)
-    return {"device": device_name, "session_name": session_name}
+    with _session_lock(session_name):
+        if text:
+            _send_literal_text(session_name, text)
+        if keys:
+            _send_special_keys(session_name, keys)
+        if enter:
+            _send_enter(session_name)
+        return {"device": device_name, "session_name": session_name}
 
 
 def read_device(device_name: str, lines: int = DEFAULT_READ_LINES) -> dict:
-    """Capture recent pane content from a device's production session."""
+    """Capture recent pane content from a device's production session.
+    Serialized per-device (Step 3.3): see open_device_terminal()."""
     session_name = derive_production_session_name(device_name)
-    content = _capture_pane(session_name, lines)
-    return {"device": device_name, "session_name": session_name, "content": content}
+    with _session_lock(session_name):
+        content = _capture_pane(session_name, lines)
+        return {"device": device_name, "session_name": session_name, "content": content}
 
 
 def list_device_sessions() -> list[dict]:
-    """List managed production sessions (network-lab-device-* namespace only)."""
+    """List managed production sessions (network-lab-device-* namespace only).
+
+    Deliberately not per-device-locked: this is a read-only enumeration
+    over whatever tmux reports at the moment it is asked (best-effort,
+    matching the pre-existing contract), and tmux's own `list-sessions` is
+    already a single atomic query against its server -- serializing it
+    against every device's lock would only add contention, not
+    correctness (Step 3.3 Section 52)."""
     sessions = []
     for session_name in _list_sessions(PRODUCTION_PREFIX):
         sessions.append(
@@ -801,10 +869,12 @@ def list_device_sessions() -> list[dict]:
 
 
 def close_device_terminal(device_name: str) -> dict:
-    """Close a device's production session. Never touches the validation namespace."""
+    """Close a device's production session. Never touches the validation
+    namespace. Serialized per-device (Step 3.3): see open_device_terminal()."""
     session_name = derive_production_session_name(device_name)
-    closed = _close_session(session_name)
-    return {"device": device_name, "session_name": session_name, "closed": closed}
+    with _session_lock(session_name):
+        closed = _close_session(session_name)
+        return {"device": device_name, "session_name": session_name, "closed": closed}
 
 
 # --------------------------------------------------------------------------
@@ -824,38 +894,49 @@ def open_bootstrap_terminal(device_name: str, device_config: dict) -> dict:
     """Open a private, temporary session for Discovery only. Always creates
     a fresh session (Discovery never reuses a prior bootstrap session -- see
     close_bootstrap_terminal(), which callers must use once collection for
-    that device finishes)."""
+    that device finishes).
+
+    Serialized per-device (Step 3.3), using the Discovery namespace's own
+    lock key (structurally distinct from that device's production session
+    lock -- see derive_discovery_session_name()) -- one device's parallel
+    Discovery collector thread never contends with another device's."""
     session_name = derive_discovery_session_name(device_name)
-    _close_session(session_name)  # never reuse a stale bootstrap session
-    transport, command = _build_transport_command(device_config, accept_new_host_keys=True)
-    _ensure_managed_session(session_name, command, log_device_name=device_name)
-    return {"device": device_name, "session_name": session_name, "transport": transport}
+    with _session_lock(session_name):
+        _close_session(session_name)  # never reuse a stale bootstrap session
+        transport, command = _build_transport_command(device_config, accept_new_host_keys=True)
+        _ensure_managed_session(session_name, command, log_device_name=device_name)
+        return {"device": device_name, "session_name": session_name, "transport": transport}
 
 
 def send_to_bootstrap(device_name: str, text: str | None, keys: list[str] | None, enter: bool) -> None:
     session_name = derive_discovery_session_name(device_name)
-    if text:
-        _send_literal_text(session_name, text)
-    if keys:
-        _send_special_keys(session_name, keys)
-    if enter:
-        _send_enter(session_name)
+    with _session_lock(session_name):
+        if text:
+            _send_literal_text(session_name, text)
+        if keys:
+            _send_special_keys(session_name, keys)
+        if enter:
+            _send_enter(session_name)
 
 
 def wait_for_bootstrap_pattern(
     device_name: str, pattern: "re.Pattern[str]", timeout: float, baseline_text: str | None = None
 ) -> str:
     session_name = derive_discovery_session_name(device_name)
-    return _wait_for_pattern(session_name, pattern, timeout, baseline_text=baseline_text)
+    with _session_lock(session_name):
+        return _wait_for_pattern(session_name, pattern, timeout, baseline_text=baseline_text)
 
 
 def read_bootstrap(device_name: str, lines: int = HISTORY_LIMIT) -> str:
     session_name = derive_discovery_session_name(device_name)
-    return _capture_pane(session_name, lines)
+    with _session_lock(session_name):
+        return _capture_pane(session_name, lines)
 
 
 def close_bootstrap_terminal(device_name: str) -> bool:
-    return _close_session(derive_discovery_session_name(device_name))
+    session_name = derive_discovery_session_name(device_name)
+    with _session_lock(session_name):
+        return _close_session(session_name)
 
 
 # --------------------------------------------------------------------------

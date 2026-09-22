@@ -67,11 +67,16 @@ def test_no_topology_bare_incomplete():
     assert result.error.kind == "incomplete"
 
 
-def test_no_help_lists_only_topology():
+def test_no_help_lists_all_four_kinds():
+    """Step D: `no ?` now lists all four definition kinds (Step C's
+    topology-only listing is generalized)."""
     ctx = grammar.CliContext()
     result = grammar.help("global", "no ", ctx)
     assert [(line.token, line.description) for line in result.lines] == [
-        ("topology", "Remove a topology definition")
+        ("access-info", "Remove an access-info definition"),
+        ("topology", "Remove a topology definition"),
+        ("scenario", "Remove a scenario definition"),
+        ("reference", "Remove a reference definition"),
     ]
     assert result.show_cr is False
 
@@ -80,8 +85,8 @@ def test_no_topology_help_lists_candidate_names():
     ctx = grammar.CliContext(no_topology_candidate_names=("sample", "test_lab"))
     result = grammar.help("global", "no topology ", ctx)
     assert [(line.token, line.description) for line in result.lines] == [
-        ("sample", "Existing topology"),
-        ("test_lab", "Existing topology"),
+        ("sample", "Existing topology definition"),
+        ("test_lab", "Existing topology definition"),
     ]
     assert result.show_cr is False
 
@@ -89,7 +94,9 @@ def test_no_topology_help_lists_candidate_names():
 def test_no_topology_exact_name_inline_help_shows_cr():
     ctx = grammar.CliContext(no_topology_candidate_names=("test_lab",))
     result = grammar.help("global", "no topology test_lab", ctx)
-    assert [(line.token, line.description) for line in result.lines] == [("test_lab", "Existing topology")]
+    assert [(line.token, line.description) for line in result.lines] == [
+        ("test_lab", "Existing topology definition")
+    ]
     assert result.show_cr is True
 
 

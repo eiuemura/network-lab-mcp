@@ -257,7 +257,7 @@ def test_topology_name_completion_case_sensitive():
 
 
 def test_running_topology_completion_uses_existing_topology_names():
-    ctx = make_ctx(topology_names=("srv6_lab", "sample_lab"))
+    ctx = make_ctx(running_topology_names=("srv6_lab", "sample_lab"))
     result = grammar.complete("running", "topology s", ctx)
     assert set(result.candidates) == {"srv6_lab", "sample_lab"}
 
@@ -350,21 +350,25 @@ def test_next_token_help_for_enum_argument():
     assert values == {"ssh": "Use SSH transport", "telnet": "Use Telnet transport"}
 
 
-def test_next_token_help_for_plain_selector_shows_generic_hint():
-    # running-config's selectors are plain (non-creatable) identifiers:
-    # bare `?` shows the generic <name> hint, not the existing-names list.
-    ctx = make_ctx(topology_names=("srv6_lab",))
+def test_next_token_help_for_plain_selector_shows_dynamic_names():
+    # Step D: running-config's selectors are plain (non-creatable)
+    # identifiers, but bare `?` now dynamically lists the actual
+    # selectable names (enumerate_when_empty) instead of a generic
+    # <name> placeholder -- this test previously asserted the old,
+    # now-fixed UX gap (a bare selector name never showed anything
+    # concrete to select from).
+    ctx = make_ctx(running_topology_names=("srv6_lab",))
     result = grammar.help("running", "topology ", ctx)
-    assert [line.token for line in result.lines] == ["<name>"]
+    assert [line.token for line in result.lines] == ["srv6_lab"]
 
 
 def test_creatable_identifier_help_lists_existing_and_create_hint():
     ctx = make_ctx(topology_names=("sample_lab", "test"))
     result = grammar.help("global", "topology ", ctx)
     assert [(line.token, line.description) for line in result.lines] == [
-        ("sample_lab", "Existing topology"),
-        ("test", "Existing topology"),
-        ("<name>", "Create or edit topology"),
+        ("sample_lab", "Existing topology definition"),
+        ("test", "Existing topology definition"),
+        ("<name>", "Create or edit topology definition"),
     ]
 
 

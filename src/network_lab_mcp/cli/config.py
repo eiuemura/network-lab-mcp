@@ -119,13 +119,35 @@ _DEFINITION_WRITERS: dict[str, Callable] = {
     "reference": lab.write_reference,
 }
 
-# Only topology definitions currently support candidate deletion (`no
-# topology <name>`, see remove_topology_definition()/commit() below) --
-# access-info/scenario/reference deletion is explicitly out of scope, so
-# this deliberately has just the one entry rather than a dict comprehension
-# over every kind.
+# Step D: every definition kind supports candidate deletion (`no <kind>
+# <name>`, see remove_definition()/commit() below) -- one entry per kind,
+# mirroring _DEFINITION_LOADERS/_DEFINITION_WRITERS exactly.
 _DEFINITION_DELETERS: dict[str, Callable] = {
     "topology": lab.delete_topology,
+    "access_info": lab.delete_access_info,
+    "scenario": lab.delete_scenario,
+    "reference": lab.delete_reference,
+}
+
+# Used by remove_definition() to check (before creating a deletion
+# candidate) that `name` is an exact, existing, path-safe stored
+# definition of the given kind -- the same check delete_*() itself
+# re-applies at commit time (see lab.py's _stored_definition_is_deletable()).
+_DEFINITION_DELETABILITY_CHECKS: dict[str, Callable] = {
+    "topology": lab.topology_is_deletable,
+    "access_info": lab.access_info_is_deletable,
+    "scenario": lab.scenario_is_deletable,
+    "reference": lab.reference_is_deletable,
+}
+
+# Human-readable kind labels for error messages, matching each kind's
+# existing wording elsewhere in this module exactly (e.g.
+# select_access_info()'s "Access information '<name>' does not exist.").
+_DEFINITION_KIND_LABELS: dict[str, str] = {
+    "topology": "Topology",
+    "access_info": "Access information",
+    "scenario": "Scenario",
+    "reference": "Reference",
 }
 
 
@@ -305,53 +327,70 @@ class CliSession:
             raise ConfigError("A case-only topology collision must be confirmed before it can be applied.")
         self._enter_definition("topology", plan.name, "topology")
 
-    def remove_topology_definition(self, name: str) -> None:
-        """`no topology <name>` (global configuration only): candidate
-        deletion of one stored topology definition -- never an immediate
-        filesystem operation (see commit()). Participates in the same
-        "at most one dirty definition candidate at a time" rule as every
-        other definition kind (can_switch_definition()); deletion counts
-        as a topology-definition mutation, so a different dirty
-        definition (topology or otherwise) blocks it, and a pending
-        topology deletion blocks editing/creating/deleting a
-        *different* topology, exactly like the existing topology-switch
-        guard.
+    def remove_definition(self, kind: str, name: str) -> None:
+        """`no <kind> <name>` (global configuration only): candidate
+        deletion of one stored definition -- never an immediate
+        filesystem operation (see commit()). Shared by all four
+        definition kinds (topology/access_info/scenario/reference).
+        Participates in the same "at most one dirty definition candidate
+        at a time" rule as every other definition mutation
+        (can_switch_definition()); deletion counts as a definition
+        mutation just like editing, so a different dirty definition (of
+        *any* kind) blocks it, and a pending deletion blocks
+        editing/creating/deleting a *different* definition, exactly like
+        the existing definition-switching guard. `topology test_lab` and
+        `access-info test_lab` are different candidate identities
+        (`definition_kind` + `definition_name`) even though the name
+        string matches.
 
         The candidate represents deletion as `definition_candidate is
         None` while `definition_kind`/`definition_name`/
         `definition_original` stay set to the real committed definition
-        being removed -- reusing _enter_definition()'s existing reload
+        being removed -- reusing `_enter_definition()`'s existing reload
         guard (`definition_candidate is not None`) means re-entering the
-        *same* topology (`topology <name>`) automatically reloads and
-        restores it, cancelling the pending deletion, with no changes
-        needed there. clear()'s existing "restore from
-        definition_original" branch cancels it the same way.
+        *same* definition (e.g. `topology <name>`) automatically reloads
+        and restores it, cancelling the pending deletion, with no
+        changes needed there. `clear()`'s existing "restore from
+        definition_original" branch cancels it the same way -- this
+        never re-reads or re-renders a deleted definition's own content
+        (private access-info fields included) beyond what `load_fn`
+        itself needs to restore the candidate.
 
-        Deleting the topology *currently open as a brand-new, never-
-        committed candidate* (definition_original is None) is instead a
+        Deleting the definition *currently open as a brand-new, never-
+        committed candidate* (`definition_original is None`) is instead a
         net-zero cancellation: the whole candidate slot is discarded
-        outright, exactly like clear() already treats that case, since
+        outright, exactly like `clear()` already treats that case, since
         there is nothing real to mark as prospectively absent."""
-        if self.definition_kind == "topology" and self.definition_name == name:
+        if self.definition_kind == kind and self.definition_name == name:
             if self.definition_original is None:
                 self.definition_kind = None
                 self.definition_name = None
                 self.definition_candidate = None
                 self.current_device_name = None
+                self.current_jump_host_name = None
                 return
             self.definition_candidate = None
             self.current_device_name = None
+            self.current_jump_host_name = None
             return
-        ok, message = self.can_switch_definition("topology", name)
+        ok, message = self.can_switch_definition(kind, name)
         if not ok:
             raise ConfigError(message)
-        if not lab.topology_is_deletable(name, self.lab_root):
-            raise ConfigError(f"Topology '{name}' does not exist.")
-        self.definition_original = lab.load_topology(name, self.lab_root)
+        if not _DEFINITION_DELETABILITY_CHECKS[kind](name, self.lab_root):
+            raise ConfigError(f"{_DEFINITION_KIND_LABELS[kind]} '{name}' does not exist.")
+        _, load_fn, _ = _DEFINITION_LOADERS[kind]
+        self.definition_original = load_fn(name, self.lab_root)
         self.definition_candidate = None
-        self.definition_kind = "topology"
+        self.definition_kind = kind
         self.definition_name = name
         self.current_device_name = None
+        self.current_jump_host_name = None
+
+    def remove_topology_definition(self, name: str) -> None:
+        """`no topology <name>` -- see remove_definition(), the shared
+        implementation this delegates to. Kept as its own method since
+        Step C's own tests/callers already use this exact name."""
+        self.remove_definition("topology", name)
 
     def apply_discovery_result(self, result: "discovery.DiscoveryResult") -> None:
         """Turn a completed Discovery run into a topology candidate, using
@@ -544,31 +583,46 @@ class CliSession:
                 return True
             return definition_being_written and self.definition_kind == kind and self.definition_name == name
 
+        def _existence_error(kind: str, exists_fn: Callable, name: Optional[str]) -> Optional[str]:
+            """Shared by every active-reference check below: None if
+            `name` is empty (an optional selection left unset) or will
+            genuinely exist after this commit; otherwise a clear error --
+            distinguishing "does not exist at all" from "this exact
+            commit is what is deleting it" (never a silent cascade)."""
+            if not name or _will_exist(kind, exists_fn, name):
+                return None
+            label = _DEFINITION_KIND_LABELS[kind]
+            if definition_being_deleted and self.definition_kind == kind and self.definition_name == name:
+                return f"Cannot remove {label.lower()} '{name}' because it is active in running-config."
+            return f"{label} '{name}' does not exist."
+
         settings = self.settings_candidate
+
         access_info_name = settings.get("active_access_info")
-        if access_info_name and not _will_exist("access_info", lab.access_info_exists, access_info_name):
-            errors.append(f"Access information '{access_info_name}' does not exist.")
+        error = _existence_error("access_info", lab.access_info_exists, access_info_name)
+        if error:
+            errors.append(error)
 
         target_topology = settings.get("active_topology")
         if not target_topology:
             errors.append("Running configuration is missing a valid active topology.")
-        elif not _will_exist("topology", lab.topology_exists, target_topology):
-            if definition_being_deleted and self.definition_kind == "topology" and self.definition_name == target_topology:
-                errors.append(
-                    f"Cannot remove topology '{target_topology}' because it is active in running-config."
-                )
-            else:
-                errors.append(f"Topology '{target_topology}' does not exist.")
+        else:
+            error = _existence_error("topology", lab.topology_exists, target_topology)
+            if error:
+                errors.append(error)
 
         scenario = settings.get("active_scenario")
         if not scenario:
             errors.append("Running configuration is missing a valid active scenario.")
-        elif not _will_exist("scenario", lab.scenario_exists, scenario):
-            errors.append(f"Scenario '{scenario}' does not exist.")
+        else:
+            error = _existence_error("scenario", lab.scenario_exists, scenario)
+            if error:
+                errors.append(error)
 
         for reference in settings.get("active_references") or []:
-            if not _will_exist("reference", lab.reference_exists, reference):
-                errors.append(f"Reference '{reference}' does not exist.")
+            error = _existence_error("reference", lab.reference_exists, reference)
+            if error:
+                errors.append(error)
 
         if errors:
             raise CommitValidationError(errors)

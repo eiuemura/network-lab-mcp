@@ -623,17 +623,25 @@ the full rendering rules, including the access-info-only standalone `!`
 paste round-trip behavior (cli_reference.md's "Multi-line configuration
 paste").
 
-### Topology definition deletion (Step C)
+### Symmetric definition deletion (Step C topology, generalized in Step D)
 
-`no topology <name>` (global configuration only) extends the single
+`no <kind> <name>` (global configuration only; `<kind>` is
+`access-info`/`topology`/`scenario`/`reference`) extends the single
 `definition_candidate` slot above with a prospective-absence
 representation, rather than adding a second, independent
 "deletion set" data structure: `definition_kind`/`definition_name`/
 `definition_original` stay set to the real committed definition being
 removed, while `definition_candidate` itself becomes `None`
-(`CliSession.remove_topology_definition()`). `definition_dirty()`
-treats this as always dirty (a real committed original always differs
-from eventual absence).
+(`CliSession.remove_definition(kind, name)`, added for topology in Step
+C and generalized to every kind in Step D behind the same one method --
+`remove_topology_definition()` is now a one-line wrapper kept for its
+existing callers/tests). `definition_dirty()` treats this as always
+dirty (a real committed original always differs from eventual absence).
+Since all four kinds already shared this one candidate slot before Step
+C ever existed, this was already a stronger invariant than "one topology
+candidate" -- at most one dirty *definition of any kind* per configure
+session -- and deletion of any kind participates in exactly that same
+existing rule with no widening.
 
 This minimal representation change means every existing mechanism
 already does the right thing with no further changes:
@@ -648,13 +656,13 @@ already does the right thing with no further changes:
   cancels a pending deletion the same way, with no special-casing.
 - `can_switch_definition()` needed no changes at all: since deletion
   makes `definition_dirty()` True, attempting to edit or delete a
-  *different* topology (or any other definition kind) while a deletion
-  is pending is already rejected by the pre-existing guard, and the
-  existing "same identity is always allowed" check
+  *different* definition of any kind while a deletion is pending is
+  already rejected by the pre-existing guard, and the existing "same
+  identity is always allowed" check
   (`(self.definition_kind, self.definition_name) == (kind, name)`)
-  already permits every same-topology transition (edit -> delete,
-  delete -> restore, delete -> restore -> edit).
-- Deleting a topology that was only ever a brand-new, never-committed
+  already permits every same-definition transition (edit -> delete,
+  delete -> restore, delete -> restore -> edit) for every kind.
+- Deleting a definition that was only ever a brand-new, never-committed
   candidate (`definition_original is None`) is instead a net-zero
   cancellation: the whole candidate slot is discarded outright (the same
   case `clear()` already handles for a never-committed definition),
@@ -662,31 +670,56 @@ already does the right thing with no further changes:
 
 `_render_configuration_delta()` (cli/main.py) is the one place that
 needed an explicit new branch: a `None` candidate alongside a non-`None`
-`original` renders as a single `no topology <name>` line (never the
-per-field diff the other renderers produce), and `commit()`
-(cli/config.py) needed a parallel deletion path: skip the normal
-per-kind validator (there is nothing to validate), reject the commit if
-the definition being deleted is still the *effective* (candidate, not
-already-committed) `active_topology` -- so a combined commit that also
-selects a different `active_topology` in the same transaction is
-correctly allowed -- and call `lab.delete_topology()` instead of the
-normal writer. `lab.delete_topology()`/`lab.topology_is_deletable()`
-require an exact match against `list_topology_names()` and a
-non-symlink, path-confined regular file, mirroring the discipline
-already used for terminal log deletion (`terminal.py`). No cascade: no
-other definition, running-config field, terminal session, or Discovery
-state is ever touched by a topology deletion.
+`original` renders as a single `no <kind> <name>` line (never the
+per-field diff the other renderers produce -- for access-info,
+deliberately never re-rendering that definition's own stored
+credentials), and `commit()` (cli/config.py) needed a parallel deletion
+path per kind: skip the normal per-kind validator (there is nothing to
+validate), reject the commit if the definition being deleted is still
+*effectively* (candidate, not already-committed) referenced by
+running-config -- `active_access_info` (optional), `active_topology`
+(mandatory), `active_scenario` (mandatory), or present in
+`active_references` (a list) -- so a combined commit that also switches
+the active selection to something else in the same transaction is
+correctly allowed, generalized behind one small `_existence_error()`
+closure rather than four hand-written checks. Deletion itself dispatches
+through `_DEFINITION_DELETERS[kind]` (`lab.delete_topology` /
+`delete_access_info` / `delete_scenario` / `delete_reference`), each
+requiring an exact match against that kind's own `list_*_names()` and a
+non-symlink, path-confined regular file
+(`lab._stored_definition_is_deletable()`, one small shared primitive
+behind four still-distinct named functions -- not a generic definition
+framework), mirroring the discipline already used for terminal log
+deletion (`terminal.py`). No cascade: no other definition, running-config
+field, terminal session, or Discovery state is ever touched by a
+definition deletion.
 
-Investigation for this task found no real cross-definition reference
-to a topology by name anywhere in the schema (scenario/reference are
-open-ended YAML documents; access-info is keyed by device name, not
-topology name) -- the only real reference is running-config's own
-`active_topology`, handled above. It also found that `config-running`
-mode has no `no topology` command at all (only `no access-info` and `no
-reference <name>`), since `active_topology` is a mandatory field with no
+Investigation for this task found no real cross-definition reference to
+an access-info, scenario, or reference definition by name anywhere else
+in the schema either (scenario/reference are open-ended YAML documents
+with no fixed cross-reference fields; access-info is keyed by device
+name, never by another definition's name) -- the only real references
+anywhere are running-config's own four selection fields, handled above.
+It also confirmed `config-running` mode has no `no topology` command at
+all (only `no access-info` and `no reference <name>`), since
+`active_topology` (like `active_scenario`) is a mandatory field with no
 safe "unset" value -- so there is no actual naming collision with the
-new global-configuration `no topology <name>` to resolve, only a
-documentation clarification (see cli_reference.md).
+global-configuration `no <kind> <name>` commands to resolve, only a
+documentation clarification (see cli_reference.md). Separately, Step D
+found that `config-running# topology <name>` (and `access-info`/
+`scenario`) used a plain, non-enumerating identifier argument -- Tab
+completion already worked (the same provider `topology <name>` editing
+uses), but bare `?` only ever showed a generic `<name>` placeholder
+instead of the actual selectable names. Fixed by giving each
+running-config selector its own `enumerate_when_empty` provider
+(`provide_running_*_names()` / `CliContext.running_*_names`) reading a
+*separate*, candidate-aware field from the one global editing uses --
+one that excludes a definition currently pending deletion in the
+definition-editing candidate scope, since selecting it here would let
+running-config reference a definition about to become absent. Global
+`topology <name>` editing deliberately keeps reading the unfiltered
+`topology_names` field instead, since offering the pending-deleted name
+back there is exactly how its own deletion gets cancelled.
 
 ### Command grammar as the single source of truth
 

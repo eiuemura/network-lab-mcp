@@ -67,16 +67,34 @@ class CliContext:
     # active_references, in committed order -- never candidate state and
     # never every stored reference file.
     committed_active_reference_names: tuple[str, ...] = ()
-    # `no topology <name>` (global configuration only): candidate-aware --
-    # every stored topology name when no dirty definition candidate is
-    # open; only the one already-dirty topology identity if a topology
-    # edit/pending-deletion is open (the one same-identity operation that
-    # remains legal); nothing at all if a *different* definition kind is
-    # dirty, or if the one open topology is already pending deletion (see
-    # cli/main.py's build_context()). Execution (CliSession.
-    # remove_topology_definition()) is the authoritative enforcement of
-    # this either way.
+    # `no <kind> <name>` (global configuration only, Step C/D): one field
+    # per definition kind, candidate-aware -- every stored name of that
+    # kind when no dirty definition candidate is open; only the one
+    # already-dirty identity of that *same* kind if an edit/pending-
+    # deletion of it is open (the one same-identity operation that
+    # remains legal); nothing at all if a *different* kind (or a
+    # different name of this kind) is dirty, or if the one open
+    # definition is already pending deletion (see cli/main.py's
+    # build_context()). Execution (CliSession.remove_definition()) is the
+    # authoritative enforcement of this either way.
     no_topology_candidate_names: tuple[str, ...] = ()
+    no_access_info_candidate_names: tuple[str, ...] = ()
+    no_scenario_candidate_names: tuple[str, ...] = ()
+    no_reference_candidate_names: tuple[str, ...] = ()
+    # `config-running# <kind> <name>` selector arguments (Step D): the
+    # stored names of that kind that are actually valid to *select* right
+    # now -- every stored name, except one currently pending whole-
+    # definition deletion in the (separate) definition-editing candidate
+    # scope, which would otherwise let running-config reference a
+    # definition about to become absent. Deliberately a separate field
+    # from e.g. `topology_names` (used by global `topology <name>`
+    # editing, where offering the pending-deleted name back is exactly
+    # how its deletion gets cancelled -- see provide_no_topology_names()'s
+    # docstring) rather than filtering that shared field itself.
+    running_topology_names: tuple[str, ...] = ()
+    running_access_info_names: tuple[str, ...] = ()
+    running_scenario_names: tuple[str, ...] = ()
+    running_reference_names: tuple[str, ...] = ()
 
 
 # A provider receives the already-committed raw tokens of the command so
@@ -173,6 +191,34 @@ def provide_topology_names(ctx: CliContext, prefix: str, committed: tuple[str, .
 
 def provide_no_topology_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
     return [n for n in ctx.no_topology_candidate_names if n.startswith(prefix)]
+
+
+def provide_no_access_info_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    return [n for n in ctx.no_access_info_candidate_names if n.startswith(prefix)]
+
+
+def provide_no_scenario_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    return [n for n in ctx.no_scenario_candidate_names if n.startswith(prefix)]
+
+
+def provide_no_reference_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    return [n for n in ctx.no_reference_candidate_names if n.startswith(prefix)]
+
+
+def provide_running_topology_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    return [n for n in ctx.running_topology_names if n.startswith(prefix)]
+
+
+def provide_running_access_info_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    return [n for n in ctx.running_access_info_names if n.startswith(prefix)]
+
+
+def provide_running_scenario_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    return [n for n in ctx.running_scenario_names if n.startswith(prefix)]
+
+
+def provide_running_reference_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
+    return [n for n in ctx.running_reference_names if n.startswith(prefix)]
 
 
 def provide_scenario_names(ctx: CliContext, prefix: str, committed: tuple[str, ...] = ()) -> list[str]:
@@ -605,66 +651,80 @@ def _build_global_root() -> Node:
 
     access_info_arg = Argument(
         "name",
-        "Access information name",
+        "Access-info definition name",
         provider=provide_access_info_names,
         hint="<name>",
         creatable=True,
-        existing_label="Existing access information",
-        create_label="Create or edit access information",
+        existing_label="Existing access-info definition",
+        create_label="Create or edit access-info definition",
     )
-    access_info_node = root.add_literal("access-info", "Create or edit device access information")
+    access_info_node = root.add_literal("access-info", "Create or edit an access-info definition")
     access_info_next = access_info_node.add_argument(access_info_arg)
-    access_info_next.set_command("global.access_info", "Create or edit device access information")
+    access_info_next.set_command("global.access_info", "Create or edit an access-info definition")
 
     topology_arg = Argument(
         "name",
-        "Topology name",
+        "Topology definition name",
         provider=provide_topology_names,
         hint="<name>",
         creatable=True,
-        existing_label="Existing topology",
-        create_label="Create or edit topology",
+        existing_label="Existing topology definition",
+        create_label="Create or edit topology definition",
     )
-    topology_node = root.add_literal("topology", "Create or edit a topology")
+    topology_node = root.add_literal("topology", "Create or edit a topology definition")
     topology_next = topology_node.add_argument(topology_arg)
-    topology_next.set_command("global.topology", "Create or edit a topology")
+    topology_next.set_command("global.topology", "Create or edit a topology definition")
 
     scenario_arg = Argument(
         "name",
-        "Scenario name",
+        "Scenario definition name",
         provider=provide_scenario_names,
         hint="<name>",
         creatable=True,
-        existing_label="Existing scenario",
-        create_label="Create or edit scenario",
+        existing_label="Existing scenario definition",
+        create_label="Create or edit scenario definition",
     )
-    scenario_node = root.add_literal("scenario", "Create or edit a scenario")
+    scenario_node = root.add_literal("scenario", "Create or edit a scenario definition")
     scenario_next = scenario_node.add_argument(scenario_arg)
-    scenario_next.set_command("global.scenario", "Create or edit a scenario")
+    scenario_next.set_command("global.scenario", "Create or edit a scenario definition")
 
     reference_arg = Argument(
         "name",
-        "Reference name",
+        "Reference definition name",
         provider=provide_reference_names,
         hint="<name>",
         creatable=True,
-        existing_label="Existing reference",
-        create_label="Create or edit reference",
+        existing_label="Existing reference definition",
+        create_label="Create or edit reference definition",
     )
-    reference_node = root.add_literal("reference", "Create or edit a reference")
+    reference_node = root.add_literal("reference", "Create or edit a reference definition")
     reference_next = reference_node.add_argument(reference_arg)
-    reference_next.set_command("global.reference", "Create or edit a reference")
+    reference_next.set_command("global.reference", "Create or edit a reference definition")
 
-    # `no topology <name>` (Step C): candidate deletion of a STORED
-    # topology definition -- distinct from `config-running# no topology`,
-    # which unsets the *active topology selection* instead (a completely
-    # separate candidate scope; see cli/config.py's CliSession module
-    # docstring). Never creatable: deletion only ever targets a name the
-    # dynamic, candidate-aware provider above already lists as legal.
+    # `no <kind> <name>` (Step C/D): candidate deletion of a STORED
+    # definition -- distinct from `config-running# no ...`, which (where
+    # it exists at all) unsets/deactivates a *running-config selection*
+    # instead, a completely separate candidate scope; see
+    # cli/config.py's CliSession module docstring and
+    # _build_running_root() below. Never creatable: deletion only ever
+    # targets a name the dynamic, candidate-aware provider above already
+    # lists as legal.
     no_node = root.add_literal("no", "Remove a stored definition")
+
+    no_access_info_arg = Argument(
+        "name",
+        "Existing access-info definition",
+        provider=provide_no_access_info_names,
+        hint="<name>",
+        enumerate_when_empty=True,
+    )
+    no_access_info_node = no_node.add_literal("access-info", "Remove an access-info definition")
+    no_access_info_next = no_access_info_node.add_argument(no_access_info_arg)
+    no_access_info_next.set_command("global.no_access_info", "Remove an access-info definition")
+
     no_topology_arg = Argument(
         "name",
-        "Existing topology",
+        "Existing topology definition",
         provider=provide_no_topology_names,
         hint="<name>",
         enumerate_when_empty=True,
@@ -672,6 +732,28 @@ def _build_global_root() -> Node:
     no_topology_node = no_node.add_literal("topology", "Remove a topology definition")
     no_topology_next = no_topology_node.add_argument(no_topology_arg)
     no_topology_next.set_command("global.no_topology", "Remove a topology definition")
+
+    no_scenario_arg = Argument(
+        "name",
+        "Existing scenario definition",
+        provider=provide_no_scenario_names,
+        hint="<name>",
+        enumerate_when_empty=True,
+    )
+    no_scenario_node = no_node.add_literal("scenario", "Remove a scenario definition")
+    no_scenario_next = no_scenario_node.add_argument(no_scenario_arg)
+    no_scenario_next.set_command("global.no_scenario", "Remove a scenario definition")
+
+    no_reference_arg = Argument(
+        "name",
+        "Existing reference definition",
+        provider=provide_no_reference_names,
+        hint="<name>",
+        enumerate_when_empty=True,
+    )
+    no_reference_node = no_node.add_literal("reference", "Remove a reference definition")
+    no_reference_next = no_reference_node.add_argument(no_reference_arg)
+    no_reference_next.set_command("global.no_reference", "Remove a reference definition")
 
     _add_show_subtree(
         root,
@@ -689,45 +771,59 @@ def _build_global_root() -> Node:
 def _build_running_root() -> Node:
     root = Node()
 
+    # Running-config selectors name an EXISTING stored definition to
+    # activate for MCP -- never creatable (selecting never creates a
+    # definition), and dynamically enumerated (`enumerate_when_empty`)
+    # from the effective, candidate-aware set of names that are actually
+    # legal to select right now (provide_running_*_names() /
+    # CliContext.running_*_names -- excludes a definition currently
+    # pending whole-definition deletion in the definition-editing
+    # candidate scope; see that field's own docstring). Execution
+    # (select_access_info()/select_topology()/set_scenario()/
+    # add_reference()) is still the authoritative validation either way.
     access_info_arg = Argument(
         "name",
-        "Access information name",
-        provider=provide_access_info_names,
+        "Access-info definition name",
+        provider=provide_running_access_info_names,
         hint="<name>",
+        enumerate_when_empty=True,
     )
-    access_info_node = root.add_literal("access-info", "Select access information used by MCP/runtime")
+    access_info_node = root.add_literal("access-info", "Select access-info for MCP")
     access_info_next = access_info_node.add_argument(access_info_arg)
-    access_info_next.set_command("running.access_info", "Select access information used by MCP/runtime")
+    access_info_next.set_command("running.access_info", "Select access-info for MCP")
 
     topology_arg = Argument(
         "name",
-        "Topology name",
-        provider=provide_topology_names,
+        "Topology definition name",
+        provider=provide_running_topology_names,
         hint="<name>",
+        enumerate_when_empty=True,
     )
-    topology_node = root.add_literal("topology", "Select topology used by MCP")
+    topology_node = root.add_literal("topology", "Select topology for MCP")
     topology_next = topology_node.add_argument(topology_arg)
-    topology_next.set_command("running.topology", "Select topology used by MCP")
+    topology_next.set_command("running.topology", "Select topology for MCP")
 
     scenario_arg = Argument(
         "name",
-        "Scenario name",
-        provider=provide_scenario_names,
+        "Scenario definition name",
+        provider=provide_running_scenario_names,
         hint="<name>",
+        enumerate_when_empty=True,
     )
-    scenario_node = root.add_literal("scenario", "Select scenario used by MCP")
+    scenario_node = root.add_literal("scenario", "Select scenario for MCP")
     scenario_next = scenario_node.add_argument(scenario_arg)
-    scenario_next.set_command("running.scenario", "Select scenario used by MCP")
+    scenario_next.set_command("running.scenario", "Select scenario for MCP")
 
     reference_arg = Argument(
         "name",
-        "Reference name",
-        provider=provide_reference_names,
+        "Reference definition name",
+        provider=provide_running_reference_names,
         hint="<name>",
+        enumerate_when_empty=True,
     )
-    reference_node = root.add_literal("reference", "Add reference used by MCP")
+    reference_node = root.add_literal("reference", "Activate reference for MCP")
     reference_next = reference_node.add_argument(reference_arg)
-    reference_next.set_command("running.reference_add", "Add reference used by MCP")
+    reference_next.set_command("running.reference_add", "Activate reference for MCP")
 
     no_node = root.add_literal("no", "Negate a running configuration item")
     no_access_info_node = no_node.add_literal("access-info", "Remove the access information selection")

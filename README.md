@@ -180,14 +180,24 @@ stdio protocol.
   distinct topology, rather than silently opening the existing one or
   silently creating a look-alike. This is a narrow safety check, not fuzzy
   name matching.
-- **`no topology <name>`** (global configuration only): candidate deletion
-  of a *stored topology definition* — nothing is unlinked until `commit`,
-  `clear` cancels it, and it participates in the same one-dirty-definition
-  rule as topology editing (deleting a different topology while another is
-  being edited, or vice versa, is rejected the same way switching topologies
-  already was). `commit` refuses to delete the topology currently active in
-  running-config. See
-  [docs/cli_reference.md](docs/cli_reference.md#no-topology-name).
+- **`no access-info <name>` / `no topology <name>` / `no scenario <name>` /
+  `no reference <name>`** (global configuration only): candidate deletion
+  of a *stored definition* — nothing is unlinked until `commit`, `clear`
+  cancels it, and it participates in the single shared definition-candidate
+  slot's existing one-dirty-definition rule (deleting a different
+  definition — of any of the four kinds — while another is being edited or
+  deleted, or vice versa, is rejected the same way switching topologies
+  already was; `topology test_lab` and `access-info test_lab` are different
+  candidate identities despite the matching name). `commit` refuses to
+  delete a definition still active in running-config (`active_access_info`/
+  `active_topology`/`active_scenario`/`active_references`), checked against
+  the *effective* candidate selection, so a combined commit that also
+  switches the active selection away in the same transaction is allowed.
+  `config-running#` selector commands (`access-info`/`topology`/`scenario`/
+  `reference <name>`) now dynamically list only the definitions actually
+  legal to select — never a generic `<name>` placeholder, and never a
+  definition currently pending deletion. See
+  [docs/cli_reference.md](docs/cli_reference.md#no-kind-name).
 - **Step 1 validator reuse**: topology/access-info/device.type validation on
   commit reuses `network_lab_mcp.lab.validate_topology_data()` /
   `validate_access_info_data()` / `normalize_device_type()` — the CLI does
@@ -888,8 +898,9 @@ add a new public MCP tool.
   plugin framework. See
   ["Step 3: IOS XR + LLDP topology discovery"](#step-3-ios-xr--lldp-topology-discovery)
   below.
-- No `no topology <name>` (topology deletion) from the CLI, and no
-  automatic stale-link pruning after Discovery.
+- No automatic stale-link pruning after Discovery (definition deletion
+  itself — `no access-info`/`topology`/`scenario`/`reference <name>` — is
+  supported; see the CLI feature list above).
 - Login to a device via the public `terminal_open()`/`terminal_send()`/
   `terminal_read()` path is interactive, not automated -- only Discovery's
   private bootstrap path (see below) automates login, and only for its own

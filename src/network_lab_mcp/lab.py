@@ -332,39 +332,43 @@ def topology_exists(name: str, lab_root: Path | None = None) -> bool:
     return (lab_root / "topologies" / f"{name}.yaml").is_file()
 
 
-def topology_is_deletable(name: str, lab_root: Path | None = None) -> bool:
-    """True if `name` is an exact, enumerated topology name (from
-    list_topology_names(), the same SSOT `topology <name>`'s own dynamic
-    completion reads) whose stored file is a regular, non-symlink file
-    directly confined under lab/topologies/. Shared by the CLI's `no
-    topology <name>` candidate-creation check (cli/config.py) and
-    delete_topology() itself, so a symlinked or path-unsafe entry is
-    rejected as early as candidate creation, not only at commit."""
-    lab_root = lab_root or find_lab_root()
-    if name not in list_topology_names(lab_root):
+def _stored_definition_is_deletable(name: str, directory: Path, list_names: list[str]) -> bool:
+    """True if `name` is an exact, enumerated stored-definition name (from
+    the caller's own list_*_names(), the same SSOT each definition kind's
+    own dynamic completion already reads) whose file is a regular,
+    non-symlink file directly confined under `directory`. Shared by every
+    kind's `no <kind> <name>` candidate-creation check (cli/config.py) and
+    delete_*() below, so a symlinked or path-unsafe entry is rejected as
+    early as candidate creation, not only at commit -- mirroring the same
+    exact-enumeration-match / path-confinement discipline already used
+    for terminal log deletion (terminal.py). A small shared primitive,
+    not a generic definition framework: each kind still has its own named
+    `<kind>_is_deletable()` / `delete_<kind>()` pair below."""
+    if name not in list_names:
         return False
-    topologies_dir = lab_root / "topologies"
-    path = topologies_dir / f"{name}.yaml"
-    resolved_dir = topologies_dir.resolve()
+    path = directory / f"{name}.yaml"
+    resolved_dir = directory.resolve()
     resolved_path = path.resolve()
     return resolved_path.parent == resolved_dir and not path.is_symlink() and path.is_file()
+
+
+def _delete_stored_definition(name: str, directory: Path, list_names: list[str], kind_label: str) -> None:
+    if not _stored_definition_is_deletable(name, directory, list_names):
+        raise LabConfigError(f"{kind_label} '{name}' does not exist.")
+    (directory / f"{name}.yaml").unlink()
+
+
+def topology_is_deletable(name: str, lab_root: Path | None = None) -> bool:
+    lab_root = lab_root or find_lab_root()
+    return _stored_definition_is_deletable(name, lab_root / "topologies", list_topology_names(lab_root))
 
 
 def delete_topology(name: str, lab_root: Path | None = None) -> None:
     """Permanently remove a committed topology definition file. Used only
     by the CLI's `no topology <name>` candidate-deletion commit path
-    (cli/config.py's CliSession.commit()) -- never called for any other
-    definition kind, and never recursive.
-
-    Exact-match against list_topology_names(), never a raw path built
-    from unchecked input, and confined to a direct, non-symlink regular
-    file under lab/topologies/ (topology_is_deletable()) -- mirroring the
-    same exact-enumeration-match / path-confinement discipline already
-    used for terminal log deletion (terminal.py)."""
+    (cli/config.py's CliSession.commit()) -- never recursive."""
     lab_root = lab_root or find_lab_root()
-    if not topology_is_deletable(name, lab_root):
-        raise LabConfigError(f"Topology '{name}' does not exist.")
-    (lab_root / "topologies" / f"{name}.yaml").unlink()
+    _delete_stored_definition(name, lab_root / "topologies", list_topology_names(lab_root), "Topology")
 
 
 # --------------------------------------------------------------------------
@@ -477,6 +481,24 @@ def access_info_exists(name: str, lab_root: Path | None = None) -> bool:
     return (lab_root / "access-info" / f"{name}.yaml").is_file()
 
 
+def access_info_is_deletable(name: str, lab_root: Path | None = None) -> bool:
+    lab_root = lab_root or find_lab_root()
+    return _stored_definition_is_deletable(name, lab_root / "access-info", list_access_info_names(lab_root))
+
+
+def delete_access_info(name: str, lab_root: Path | None = None) -> None:
+    """Permanently remove a committed access-info definition file. Used
+    only by the CLI's `no access-info <name>` candidate-deletion commit
+    path (cli/config.py's CliSession.commit()) -- never recursive. Only
+    the definition *name* is ever used here; its contents (which may
+    include plaintext credentials) are never read, rendered, or logged
+    by this function."""
+    lab_root = lab_root or find_lab_root()
+    _delete_stored_definition(
+        name, lab_root / "access-info", list_access_info_names(lab_root), "Access information"
+    )
+
+
 
 
 # --------------------------------------------------------------------------
@@ -526,6 +548,19 @@ def scenario_exists(name: str, lab_root: Path | None = None) -> bool:
     return (lab_root / "scenarios" / f"{name}.yaml").is_file()
 
 
+def scenario_is_deletable(name: str, lab_root: Path | None = None) -> bool:
+    lab_root = lab_root or find_lab_root()
+    return _stored_definition_is_deletable(name, lab_root / "scenarios", list_scenario_names(lab_root))
+
+
+def delete_scenario(name: str, lab_root: Path | None = None) -> None:
+    """Permanently remove a committed scenario definition file. Used only
+    by the CLI's `no scenario <name>` candidate-deletion commit path
+    (cli/config.py's CliSession.commit()) -- never recursive."""
+    lab_root = lab_root or find_lab_root()
+    _delete_stored_definition(name, lab_root / "scenarios", list_scenario_names(lab_root), "Scenario")
+
+
 def load_reference(name: str, lab_root: Path | None = None) -> Any:
     lab_root = lab_root or find_lab_root()
     data = _load_yaml(lab_root / "references" / f"{name}.yaml", f"Reference '{name}'")
@@ -552,6 +587,22 @@ def list_reference_names(lab_root: Path | None = None) -> list[str]:
 def reference_exists(name: str, lab_root: Path | None = None) -> bool:
     lab_root = lab_root or find_lab_root()
     return (lab_root / "references" / f"{name}.yaml").is_file()
+
+
+def reference_is_deletable(name: str, lab_root: Path | None = None) -> bool:
+    lab_root = lab_root or find_lab_root()
+    return _stored_definition_is_deletable(name, lab_root / "references", list_reference_names(lab_root))
+
+
+def delete_reference(name: str, lab_root: Path | None = None) -> None:
+    """Permanently remove a committed reference definition file. Used only
+    by the CLI's `no reference <name>` candidate-deletion commit path
+    (cli/config.py's CliSession.commit()) -- never recursive. Distinct
+    from running-config's own `no reference <name>` (removes the name
+    from the active reference *selection*, never deletes the stored
+    file)."""
+    lab_root = lab_root or find_lab_root()
+    _delete_stored_definition(name, lab_root / "references", list_reference_names(lab_root), "Reference")
 
 
 # --------------------------------------------------------------------------

@@ -190,6 +190,37 @@ def prompt_text(session: cfgmod.CliSession) -> str:
     raise AssertionError(f"Unknown CLI mode: {session.mode!r}")
 
 
+def _no_definition_candidate_names(
+    session: cfgmod.CliSession, kind: str, all_names: tuple[str, ...]
+) -> tuple[str, ...]:
+    """`no <kind> <name>` (Step C/D): see grammar.CliContext's
+    `no_<kind>_candidate_names` docstring for the exact rule -- every
+    stored name of this kind when nothing (of any kind) is dirty; only
+    this exact identity if it is the one already-dirty definition
+    (edit-in-progress or already pending deletion contributes nothing,
+    since re-deleting it is not a new legal target); nothing at all if a
+    *different* kind or name is dirty."""
+    if session.definition_kind == kind and session.definition_dirty():
+        if session.definition_candidate is None:
+            return ()
+        return (session.definition_name,)
+    if session.definition_kind is not None and session.definition_dirty():
+        return ()
+    return tuple(all_names)
+
+
+def _running_selectable_names(
+    session: cfgmod.CliSession, kind: str, all_names: tuple[str, ...]
+) -> tuple[str, ...]:
+    """`config-running# <kind> <name>` selector (Step D): see
+    grammar.CliContext's `running_<kind>_names` docstring -- every stored
+    name of this kind, except one currently pending whole-definition
+    deletion in the (separate) definition-editing candidate scope."""
+    if session.definition_kind == kind and session.definition_dirty() and session.definition_candidate is None:
+        return tuple(n for n in all_names if n != session.definition_name)
+    return tuple(all_names)
+
+
 def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
     lab_root = session.lab_root
     candidate_references: tuple[str, ...] = ()
@@ -214,23 +245,26 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
     except lab.LabConfigError:
         committed_active_reference_names = ()
 
-    # `no topology <name>` (Step C): candidate-aware -- see
-    # grammar.provide_no_topology_names()'s docstring for the exact rule.
-    if session.definition_kind == "topology" and session.definition_dirty():
-        if session.definition_candidate is None:
-            no_topology_candidate_names: tuple[str, ...] = ()
-        else:
-            no_topology_candidate_names = (session.definition_name,)
-    elif session.definition_kind is not None and session.definition_dirty():
-        no_topology_candidate_names = ()
-    else:
-        no_topology_candidate_names = tuple(lab.list_topology_names(lab_root))
+    topology_names_list = tuple(lab.list_topology_names(lab_root))
+    access_info_names_list = tuple(lab.list_access_info_names(lab_root))
+    scenario_names_list = tuple(lab.list_scenario_names(lab_root))
+    reference_names_list = tuple(lab.list_reference_names(lab_root))
+
+    no_topology_candidate_names = _no_definition_candidate_names(session, "topology", topology_names_list)
+    no_access_info_candidate_names = _no_definition_candidate_names(session, "access_info", access_info_names_list)
+    no_scenario_candidate_names = _no_definition_candidate_names(session, "scenario", scenario_names_list)
+    no_reference_candidate_names = _no_definition_candidate_names(session, "reference", reference_names_list)
+
+    running_topology_names = _running_selectable_names(session, "topology", topology_names_list)
+    running_access_info_names = _running_selectable_names(session, "access_info", access_info_names_list)
+    running_scenario_names = _running_selectable_names(session, "scenario", scenario_names_list)
+    running_reference_names = _running_selectable_names(session, "reference", reference_names_list)
 
     return grammar.CliContext(
-        topology_names=tuple(lab.list_topology_names(lab_root)),
-        scenario_names=tuple(lab.list_scenario_names(lab_root)),
-        reference_names=tuple(lab.list_reference_names(lab_root)),
-        access_info_names=tuple(lab.list_access_info_names(lab_root)),
+        topology_names=topology_names_list,
+        scenario_names=scenario_names_list,
+        reference_names=reference_names_list,
+        access_info_names=access_info_names_list,
         candidate_reference_names=candidate_references,
         topology_candidate_device_names=topology_device_names,
         access_info_candidate_device_names=access_info_device_names,
@@ -239,6 +273,13 @@ def build_context(session: cfgmod.CliSession) -> grammar.CliContext:
         log_files_by_device=log_files_by_device,
         committed_active_reference_names=committed_active_reference_names,
         no_topology_candidate_names=no_topology_candidate_names,
+        no_access_info_candidate_names=no_access_info_candidate_names,
+        no_scenario_candidate_names=no_scenario_candidate_names,
+        no_reference_candidate_names=no_reference_candidate_names,
+        running_topology_names=running_topology_names,
+        running_access_info_names=running_access_info_names,
+        running_scenario_names=running_scenario_names,
+        running_reference_names=running_reference_names,
     )
 
 
@@ -519,16 +560,20 @@ def _render_configuration_delta(kind: Optional[str], name: Optional[str], origin
     if kind is None:
         return ""
     if candidate is None:
-        # A whole definition is prospectively deleted (`no topology
-        # <name>` -- currently the only definition kind that supports
-        # candidate deletion; see cfgmod.CliSession.remove_topology_definition()).
-        # `original` is always the real committed definition being
-        # removed here: a brand-new, never-committed candidate is
-        # discarded outright by remove_topology_definition() instead of
-        # ever reaching this state, so `original is None` alongside
-        # `candidate is None` never represents a genuine deletion.
-        if kind == "topology" and original is not None:
-            return f"no topology {name}"
+        # A whole definition is prospectively deleted (`no <kind> <name>`
+        # -- see cfgmod.CliSession.remove_definition()). `original` is
+        # always the real committed definition being removed here: a
+        # brand-new, never-committed candidate is discarded outright by
+        # remove_definition() instead of ever reaching this state, so
+        # `original is None` alongside `candidate is None` never
+        # represents a genuine deletion. Never render nested field-level
+        # detail (and never the deleted definition's own content, which
+        # for access-info may include plaintext credentials) -- only the
+        # single whole-definition line. `kind.replace("_", "-")` recovers
+        # the CLI keyword ("access_info" -> "access-info"; a no-op for
+        # the other three kinds).
+        if original is not None:
+            return f"no {kind.replace('_', '-')} {name}"
         return ""
     if kind == "topology":
         return render_topology_configuration_delta(name, original, candidate)
@@ -1334,6 +1379,10 @@ def h_global_access_info(session: cfgmod.CliSession, args: dict) -> None:
     session.enter_access_info_definition(name)
 
 
+def h_global_no_access_info(session: cfgmod.CliSession, args: dict) -> None:
+    session.remove_definition("access_info", args["name"])
+
+
 def h_global_topology(session: cfgmod.CliSession, args: dict) -> None:
     name = args["name"]
     ok, message = session.can_switch_definition("topology", name)
@@ -1365,6 +1414,10 @@ def h_global_scenario(session: cfgmod.CliSession, args: dict) -> None:
     session.enter_scenario_definition(name)
 
 
+def h_global_no_scenario(session: cfgmod.CliSession, args: dict) -> None:
+    session.remove_definition("scenario", args["name"])
+
+
 def h_global_reference(session: cfgmod.CliSession, args: dict) -> None:
     name = args["name"]
     ok, message = session.can_switch_definition("reference", name)
@@ -1372,6 +1425,10 @@ def h_global_reference(session: cfgmod.CliSession, args: dict) -> None:
         print(f"% {message}")
         return
     session.enter_reference_definition(name)
+
+
+def h_global_no_reference(session: cfgmod.CliSession, args: dict) -> None:
+    session.remove_definition("reference", args["name"])
 
 
 # ---- running-config mode ----
@@ -1575,6 +1632,9 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "global.access_info": h_global_access_info,
     "global.topology": h_global_topology,
     "global.no_topology": h_global_no_topology,
+    "global.no_access_info": h_global_no_access_info,
+    "global.no_scenario": h_global_no_scenario,
+    "global.no_reference": h_global_no_reference,
     "global.scenario": h_global_scenario,
     "global.reference": h_global_reference,
     "global.exit": h_end,

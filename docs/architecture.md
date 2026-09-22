@@ -298,7 +298,7 @@ cross-device first-bootstrap race is handled separately, by making
 second lock. `terminal_list()` stays unlocked: it is a read-only query
 that tmux itself answers atomically.
 
-### Live read-only human monitoring (Step 3.4 / 3.4a)
+### Live read-only human monitoring (Step 3.4 / 3.4a / 3.4b)
 
 ```
                         AI / MCP
@@ -313,7 +313,18 @@ that tmux itself answers atomically.
                                   |
                                   v
                          monitor terminal R1
-                                  ^
+                                  |
+                                  +----> read-only observation
+                                  |            |
+                                  |            v
+                                  |     incremental stream delta
+                                  |            |
+                                  |            v
+                                  |   local terminal scrollback
+                                  |            +
+                                  |      live bottom status
+                                  |            |
+                                  |          Human
                            +------+
                            |
                   network-lab-discovery-R1
@@ -362,21 +373,72 @@ lifetime is independent of session lifetime by design: it starts in
 `waiting` if opened before either session exists, survives disappearance/
 `ended` in either namespace without exiting, and automatically resumes
 live display once a session (managed or Discovery) exists again; only the
-human quitting (`q`/`Q`/Ctrl-C) ends it. The UI itself is a small
-`prompt_toolkit` `Application` (full-screen, with its own `refresh_interval`
-driving periodic re-observation -- no manual polling thread, no
-`termios`/`tty`/`fcntl` of our own), matching the CLI's existing
-prompt_toolkit-only terminal handling.
+human quitting (`q`/`Q`/Ctrl-C) ends it.
+
+**Scrollback-preserving UI (Step 3.4b).** The monitor's `prompt_toolkit`
+`Application` is `full_screen=False` -- it never switches to the alternate
+screen buffer, so everything it prints stays in the terminal emulator's own
+normal scrollback exactly like ordinary command output, both during and
+after the run. A background `asyncio` task (`cli/main.py`'s
+`_monitor_poll_loop()`, driven by the same `refresh_interval` cadence as
+before -- no busier than Step 3.4/3.4a) polls
+`capture_device_terminal_view()`, and prints any new activity via
+`run_in_terminal()` (the same "print permanently above a live area"
+mechanism the CLI's own `?`/Tab key bindings already use) -- never a manual
+`termios`/`tty`/`fcntl` clear/redraw. Only a small 3-line status block at the
+bottom (`Monitoring terminal <device> | Read-only | Source: ... | Status:
+... | q: quit`, width-adaptive via `shutil.get_terminal_size()`) is
+continuously redrawn in place; on exit, `prompt_toolkit`'s own
+`renderer.erase()` removes just that live area, leaving everything already
+printed untouched.
+
+**Incremental stream (`cli/main.py`'s `_monitor_stream_step()` /
+`_MonitorStreamCursor`).** Each poll calls `capture_device_terminal_view()`
+with `lines=terminal.HISTORY_LIMIT` (its full-history mode -- tmux's
+`capture-pane -S -` already captures up to the 20000-line history-limit
+regardless of the `lines` argument, so this costs no extra tmux call
+compared to the small on-screen window Step 3.4/3.4a used; only how much of
+that same captured text is returned changes). The cursor tracks, per
+monitor run, how many lines of the current source's output have already
+been streamed, and diffs by list position (never by string search), so:
+repeated identical lines (e.g. duplicate routes) are never collapsed;
+output that arrives in a burst larger than the pane's own visible height is
+never lost merely because the visible pane scrolled, since the full
+history buffer -- not just the screen -- is what gets compared; and an
+unchanged poll appends nothing. A session being recreated under the same
+name is detected without any extra tmux identity query (no `pane_id`/
+`session_id` lookup): a fresh pane's history never shares the previously
+seen prefix, so the same position-based integrity check that powers normal
+incremental diffing also catches recreation, treated identically to an
+explicit source switch -- both start a bounded initial-context window
+(`terminal.DEFAULT_READ_LINES`, matching the pre-3.4b "visible pane"
+convention) rather than replaying the entire history, and both print a
+small one-line `[monitor] ...` marker (`started`/`switched to ...`/`ended;
+waiting`/`resumed`) so scrollback stays legible without being flooded on
+every ordinary poll. The one honestly-acknowledged limitation: if a single
+session's own output exceeds the 20000-line history-limit, tmux itself
+starts evicting its oldest lines, which this cursor cannot distinguish from
+a genuine recreation -- handled the same safe way (a bounded fresh context,
+never a crash or silently dropped correctness), just occasionally
+reprinting a small amount of already-seen tail content in that rare case.
 
 Multiple monitors -- of the same or different devices, from separate CLI
 processes -- are fully independent: tmux remains the only session state,
-so there is no monitor registry, daemon, or IPC layer to keep in sync.
+so there is no monitor registry, daemon, or IPC layer to keep in sync, and
+each monitor's `_MonitorStreamCursor` is local to its own process/run.
 `monitor terminal <device-id>`'s target eligibility (the committed active
 topology's devices, union'd with devices that already have an existing
 managed *or* Discovery session) is likewise read fresh each time, so a
 device being discovered for the first time -- not yet in any committed
 topology -- is still a valid target the moment its Discovery session
 exists.
+
+The local terminal scrollback this produces is a presentation convenience
+for the human, not a second source of truth: tmux remains the session SSOT,
+and the persistent per-session log file (`logs/terminal/<device-id>/*.log`)
+remains the durable historical-evidence SSOT, unaffected by any of this --
+the monitor never creates a log, never touches `pipe-pane`, and never
+writes captured pane text anywhere but the local terminal.
 
 ### Structurally separate session namespaces
 

@@ -1164,32 +1164,44 @@ same device        -> operations remain serialized / safe
 
 ## Step 3.4: live read-only terminal monitoring
 
-`monitor terminal <device>` continuously observes Network Lab MCP terminal
-activity for a device. A normal managed terminal is preferred; when none
-exists, an active Discovery bootstrap session is shown instead. If neither
+`monitor terminal <device>` streams the terminal activity observed by
+Network Lab MCP into the local terminal while keeping a live read-only
+status bar at the bottom. Previously displayed activity remains in the
+terminal emulator's normal scrollback, so engineers can scroll back while
+monitoring continues. A normal managed terminal is preferred; when none
+exists, an active Discovery bootstrap session is shown instead; if neither
 exists, the monitor waits and automatically resumes when activity appears.
-Monitoring remains active across session loss and source changes alike.
+
+Source priority remains:
+
+```
+managed > discovery > waiting
+```
 
 ```
 network-lab# monitor terminal R1
-
-Monitoring terminal R1
-Read-only -- press q to quit
-
-Status: active
-Source: managed
-----------------------------------------------------------------
 RP/0/RP0/CPU0:R1#show version
 ...
 RP/0/RP0/CPU0:R1#
-----------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Monitoring terminal R1 | Read-only | Source: managed | Status: active | q: quit
+--------------------------------------------------------------------------------
 ```
 
-- **EXEC-only, strictly read-only.** `monitor terminal <device-id>` opens a
-  live view of the currently preferred terminal session for that device --
+- **EXEC-only, strictly read-only.** `monitor terminal <device-id>` streams
+  the currently preferred terminal session's activity for that device --
   never `tmux attach-session`, never a keystroke forwarded to the pane. It
   never creates, closes, or reconnects a session (managed or Discovery), and
   adds no new MCP tool (still exactly seven).
+- **Activity streams like a normal CLI; only the status bar is live.** The
+  monitor is not a full-screen view: it never uses the terminal's alternate
+  screen buffer, so everything it has printed stays in the terminal
+  emulator's own scrollback exactly like ordinary command output, both
+  while monitoring continues and after `q`/`Q`/Ctrl-C exits. Only the small
+  bottom status bar is continuously redrawn in place. A small `[monitor]
+  ...` marker is printed whenever the source starts, ends, switches, or
+  resumes, so scrollback stays readable without being flooded on every poll.
 - **Source priority: managed session > Discovery session > waiting**
   (Step 3.4a). It shows the normal managed session
   (`network-lab-device-<device-id>`) whenever one exists; only when it
@@ -1197,13 +1209,14 @@ RP/0/RP0/CPU0:R1#
   (`network-lab-discovery-<device-id>`, created by `discover topology`) for
   the same device. Priority is re-evaluated on every refresh, so watching a
   device being discovered for the first time, then having the AI open a
-  normal session for it afterward, needs no monitor restart -- the view just
-  switches from `Source: discovery` to `Source: managed`.
+  normal session for it afterward, needs no monitor restart -- the status
+  bar just switches from `Source: discovery` to `Source: managed`.
 - **Monitor lifetime is independent of session lifetime.** It may be
   started before any session exists (`Status: waiting for terminal
   activity`), survives session loss (managed or Discovery, including
-  Discovery's own normal cleanup) without exiting, and automatically resumes
-  live display -- only `q`/`Q` (no Enter needed) or Ctrl-C ends it.
+  Discovery's own normal cleanup) without exiting or erasing what it already
+  streamed, and automatically resumes live output -- only `q`/`Q` (no Enter
+  needed) or Ctrl-C ends it.
 - **Several devices can be watched at once, independently.** Separate
   `./run_cli.sh` terminal windows can each run `monitor terminal <device>`
   for a different device while the AI investigates all of them concurrently
@@ -1221,7 +1234,11 @@ network-lab# monitor terminal R1      network-lab# monitor terminal R2
 ```
 
 See ["`monitor terminal`"](docs/cli_reference.md#monitor-terminal) in the CLI
-reference for the full behavior.
+reference for the full behavior. The local terminal scrollback is a human
+observability convenience, not durable storage -- persisted historical
+evidence remains the job of the existing `logs/terminal/<device-id>/*.log`
+files (see ["`show logging`"](docs/cli_reference.md#show-logging)), unaffected
+by monitoring.
 
 ## MCP SDK
 

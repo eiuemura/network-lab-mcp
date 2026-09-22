@@ -20,9 +20,12 @@ and help all live in cli/grammar.py.
 
 from __future__ import annotations
 
+import asyncio
 import platform
+import shutil
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -1108,71 +1111,166 @@ def h_show_version(session: cfgmod.CliSession, args: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# `monitor terminal <device-id>` (EXEC only, Step 3.4) -- a live, read-only
-# human view of the exact same production tmux session terminal_open()/
-# terminal_send()/terminal_read() use. Passive observation only: it never
-# sends anything to the pane and never creates/closes a session (see
-# terminal.capture_device_terminal_view()'s own docstring for the full
-# read-only rationale, including why it deliberately does not take the
-# Step 3.3 per-device lock).
+# `monitor terminal <device-id>` (EXEC only, Step 3.4/3.4a/3.4b) -- a live,
+# read-only human view of whichever Network Lab MCP terminal session
+# currently has priority for a device (managed > discovery > waiting; see
+# terminal.capture_device_terminal_view()'s own docstring). Passive
+# observation only: it never sends anything to a pane and never creates/
+# closes a session, and it deliberately does not take the Step 3.3
+# per-device lock (same rationale as before: observation is a plain read,
+# and the lock is process-local anyway).
 #
-# Monitor lifetime is intentionally independent of session lifetime: the
-# monitor stays open through WAITING (no session yet/anymore) and ENDED
-# (pane dead, remain-on-exit) alike, and automatically resumes showing
-# live output the moment a same-named session reappears -- only an
-# explicit q/Q/Ctrl-C ends it. This is a small prompt_toolkit
-# `Application` (full-screen, so exiting cleanly restores the normal CLI
-# scrollback exactly like `less`/`top` do), not a custom terminal-control
-# loop -- no termios/tty/fcntl of our own, preserving the CLI's existing
-# cross-platform prompt_toolkit-only terminal handling. `refresh_interval`
-# is prompt_toolkit's own periodic-redraw mechanism (a scheduled asyncio
-# callback, not a manual busy loop); each redraw re-observes the pane
-# fresh, so no separate polling thread is needed either.
+# Step 3.4b: the UI is `full_screen=False` (never the alternate screen
+# buffer), so terminal activity already streamed to the human stays in
+# the *normal* terminal emulator scrollback -- it is printed once via
+# run_in_terminal() (the same "print permanently above a live area"
+# mechanism the `?`/Tab key bindings already use elsewhere in this file)
+# and never repainted. Only a small 3-line status block at the bottom
+# (`Monitoring terminal <device> | Read-only | Source: ... | Status: ...
+# | q: quit`, width-adaptive) is live/redrawn, via prompt_toolkit's own
+# `renderer.erase()` on exit -- which erases only that live area, not the
+# scrollback above it, so quitting cleanly restores `network-lab#`
+# without touching anything already printed. Monitor lifetime remains
+# independent of session lifetime: it survives WAITING/ENDED and source
+# switches alike, resuming live output automatically -- only an explicit
+# q/Q/Ctrl-C ends it.
 # --------------------------------------------------------------------------
 
 # Human-observation cadence: frequent enough to feel live, far below a
 # busy loop (a handful of tmux subprocess calls per second at most, only
-# while a human actually has a monitor open).
+# while a human actually has a monitor open). Unchanged from Step 3.4.
 _MONITOR_REFRESH_INTERVAL = 0.3
 
-_MONITOR_DIVIDER = "-" * 70
+# How much recent context to print once when a source first becomes
+# active (Step 3.4b Section 18) -- deliberately bounded (matches the
+# existing "visible pane" convention, terminal.DEFAULT_READ_LINES), never
+# the full multi-thousand-line tmux history.
+_MONITOR_INITIAL_CONTEXT_LINES = terminal.DEFAULT_READ_LINES
 
 
-def _render_monitor_view(device_id: str) -> str:
-    """Pure observe-then-render step, deliberately separate from the
-    periodic refresh loop below so it -- and therefore every monitor
-    lifecycle transition -- is directly unit-testable without any real
-    time passing (Step 3.4 Section 53).
+@dataclass
+class _MonitorStreamCursor:
+    """Per-monitor-run incremental-output bookkeeping (Step 3.4b). Pure UI
+    state, not a terminal.py concept: reset (a "new instance") whenever
+    the observed source changes, or a same-named source's captured
+    history no longer has the previously-seen prefix as its own prefix --
+    the same-name case is exactly what happens when a session is closed
+    and a new one is created under the identical name (a fresh tmux pane
+    never carries over the old pane's history), so this needs no extra
+    tmux identity query (pane_id/session_id): the content-prefix check
+    already implies it. The one honestly-documented edge case this cannot
+    distinguish from a real recreation is history-limit (20000-line)
+    eviction truncating the same session's own history -- both are
+    treated identically (a "resumed" instance, bounded fresh context),
+    which never loses correctness for the human observer (everything
+    already emitted already reached their terminal), only occasionally
+    reprints a small bounded amount of already-seen tail content."""
 
-    Step 3.4a: the wording no longer implies a managed session
-    specifically (a Discovery bootstrap session is now an equally valid
-    source -- see terminal.capture_device_terminal_view()'s priority
-    docstring), and an active/ended source names which one it is."""
-    snapshot = terminal.capture_device_terminal_view(device_id)
-    lines = [
-        f"Monitoring terminal {device_id}",
-        "Read-only -- press q to quit",
-        "",
-    ]
+    source: str = "none"
+    lines_shown: int = 0
+    last_full_lines: list[str] = field(default_factory=list)
+
+
+def _monitor_stream_step(device_id: str, cursor: _MonitorStreamCursor) -> tuple[list[str], terminal.TerminalMonitorSnapshot]:
+    """One observe-and-diff step: returns (new permanent lines to print,
+    latest snapshot). Deliberately separate from the async poll loop
+    below so every lifecycle/incremental-output case is directly
+    unit-testable without any real time passing or prompt_toolkit
+    machinery (same testability principle as Step 3.4's
+    _render_monitor_view()). Mutates `cursor` in place; never touches
+    tmux beyond the one read-only terminal.capture_device_terminal_view()
+    call (full history, so burst output between polls -- up to the
+    20000-line history-limit -- is never lost merely because it scrolled
+    off the visible pane)."""
+    snapshot = terminal.capture_device_terminal_view(device_id, lines=terminal.HISTORY_LIMIT)
+    printable: list[str] = []
+
     if snapshot.status == "waiting":
-        lines.append("Status: waiting for terminal activity")
-    else:
-        if snapshot.status == "ended":
-            lines.append("Status: terminal session ended -- waiting for session to return")
+        if cursor.source != "none":
+            printable.append(f"[monitor] {cursor.source} terminal activity ended; waiting")
+        cursor.source = "none"
+        cursor.lines_shown = 0
+        cursor.last_full_lines = []
+        return printable, snapshot
+
+    full_lines = snapshot.pane_text.split("\n") if snapshot.pane_text else []
+    is_new_instance = (
+        snapshot.source != cursor.source
+        or full_lines[: cursor.lines_shown] != cursor.last_full_lines[: cursor.lines_shown]
+    )
+
+    if is_new_instance:
+        if cursor.source == "none":
+            printable.append(f"[monitor] {snapshot.source} terminal activity started")
+        elif snapshot.source != cursor.source:
+            printable.append(f"[monitor] switched to {snapshot.source} terminal activity")
         else:
-            lines.append("Status: active")
-        lines.append(f"Source: {snapshot.source}")
-        lines.append("")
-        lines.append(_MONITOR_DIVIDER)
-        lines.append(snapshot.pane_text)
-        lines.append(_MONITOR_DIVIDER)
-    return "\n".join(lines)
+            printable.append(f"[monitor] {snapshot.source} terminal activity resumed")
+        start = max(0, len(full_lines) - _MONITOR_INITIAL_CONTEXT_LINES)
+        printable.extend(full_lines[start:])
+    elif len(full_lines) > cursor.lines_shown:
+        printable.extend(full_lines[cursor.lines_shown :])
+    # else: unchanged poll -- append nothing (Step 3.4b Section 33).
+
+    cursor.source = snapshot.source
+    cursor.lines_shown = len(full_lines)
+    cursor.last_full_lines = full_lines
+    return printable, snapshot
+
+
+def _monitor_status_line(device_id: str, snapshot: terminal.TerminalMonitorSnapshot) -> str:
+    parts = [f"Monitoring terminal {device_id}", "Read-only"]
+    if snapshot.status == "waiting":
+        parts.append("Status: waiting for terminal activity")
+    else:
+        parts.append(f"Source: {snapshot.source}")
+        parts.append(f"Status: {snapshot.status}")
+    parts.append("q: quit")
+    return " | ".join(parts)
+
+
+def _monitor_status_block(device_id: str, snapshot: terminal.TerminalMonitorSnapshot) -> str:
+    """The small 3-line live status area (separator/content/separator),
+    width-adaptive (Step 3.4b Section 6) -- never touches the managed/
+    Discovery tmux pane's own geometry, only this local rendering."""
+    width = shutil.get_terminal_size(fallback=(80, 24)).columns
+    separator = "-" * width
+    line = _monitor_status_line(device_id, snapshot)
+    if len(line) > width:
+        line = line[: max(0, width - 1)]
+    return f"{separator}\n{line}\n{separator}"
+
+
+async def _monitor_poll_loop(
+    device_id: str, cursor: _MonitorStreamCursor, status_holder: list[str], refresh_interval: float, app: Application
+) -> None:
+    """Background task (Step 3.4b): polls, prints any new permanent
+    activity via run_in_terminal() (the same mechanism the `?`/Tab key
+    bindings already use to print above a live prompt_toolkit area), then
+    updates the live status text and invalidates the display. Polls
+    immediately on start (so the very first frame already reflects real
+    state), then on `refresh_interval`. Automatically cancelled when the
+    Application exits (prompt_toolkit's own create_background_task()
+    contract) -- no manual stop flag needed."""
+    while True:
+        printable, snapshot = _monitor_stream_step(device_id, cursor)
+        if printable:
+            text = "\n".join(printable)
+            await run_in_terminal(lambda text=text: print(text))
+        status_holder[0] = _monitor_status_block(device_id, snapshot)
+        app.invalidate()
+        await asyncio.sleep(refresh_interval)
 
 
 def _build_monitor_application(device_id: str, refresh_interval: float) -> Application:
     """Construct (but do not run) the monitor's Application -- separated
     from run_terminal_monitor() so tests can inspect its key bindings
-    without entering the blocking full-screen event loop."""
+    without entering the blocking event loop.
+
+    `full_screen=False` (Step 3.4b): never the alternate screen buffer,
+    so the terminal emulator's normal scrollback -- including whatever
+    this run prints via _monitor_poll_loop()'s run_in_terminal() calls --
+    is preserved after exit, unlike Step 3.4/3.4a's full-screen view."""
     kb = KeyBindings()
 
     @kb.add("q")
@@ -1183,13 +1281,20 @@ def _build_monitor_application(device_id: str, refresh_interval: float) -> Appli
         # CLI process/PromptSession -- see run_terminal_monitor().
         event.app.exit()
 
-    control = FormattedTextControl(text=lambda: _render_monitor_view(device_id))
-    return Application(
-        layout=Layout(Window(content=control, wrap_lines=True)),
+    status_holder = ["Monitoring terminal {}\nRead-only".format(device_id)]
+    control = FormattedTextControl(text=lambda: status_holder[0])
+    app = Application(
+        layout=Layout(Window(content=control, height=3)),
         key_bindings=kb,
-        full_screen=True,
-        refresh_interval=refresh_interval,
+        full_screen=False,
     )
+    cursor = _MonitorStreamCursor()
+    app.pre_run_callables.append(
+        lambda: app.create_background_task(
+            _monitor_poll_loop(device_id, cursor, status_holder, refresh_interval, app)
+        )
+    )
+    return app
 
 
 def run_terminal_monitor(device_id: str, *, refresh_interval: float = _MONITOR_REFRESH_INTERVAL) -> None:
@@ -1197,9 +1302,10 @@ def run_terminal_monitor(device_id: str, *, refresh_interval: float = _MONITOR_R
     Every other keystroke is simply unbound -- this Application's only
     control is a non-editable FormattedTextControl, so there is no text
     buffer for a stray key to be inserted into, and nothing here ever
-    forwards a keystroke to tmux. Exiting restores the CLI's normal
-    scrollback (full_screen's alternate-screen-buffer swap) and adds
-    nothing to CLI command history -- this loop never touches
+    forwards a keystroke to tmux. Exiting erases only the live status
+    area (prompt_toolkit's own renderer.erase() on exit) -- already
+    streamed activity, printed as normal terminal output, is untouched --
+    and adds nothing to CLI command history -- this loop never touches
     PromptSession/history at all."""
     _build_monitor_application(device_id, refresh_interval).run()
 

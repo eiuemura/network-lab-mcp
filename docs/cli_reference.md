@@ -160,45 +160,70 @@ network-lab(config)# show version
 | `delete logging <device-id> all` | Delete every eligible stored terminal log for one device, leaving its directory in place. Requires confirmation. |
 | `delete logging <device-id> directory` | Delete a device's eligible logs, then remove its now-empty logging directory. Requires confirmation. |
 | `delete logging <device-id> <log-file>` | Delete exactly one eligible stored terminal log, by its exact filename (same completion/eligibility rules as `show logging`). Requires confirmation. |
-| `monitor terminal <device-id>` | Open a live, read-only view of the current Network Lab MCP terminal activity for a device — see "`monitor terminal`" below. `<device-id>` Tab/`?`-completes from the committed active topology's devices, union'd with any device that already has an existing managed or Discovery session. |
+| `monitor terminal <device-id>` | Stream the current Network Lab MCP terminal activity for a device into the local terminal, with a live read-only status bar at the bottom — see "`monitor terminal`" below. `<device-id>` Tab/`?`-completes from the committed active topology's devices, union'd with any device that already has an existing managed or Discovery session. |
 | `help` / `help <topic>` | Network Lab MCP Quick Start/usage help — see "`?` vs. `help`" above. Not the same as bare `?`. |
 | `exit` / `quit` | Terminate the CLI process. Only reachable in EXEC mode, where by construction no candidate configuration exists. |
 
 ### `monitor terminal`
 
-`monitor terminal <device-id>` opens a continuously-refreshing, read-only
-view of the current Network Lab MCP terminal activity for a device — the
-same terminal an AI/MCP client (or Discovery) is driving, observed live by a
-human. It is EXEC-only and strictly observational:
+`monitor terminal <device-id>` streams the current Network Lab MCP terminal
+activity for a device — the same terminal an AI/MCP client (or Discovery) is
+driving — into the local terminal, with a small live status bar kept at the
+bottom. It is EXEC-only and strictly observational:
 
 - Never sends anything to the pane, never creates or closes a session. Only
   `has-session`/`list-panes`/`capture-pane`-style read-only introspection.
+- **Activity streams like normal CLI output; only the status bar is live.**
+  New terminal output is printed once, in order, and stays in the terminal
+  emulator's normal scrollback — scroll up with the terminal emulator itself
+  to review it, both while the monitor is running and after it exits. Only
+  the 3-line status block at the bottom
+  (`Monitoring terminal <device> | Read-only | Source: ... | Status: ... |
+  q: quit`, width-adaptive) is continuously redrawn in place; it never
+  accumulates into scrollback. A one-line `[monitor] ...` marker is printed
+  only when activity starts, ends, switches source, or resumes after a
+  session is recreated — never on every ordinary poll — so scrollback stays
+  readable. The monitor never uses the terminal's alternate screen buffer,
+  unlike a full-screen pager.
 - **Source priority: managed session > Discovery session > waiting.** It
   prefers the normal managed session (`network-lab-device-<device-id>`, the
   one `terminal_open()`/`terminal_send()`/`terminal_read()` use); if none
   exists, it falls back to an active Discovery bootstrap session
   (`network-lab-discovery-<device-id>`, created by `discover topology`) for
-  the same device; if neither exists, it shows `Status: waiting for terminal
-  activity`. This is re-evaluated on every refresh — no restart is needed
-  when a session appears, disappears, or a higher-priority source takes
-  over. The active/ended view additionally shows `Source: managed` or
-  `Source: discovery` so the source is never ambiguous. Discovery sessions
-  are normally short-lived; the monitor never delays or blocks Discovery's
-  own cleanup, and never causes a Discovery session to be created.
+  the same device; if neither exists, the status bar shows `Status: waiting
+  for terminal activity`. This is re-evaluated on every refresh — no restart
+  is needed when a session appears, disappears, or a higher-priority source
+  takes over; a `[monitor] switched to ...`/`... started`/`... ended;
+  waiting`/`... resumed` marker documents each such transition in scrollback.
+  Discovery sessions are normally short-lived; the monitor never delays or
+  blocks Discovery's own cleanup, and never causes a Discovery session to be
+  created.
+- **New output is appended exactly once; nothing is ever lost merely
+  because it scrolled.** The monitor tracks how much of a session's output
+  it has already streamed and only prints the new tail on each poll —
+  repeated identical lines (e.g. duplicate routes) are preserved exactly,
+  never collapsed, and a burst of output between two polls is never lost
+  even if it exceeds the pane's own visible height. If the *same* session
+  name is recreated (old instance gone, new one started) — with or without
+  an intervening `waiting` observation — the monitor detects this is a new
+  instance and starts a fresh bounded context for it, printing a `resumed`
+  marker, rather than silently dropping or misattributing its output.
 - Works even if no session of either kind exists yet — it starts in
-  `Status: waiting for terminal activity` and starts displaying output
-  automatically the moment one appears.
+  `Status: waiting for terminal activity` and begins streaming automatically
+  the moment one appears, printing a bounded recent-context window (not the
+  entire history) as its first output.
 - Session loss (`terminal_close()`, the SSH/telnet process exiting, Discovery
-  cleanup, the whole tmux session disappearing) never exits the monitor — it
-  returns to `Status: waiting for terminal activity` (or, if the pane still
-  exists but its process has exited, `Status: terminal session ended —
-  waiting for session to return`, showing its last content) and automatically
-  resumes once a session reappears (falling back to Discovery, or recovering
-  to managed, per the same priority rule).
+  cleanup, the whole tmux session disappearing) never exits the monitor and
+  never erases what it already streamed — the status bar returns to
+  `Status: waiting for terminal activity` (or, if the pane still exists but
+  its process has exited, `Status: ended`) and automatically resumes
+  streaming once a session reappears (falling back to Discovery, or
+  recovering to managed, per the same priority rule).
 - Only the human can end it: press `q` or `Q` (no Enter needed) or Ctrl-C.
   Every other keystroke is ignored and never reaches the device. Quitting
-  returns cleanly to `network-lab#`; command history and CLI state are
-  unaffected.
+  removes only the live status bar and returns cleanly to `network-lab#` —
+  everything already streamed remains in scrollback; command history and CLI
+  state are unaffected.
 - Multiple monitors — of the same or different devices, from separate
   `./run_cli.sh` processes or CLI sessions — are independent; none of them
   affect each other, the AI's own terminal operations, or Discovery.
@@ -207,6 +232,12 @@ human. It is EXEC-only and strictly observational:
   active Discovery session (so a device being discovered for the first time
   is still a valid target); an unrecognized name is rejected immediately
   rather than waiting forever.
+
+The local terminal scrollback is a human-observability convenience, not
+durable storage: closing the terminal window discards it like any other
+scrollback. Durable historical evidence remains the job of the existing
+`logs/terminal/<device-id>/*.log` files, entirely unaffected by monitoring
+— see ["`show logging`"](#show-logging) below.
 
 ### `show logging`
 

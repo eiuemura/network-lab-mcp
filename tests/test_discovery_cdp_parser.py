@@ -1,4 +1,4 @@
-"""Step 3.6: `parse_cdp_neighbors()` -- the CDP counterpart of
+"""`parse_cdp_neighbors()` -- the CDP counterpart of
 parse_lldp_neighbors(). Handles both real-world row shapes: an IOS XR-style
 one-line row, and an IOS/IOS XE-style row where a long/FQDN Device ID wraps
 onto its own line with the remaining fields on the *next* physical line.
@@ -122,8 +122,8 @@ def test_zero_neighbors_returns_empty_list():
 
 
 def test_cdp_disabled_or_unsupported_returns_empty_list_not_an_error():
-    """Deliberately more lenient than LLDP's parser (Step 3.6 Section 10/
-    37): a missing/unrecognized table header must never fail the whole
+    """Deliberately more lenient than LLDP's parser: a missing/unrecognized
+    table header must never fail the whole
     device's collection just because CDP is off."""
     text = "% CDP is not enabled\n"
     assert parse_cdp_neighbors(text, "R1") == []

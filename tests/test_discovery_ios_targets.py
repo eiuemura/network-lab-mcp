@@ -1,6 +1,6 @@
-"""Step 3.7: classic IOS (`type: ios`) target selection and end-to-end
-`discover topology` participation via CDP -- mirrors tests/
-test_discovery_iosxe_targets.py's Step 3.6 conventions, but for the new
+"""Classic IOS (`type: ios`) target selection and end-to-end
+`discover topology` participation via CDP -- mirrors
+tests/test_discovery_iosxe_targets.py's conventions, but for the
 `ios` type. `_bootstrap_collect`/`_bootstrap_collect_iosxe`/
 _bootstrap_collect_ios are all monkeypatched here (never a real
 network/tmux operation), matching the project's established Discovery
@@ -152,8 +152,8 @@ def test_only_ios_collector_is_invoked_for_ios_targets(lab_root, monkeypatch):
 
 
 def test_pagent_as_classic_ios_resolves_cdp_links_to_managed_routers(lab_root, monkeypatch):
-    """The PAGENT scenario from Step 3.6, now with PAGENT correctly typed
-    `ios` (Section 9/33) instead of `iosxe`: R1/R2 (IOS XR) see PAGENT via
+    """The PAGENT scenario, with PAGENT correctly typed `ios` instead of
+    `iosxe`: R1/R2 (IOS XR) see PAGENT via
     CDP, PAGENT sees R1/R2 back via CDP -- both should resolve as
     candidate links, and an unmanaged CDP neighbor stays unresolved."""
 

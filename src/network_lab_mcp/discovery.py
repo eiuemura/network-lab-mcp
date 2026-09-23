@@ -1,6 +1,5 @@
-"""Step 3 scope: IOS XR + IOS XE + classic IOS topology discovery over LLDP
-and CDP, enriched with stable Layer-3 interface context (IPv4 address +
-VRF).
+"""IOS XR + IOS XE + classic IOS topology discovery over LLDP and CDP,
+enriched with stable Layer-3 interface context (IPv4 address + VRF).
 
     committed active_access_info
         -> private bootstrap connection (terminal.open_bootstrap_terminal)
@@ -8,7 +7,7 @@ VRF).
            command runner): IOS XR gets LLDP + CDP + `show ipv4 interface
            brief`; IOS XE gets LLDP + CDP + `show vrf`/`show ip interface
            brief`; classic IOS gets CDP + `show vrf`/`show ip interface
-           brief` (Step 3.7 Section 10 -- no classic-IOS LLDP in this step)
+           brief` (classic IOS has no LLDP support)
         -> normalized neighbor observations (parse_lldp_neighbors /
            parse_cdp_neighbors), each tagged with its own `source`
         -> identity resolution (resolve_remote_identity, protocol-agnostic)
@@ -34,7 +33,7 @@ access-info specifies (ssh or telnet). Telnet is unauthenticated-in-transit
 and unencrypted -- suitable only for isolated lab environments, never
 presented as a secure transport (see README.md/docs/architecture.md).
 
-L3 topology enrichment (Step 3.7) is deliberately additive, never a
+L3 topology enrichment is deliberately additive, never a
 Discovery blocker: neighbor discovery (LLDP/CDP) remains the primary,
 required mechanism; if a device's optional L3 command(s) fail (transport
 timeout or unrecognized output), that one device's L3 enrichment is
@@ -63,24 +62,24 @@ from network_lab_mcp import lab, terminal
 LOGIN_TIMEOUT_SECONDS = 30
 COMMAND_TIMEOUT_SECONDS = 25
 
-# Step 3.3: bounds how many devices' bootstrap collection runs concurrently.
+# Bounds how many devices' bootstrap collection runs concurrently.
 # Small and internal, not a public CLI/config knob (see task boundaries) --
 # 8 comfortably covers real lab scale (a handful to a dozen managed
 # devices) while keeping concurrent SSH/tmux session creation bounded
 # rather than launching one thread per arbitrary target count.
 DISCOVERY_MAX_WORKERS = 8
 
-# Matches an IOS XR exec prompt, e.g. "RP/0/RP0/CPU0:APJC_JP_OSK_R1#", and
+# Matches an IOS XR exec prompt, e.g. "RP/0/RP0/CPU0:LAB_R1#", and
 # captures the hostname -- this doubles as both "the prompt has returned"
 # detection and the smallest reliable IOS XR hostname source (see
 # "Local hostname collection" in docs/architecture.md): no separate
 # `show running-config | include hostname` query is needed.
 _IOSXR_PROMPT_RE = re.compile(r"RP/\S+/CPU\d+:(?P<hostname>[^#\s]+)#\s*$", re.MULTILINE)
-# The password-prompt regex itself is shared SSOT (Step 3.5): see
+# The password-prompt regex itself is shared SSOT: see
 # terminal.PASSWORD_PROMPT_RE's own docstring -- OpenSSH's client-side
 # prompt text is identical regardless of caller, so there is exactly one
 # place that recognizes it.
-# re.MULTILINE is required here (Step 3.8 finding): without it, the `$` in
+# re.MULTILINE is required here: without it, the `$` in
 # each combined sub-pattern only anchors to the true end of the whole
 # captured string, not the end of each line -- meaning a match on a line
 # that is *not* the very last line of the captured pane text (e.g. once
@@ -93,19 +92,18 @@ _LOGIN_WAIT_RE = re.compile(
 )
 
 # Classic-IOS-style exec prompt, e.g. "PAGENT#" or "PAGENT>" -- shared by
-# IOS XE *and* classic IOS (Step 3.7: the same login/prompt shape applies
-# to both, so this is deliberately not named "_IOSXE_..." even though it
-# was introduced for IOS XE in Step 3.6). Unlike IOS XR's
+# IOS XE *and* classic IOS (the same login/prompt shape applies
+# to both, so this is deliberately not named "_IOSXE_..."). Unlike IOS XR's
 # "RP/.../CPU0:hostname#" shape, this prompt *is* just the hostname, so the
 # whole line must be exactly that (never matched against a mid-table CDP
 # row, which always has other fields after the device ID on the same line
 # -- see parse_cdp_neighbors()). A telnet/console login may also show a
-# "Username:" prompt before "Password:" (Step 3.6 Section 13); OpenSSH's
+# "Username:" prompt before "Password:"; OpenSSH's
 # own password prompt (terminal.PASSWORD_PROMPT_RE) is reused unchanged
 # since it is transport-agnostic text matching, not an SSH-specific
 # mechanism.
 #
-# Both now live in terminal.py (Step 3.8): managed terminal_open()'s own
+# Both now live in terminal.py: managed terminal_open()'s own
 # Telnet authentication needed the exact same two patterns, so they moved
 # to the one shared lower-level module rather than being duplicated --
 # these names are kept as aliases so nothing else in this file (or its
@@ -120,7 +118,7 @@ _IOS_STYLE_LOGIN_WAIT_RE = re.compile(
 )
 
 # Real, documented Cisco text for "the command ran, but LLDP is
-# administratively disabled" (Step 3.7 Section 13/56) -- this is NOT a
+# administratively disabled" -- this is NOT a
 # transport/command failure (the prompt returns normally), and it is NOT a
 # parser failure either; it must mean "zero LLDP observations", the same
 # way parse_cdp_neighbors() already treats CDP-unavailable leniently.
@@ -147,7 +145,7 @@ def _resolve_login_password(device_id: str, device_config: dict, prompt_line: st
     """Which password answers the current prompt.
 
     A thin, Discovery-specific wrapper around the shared
-    terminal.resolve_target_password_prompt() (Step 3.5): the actual
+    terminal.resolve_target_password_prompt(): the actual
     target-vs-jump-host attribution logic lives there once, reused
     identically by managed terminal_open()'s own private authentication,
     so a prompt that cannot be confidently attributed to either hop fails
@@ -191,10 +189,8 @@ def _login(device_id: str, device_config: dict) -> str:
 
 def _login_ios_style(device_id: str, device_config: dict) -> str:
     """Shared classic-IOS-style login for both IOS XE *and* classic IOS
-    (Step 3.7 Section 11 -- renamed from Step 3.6's IOS-XE-only
-    `_login_iosxe()`, since the same login sequence genuinely applies to
-    both and keeping the old name would now be misleading, not because the
-    logic itself needed to change). The same bounded, at-most-one-
+    (named generically rather than `_login_iosxe()` since the same login
+    sequence genuinely applies to both). The same bounded, at-most-one-
     password-send flow as _login(), but for classic-IOS-style login
     instead of IOS XR's. Works over either transport the device's
     access-info specifies (ssh or telnet, both already handled uniformly
@@ -274,7 +270,7 @@ def _run_command(
 
 def _run_command_tolerant(device_id: str, command_text: str, prompt_re: re.Pattern) -> str:
     """Like _run_command(), but for the *optional* L3 enrichment commands
-    only (Step 3.7 Section 38): a transport-level failure (the prompt never
+    only: a transport-level failure (the prompt never
     returns -- e.g. an unsupported command that hangs rather than
     returning an error line, or a genuinely broken session) must not fail
     the whole device's collection just because L3 enrichment is best-
@@ -284,7 +280,7 @@ def _run_command_tolerant(device_id: str, command_text: str, prompt_re: re.Patte
     device" (a warning, not a DiscoveryError) exactly like any other
     unrecognized L3 output. This is deliberately NOT used for LLDP/CDP or
     any of the existing required commands -- those keep failing the whole
-    device closed, unchanged from Step 3.6."""
+    device closed."""
     try:
         return _run_command(device_id, command_text, prompt_re)
     except terminal.TerminalError:
@@ -294,7 +290,7 @@ def _run_command_tolerant(device_id: str, command_text: str, prompt_re: re.Patte
 def _disable_terminal_paging(device_id: str, prompt_re: re.Pattern) -> None:
     """Send `terminal length 0` immediately after successful login and
     confirm the device prompt has returned before any Discovery show
-    command is sent (Step 3.7a).
+    command is sent.
 
     This is the fix for a real observed failure: a C9200L (IOS XE) ran
     `show version` before pagination was disabled, its output stopped at
@@ -356,19 +352,17 @@ def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
 
 
 def _bootstrap_collect_iosxe(device_id: str, device_config: dict) -> dict:
-    """IOS XE collection: log in, disable pagination (Step 3.7a -- see
+    """IOS XE collection: log in, disable pagination (see
     _disable_terminal_paging()'s own docstring for the real C9200L
-    failure this fixes; Step 3.6/3.7 never did this for IOS XE at all),
-    and collect `show version` (diagnostic parity with the IOS XR path),
-    both neighbor-discovery protocols (Step 3.7 Section 13: IOS XE now
-    also gets LLDP, in addition to CDP -- `% LLDP is not enabled` is
-    handled by the caller, not here, exactly like CDP-unavailable already
-    was), and the L3 enrichment commands `show vrf` + `show ip interface
-    brief` (collected tolerantly -- see _run_command_tolerant()). `show
+    failure this fixes), and collect `show version` (diagnostic parity
+    with the IOS XR path), both neighbor-discovery protocols (IOS XE gets
+    LLDP, in addition to CDP -- `% LLDP is not enabled` is handled by the
+    caller, not here, exactly like CDP-unavailable already was), and the
+    L3 enrichment commands `show vrf` + `show ip interface brief`
+    (collected tolerantly -- see _run_command_tolerant()). `show
     running-config` is skipped since it is unused downstream for IOS XR
-    too (kept minimal per Section 12's "collect at minimum" framing).
-    Fails closed (DiscoveryError) on any login, paging, LLDP/CDP command,
-    or timeout failure."""
+    too (kept minimal, "collect at minimum"). Fails closed (DiscoveryError)
+    on any login, paging, LLDP/CDP command, or timeout failure."""
     try:
         hostname = _login_ios_style(device_id, device_config)
         _disable_terminal_paging(device_id, _IOS_STYLE_PROMPT_RE)
@@ -390,11 +384,10 @@ def _bootstrap_collect_iosxe(device_id: str, device_config: dict) -> dict:
 
 
 def _bootstrap_collect_ios(device_id: str, device_config: dict) -> dict:
-    """Classic IOS collection (Step 3.7 Section 12, deliberately minimal --
-    preserving the same "collect at minimum" principle Step 3.6 used for
-    IOS XE): log in, disable pagination (Step 3.7a), `show version`, `show
-    cdp neighbors` (classic IOS has no LLDP support in this step --
-    Section 10), and the L3 enrichment commands `show vrf` + `show ip
+    """Classic IOS collection (deliberately minimal -- preserving the same
+    "collect at minimum" principle used for IOS XE): log in, disable
+    pagination, `show version`, `show cdp neighbors` (classic IOS has no
+    LLDP support), and the L3 enrichment commands `show vrf` + `show ip
     interface brief` (tolerant). No `show running-config` (unused
     downstream). Fails closed (DiscoveryError) on any login, paging, CDP
     command, or timeout failure."""
@@ -426,8 +419,8 @@ class LldpObservation:
     """A single normalized neighbor observation from either protocol
     (`source` distinguishes them: "lldp" or "cdp") -- despite the name
     (kept to avoid an unnecessary rename of an already-public, widely
-    tested type), this is the shared observation shape Step 3.6's CDP
-    support reuses as-is rather than inventing a second, parallel type;
+    tested type), this is the shared observation shape CDP support reuses
+    as-is rather than inventing a second, parallel type;
     see the `NeighborObservation` alias below for new code."""
 
     local_device_id: str
@@ -575,7 +568,7 @@ def _cdp_is_capability_token(token: str) -> bool:
 def parse_cdp_neighbors(raw_text: str, local_device_id: str) -> list[NeighborObservation]:
     """Parse `show cdp neighbors` output into normalized observations.
 
-    Handles both real-world row shapes (Step 3.6 Section 4-5):
+    Handles both real-world row shapes:
       - IOS XR-style, entirely on one line:
         "PAGENT          Gi0/0/0/10       144     R          Cisco 720 Gi0/0"
       - IOS/IOS XE-style, where a long/FQDN Device ID wraps onto its own
@@ -596,7 +589,7 @@ def parse_cdp_neighbors(raw_text: str, local_device_id: str) -> list[NeighborObs
     Deliberately more lenient than parse_lldp_neighbors(): CDP is commonly
     disabled/unsupported on a given device, so a missing/unrecognized
     table header returns an empty list of observations rather than raising
-    (Step 3.6 Section 10/37 -- CDP being unavailable must never fail the
+    (CDP being unavailable must never fail the
     whole device's collection; contrast with LLDP, which is expected to
     always be available and so still fails closed on an unrecognized
     header). A malformed individual row is skipped, never fatal."""
@@ -674,7 +667,7 @@ def parse_cdp_neighbors(raw_text: str, local_device_id: str) -> list[NeighborObs
 
 
 # --------------------------------------------------------------------------
-# L3 interface enrichment (Step 3.7): ipv4_address + vrf only, per
+# L3 interface enrichment: ipv4_address + vrf only, per
 # interface -- additive topology context, never a Discovery blocker, never
 # a link/connectivity source. See the module docstring's "L3 topology
 # enrichment" paragraph for the overall design.
@@ -686,14 +679,14 @@ class L3ParseError(Exception):
     at all (its own table header is missing) -- the fail-closed signal
     that keeps a failed/unsupported command from being silently treated as
     "zero interfaces". Caught by discover_topology() and turned into a
-    per-device skip + warning (Section 38/39), never a whole-Discovery
+    per-device skip + warning, never a whole-Discovery
     failure -- unlike LldpParseError, which still fails the whole
     operation."""
 
 
 # A conservative, deliberately small set of known Cisco interface-name
-# abbreviations, each mapped to its one canonical full name (Step 3.7
-# Section 32) -- used only to let `show vrf`'s (possibly abbreviated)
+# abbreviations, each mapped to its one canonical full name -- used only
+# to let `show vrf`'s (possibly abbreviated)
 # Interfaces column match `show ip interface brief`'s (full-name) Interface
 # column for the same physical interface. An unrecognized prefix is left
 # completely unchanged (never guessed) -- this is intentionally not a
@@ -759,7 +752,7 @@ def parse_ipv4_interface_brief(raw_text: str) -> dict[str, tuple[str | None, str
     """Parse IOS XR's `show ipv4 interface brief` into
     {interface: (ipv4_address_or_None, vrf_name)}. Only Interface/
     IP-Address/Vrf-Name are read; Status/Protocol are ignored entirely
-    (Step 3.7 Section 29) regardless of how many words they take (e.g.
+    regardless of how many words they take (e.g.
     "Shutdown" vs. a multi-word status) -- Vrf-Name is always the *last*
     whitespace token and IP-Address is always the second, which is robust
     to that variation without depending on a fixed token count.
@@ -994,9 +987,8 @@ def reconcile_links(
     picking one side), and both fail closed only for the specific local
     interface(s) involved -- an unrelated link elsewhere still reconciles
     normally:
-      1. A reciprocal pair that disagrees about the interface mapping
-         (unchanged from before Step 3.6).
-      2. (Step 3.6 Section 28/29) *One* local interface has more than one
+      1. A reciprocal pair that disagrees about the interface mapping.
+      2. *One* local interface has more than one
          observation -- whether from different protocols (LLDP says one
          neighbor, CDP says a different one) or the same protocol
          producing incompatible rows -- that do not all agree on the same
@@ -1133,7 +1125,7 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
     (DiscoveryError) before any bootstrap session is even considered for
     reconciliation -- there is no partial result.
 
-    Supported targets (Step 3.7 Section 3/10): IOS XR (LLDP + CDP), IOS XE
+    Supported targets: IOS XR (LLDP + CDP), IOS XE
     (LLDP + CDP), and classic IOS (CDP only). `nxos`/`host` and any
     unrecognized type are silently skipped, not failed; only zero supported
     targets of *any* kind fails. L3 enrichment (IPv4 + VRF context) is
@@ -1154,7 +1146,7 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
         )
     all_targets: dict[str, dict] = {**iosxr_targets, **iosxe_targets, **ios_targets}
 
-    # Step 3.3: one device's collection (login + its own read-only commands)
+    # One device's collection (login + its own read-only commands)
     # still runs strictly sequentially within its own worker -- only
     # *different* devices' collectors run concurrently, bounded by
     # DISCOVERY_MAX_WORKERS. Workers return a value (the per-type
@@ -1229,7 +1221,7 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
             observation_count += len(lldp_observations)
             observations.extend(lldp_observations)
         elif device_id in iosxe_targets:
-            # Step 3.7 Section 13/15: "% LLDP is not enabled" (or any other
+            # "% LLDP is not enabled" (or any other
             # unrecognized response) means zero LLDP observations, not a
             # device/parser failure -- IOS XE's LLDP support is optional/
             # commonly disabled, unlike IOS XR's. Bypassing the strict
@@ -1269,7 +1261,7 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
     devices.update({device_id: {"type": "iosxe"} for device_id in iosxe_targets})
     devices.update({device_id: {"type": "ios"} for device_id in ios_targets})
 
-    # L3 enrichment (Step 3.7): additive, per-device, never a Discovery
+    # L3 enrichment: additive, per-device, never a Discovery
     # blocker -- an L3ParseError here only skips *this device's*
     # enrichment (with a warning), never the whole operation, and never
     # touches its already-collected LLDP/CDP links above.
@@ -1344,7 +1336,7 @@ def build_topology_devices_and_links(result: DiscoveryResult, existing_candidate
     Pure/no I/O: the caller (cli/config.py) is responsible for actually
     writing the result into `session.definition_candidate`.
 
-    `fields["interfaces"]` (Step 3.7 L3 enrichment), when present, is
+    `fields["interfaces"]` (L3 enrichment), when present, is
     merged *per interface*, never with a blanket top-level dict.update()
     like every other field: a plain update() would silently replace the
     entire existing interfaces mapping, discarding L3 data for any

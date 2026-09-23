@@ -1,4 +1,4 @@
-"""Step 3.9: L3 interface data (ipv4_address/vrf) must be visible in every
+"""L3 interface data (ipv4_address/vrf) must be visible in every
 CLI topology rendering path, not silently omitted.
 
 Investigation found `render_topology_block()` rendered only a device's

@@ -1,4 +1,4 @@
-"""Step 3.3: parallel per-device Discovery collection.
+"""Parallel per-device Discovery collection.
 
 `discovery.discover_topology()`'s per-device bootstrap collection
 (`_bootstrap_collect`) now runs on a bounded `concurrent.futures.

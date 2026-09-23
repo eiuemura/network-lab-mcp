@@ -202,9 +202,9 @@ def test_device_type_accepts_unambiguous_abbreviation():
 
 
 def test_device_type_exact_ios_is_not_ambiguous_with_iosxr_iosxe():
-    """`ios` is a first-class exact type (Step 3.7) -- exact match must win
-    before abbreviation resolution, so it is never rejected merely because
-    it is also a prefix of `iosxr`/`iosxe`."""
+    """`ios` is a first-class exact type -- exact match must win before
+    abbreviation resolution, so it is never rejected merely because it is
+    also a prefix of `iosxr`/`iosxe`."""
     result = grammar.parse("device", "type ios")
     assert result.ok
     assert result.action == "device.set_type"
@@ -373,7 +373,7 @@ def test_next_token_help_for_enum_argument():
 
 
 def test_next_token_help_for_plain_selector_shows_dynamic_names():
-    # Step D: running-config's selectors are plain (non-creatable)
+    # running-config's selectors are plain (non-creatable)
     # identifiers, but bare `?` now dynamically lists the actual
     # selectable names (enumerate_when_empty) instead of a generic
     # <name> placeholder -- this test previously asserted the old,

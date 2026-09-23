@@ -81,7 +81,7 @@ class CliContext:
     no_access_info_candidate_names: tuple[str, ...] = ()
     no_scenario_candidate_names: tuple[str, ...] = ()
     no_reference_candidate_names: tuple[str, ...] = ()
-    # `config-running# <kind> <name>` selector arguments (Step D): the
+    # `config-running# <kind> <name>` selector arguments: the
     # stored names of that kind that are actually valid to *select* right
     # now -- every stored name, except one currently pending whole-
     # definition deletion in the (separate) definition-editing candidate
@@ -95,14 +95,14 @@ class CliContext:
     running_access_info_names: tuple[str, ...] = ()
     running_scenario_names: tuple[str, ...] = ()
     running_reference_names: tuple[str, ...] = ()
-    # `monitor terminal <device-id>` (EXEC only, Step 3.4/3.4a): every
+    # `monitor terminal <device-id>` (EXEC only): every
     # device eligible to be monitored right now -- the committed active
     # topology's own devices, union'd with any device that already has an
     # existing production terminal session (so a session the AI opened
     # for a device outside the *current* topology selection, or one whose
     # topology selection changed since, stays a valid target), union'd
     # with any device that currently has an active Discovery bootstrap
-    # session (Step 3.4a: a device being discovered for the first time may
+    # session (a device being discovered for the first time may
     # not yet be in the committed topology at all -- see cli/main.py's
     # _monitor_terminal_target_names()). Deliberately committed-only for
     # the topology part: an uncommitted topology candidate's devices are
@@ -472,17 +472,16 @@ def _add_running_config_definition_views_subtree(running_node: Node, mode: str) 
 
 
 def _add_logging_subtree(show_node: Node, mode: str) -> None:
-    """`show logging` (EXEC only): bare (Step B.1a: the original, flat,
-    per-file listing across every device -- restored to its pre-Step-B.1
-    behavior), `summary` (Step B.1's per-device eligible-log-count table,
-    moved here from bare `show logging`), `<device-id>` (one device's
+    """`show logging` (EXEC only): bare (the original, flat,
+    per-file listing across every device), `summary` (a per-device
+    eligible-log-count table), `<device-id>` (one device's
     logs), or `<device-id> <log-file>` (that log's contents). Every level
     is itself a complete command (`<cr>`) as well as accepting a further,
     more specific token -- the same "node carries both a command and
     children" mechanism used by bare `show`/`help`. "summary" is a fixed
     keyword living alongside the dynamic <device-id> argument at the very
-    same node -- see complete()/help()'s generic support (added for
-    Step B, reused as-is for Step B.1's `delete logging all`/`directory`)
+    same node -- see complete()/help()'s generic support (also reused
+    for `delete logging all`/`directory`)
     for a node combining literal children with a further dynamic
     argument."""
     logging_node = show_node.add_literal("logging", "Display terminal session logs")
@@ -513,7 +512,7 @@ def _add_logging_subtree(show_node: Node, mode: str) -> None:
 
 
 def _add_delete_subtree(root: Node) -> None:
-    """`delete logging` (EXEC only, Step B/B.1): reuses the exact same
+    """`delete logging` (EXEC only): reuses the exact same
     dynamic providers as `show logging` (provide_log_device_ids/
     provide_log_files) so what is deletable never drifts from what `show
     logging` displays -- no second log-discovery model. Unlike `show
@@ -525,7 +524,7 @@ def _add_delete_subtree(root: Node) -> None:
 
     "all"/"directory" are fixed keywords living alongside the dynamic
     <device-id>/<log-file> argument at the very same node -- see
-    complete()/help()'s generic support (added for Step B) for a node
+    complete()/help()'s generic support for a node
     that combines literal children with a further dynamic argument; that
     support already handles any number of literal children, so adding
     "directory" here needed no further grammar core changes. `all` is
@@ -642,7 +641,7 @@ def _build_exec_root() -> Node:
     )
     _add_delete_subtree(root)
 
-    # `monitor terminal <device-id>` (EXEC only, Step 3.4): a read-only
+    # `monitor terminal <device-id>` (EXEC only): a read-only
     # human observation view of the same production tmux session
     # terminal_open()/terminal_send()/terminal_read() use -- never
     # creatable (observing never creates a session), dynamically

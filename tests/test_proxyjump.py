@@ -240,7 +240,7 @@ def test_telnet_transport_unaffected_by_jump_host_key_presence():
 
 
 # ---- Target-vs-jump-host password-prompt attribution must never send the
-# wrong hop's password. Since Step 3.5, this logic lives once in
+# wrong hop's password. This logic lives once in
 # terminal.resolve_target_password_prompt() and is reused by both
 # discovery._resolve_login_password() (a thin wrapper, tested directly
 # below) and terminal.open_device_terminal()'s own private authentication
@@ -305,7 +305,7 @@ def test_terminal_open_proxyjump_argv_construction_unaffected_by_discovery_login
     assert "jump-secret" not in joined
 
 
-# ---- Step 3.5: terminal_open()'s own private authentication reuses the
+# ---- terminal_open()'s own private authentication reuses the
 # exact same ProxyJump target-vs-jump-host attribution -- see
 # tests/test_managed_terminal_auth.py for the full managed-open
 # authentication suite (direct SSH, no-password-configured, repeated
@@ -348,7 +348,7 @@ def test_terminal_open_proxyjump_target_prompt_sends_target_password_once(monkey
     # behavior (the terminal never echoes what is typed at a password
     # prompt); this is what makes "the secret is absent from the pane"
     # a meaningful assertion here, rather than an artifact of a fake
-    # script that happens not to echo anything at all (Step 3.5 Section 52).
+    # script that happens not to echo anything at all.
     script = _write_fake_ssh_script(
         tmp_path,
         "target_succeed.sh",
@@ -370,9 +370,8 @@ def test_terminal_open_proxyjump_jump_host_prompt_never_sends_target_password(mo
     monkeypatch.setattr(terminal, "_build_transport_command", lambda config, **kw: ("ssh", script))
     with pytest.raises(terminal.TerminalError, match="jump-host password prompt"):
         terminal.open_device_terminal("PJ1", _TARGET_CONFIG)
-    # The newly-created, now-unusable session is cleaned up (Step 3.5
-    # Section 18) -- and, either way, neither credential ever appears
-    # anywhere observable.
+    # The newly-created, now-unusable session is cleaned up -- and,
+    # either way, neither credential ever appears anywhere observable.
     assert "PJ1" not in {s["device"] for s in terminal.list_device_sessions()}
 
 

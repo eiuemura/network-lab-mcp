@@ -1,4 +1,4 @@
-"""Step 3.3: per-device terminal concurrency.
+"""Per-device terminal concurrency.
 
 Core invariant under test: different devices execute concurrently; the
 same device's operations are serialized through one lock per underlying

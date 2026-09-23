@@ -1,5 +1,5 @@
-"""Step 3.7 Section 38/39/69: L3 enrichment is additive, never a Discovery
-blocker. A genuine L3 *parser* failure for one device (unrecognized output,
+"""L3 enrichment is additive, never a Discovery blocker. A genuine L3
+*parser* failure for one device (unrecognized output,
 not just a missing/absent command) must skip only that device's L3
 enrichment -- with a warning -- while its LLDP/CDP-discovered links and
 every other device's L3 enrichment are completely unaffected."""

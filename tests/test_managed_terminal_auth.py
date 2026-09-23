@@ -1,4 +1,4 @@
-"""Step 3.5: private SSH password authentication for managed terminal
+"""Private SSH password authentication for managed terminal
 sessions (`terminal_open()`).
 
 Closes the gap identified in the first real end-to-end Claude Code test:
@@ -28,7 +28,7 @@ looks like: a short, unremarkable command line. Script bodies use `stty
 behavior (the terminal never echoes what is typed at a password prompt)
 -- this is what makes "the secret is absent from the pane/logs/errors" a
 meaningful assertion, not an artifact of a fake script that merely never
-echoes anything (Step 3.5 Section 52).
+echoes anything.
 
 Uses the isolated network-lab-mcp tmux socket (real tmux, never a real
 router) with `terminal.LOGS_ROOT` monkeypatched to a temp directory."""
@@ -151,7 +151,7 @@ def _track_sends(monkeypatch) -> list[str]:
     silently swallow _create_logged_session()'s own use of
     _send_literal_text() to type the fake ssh command itself into the pane,
     so nothing would ever actually run there. The password itself is sent
-    via _send_secret_text() (Step 3.9 -- never _send_literal_text(), so it
+    via _send_secret_text() (never _send_literal_text(), so it
     never enters any subprocess's own argv), so both are tracked into the
     same list to keep existing count/ordering assertions meaningful."""
     sent: list[str] = []

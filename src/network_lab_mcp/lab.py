@@ -38,7 +38,7 @@ class LabConfigError(Exception):
 def find_lab_root() -> Path:
     """Resolve the lab/ directory owned by this repository checkout.
 
-    Step 1 only supports a local editable installation, so the lab root is
+    Only a local editable installation is supported, so the lab root is
     always the sibling lab/ directory of the source checkout providing this
     module. This must not depend on the caller's current working directory,
     since Claude Code is normally started from a separate task workspace.
@@ -51,7 +51,7 @@ def find_lab_root() -> Path:
             f"Lab root not found at '{lab_root}'. Network Lab MCP requires a local "
             "editable installation ('pip install -e .') where the repository "
             "checkout owns the lab/ directory. Non-editable/wheel installation "
-            "is not a supported configuration in Step 1."
+            "is not a supported configuration."
         )
     return lab_root
 
@@ -134,12 +134,12 @@ def get_active_access_info_name(settings: dict) -> Optional[str]:
 DEVICE_TYPES: dict[str, str] = {
     "iosxr": "Cisco IOS XR",
     "iosxe": "Cisco IOS XE",
-    # Classic Cisco IOS (Step 3.7) -- explicitly its own type, never a
+    # Classic Cisco IOS -- explicitly its own type, never a
     # compatibility label under `iosxe`. `ios` is the canonical name; do
     # not add variants like `classic-ios`/`ios15`/`cisco-ios`.
     "ios": "Cisco IOS",
     "nxos": "Cisco NX-OS",
-    # Not a network device Step 3 will run CDP/LLDP discovery against. `host`
+    # Not a network device topology discovery runs CDP/LLDP against. `host`
     # is a normal registered topology node -- discovery is intentionally
     # skipped for it, not an error/"unsupported type" case.
     "host": "Generic host / endpoint",
@@ -154,9 +154,9 @@ def normalize_device_type(value: str) -> str:
     abbreviation (mirroring fixed-keyword abbreviation elsewhere in the
     grammar); raises LabConfigError for an unknown or ambiguous value. This
     is the single validation primitive for `device.type`, shared by the
-    Step 2 CLI's grammar-level `type` argument, topology YAML validation, and
-    access-info YAML validation -- none of them duplicates this logic. Step 3
-    topology discovery will dispatch platform-specific CDP/LLDP commands and
+    CLI's grammar-level `type` argument, topology YAML validation, and
+    access-info YAML validation -- none of them duplicates this logic.
+    Topology discovery dispatches platform-specific CDP/LLDP commands and
     parsers based on this field, so an unrecognized value must never reach a
     CLI candidate or committed YAML."""
     lowered = value.lower()
@@ -293,10 +293,10 @@ _INTERFACE_L3_FIELDS = ("ipv4_address", "vrf")
 
 
 def validate_topology_interfaces(topology_name: str, devices: dict) -> None:
-    """Validate each device's optional 'interfaces' mapping (Step 3.7 L3
+    """Validate each device's optional 'interfaces' mapping (L3
     enrichment): a stable, directly observed IPv4 address + VRF per
     interface -- never operational state (up/down), never a prefix length
-    (deliberately out of scope for this step), and never link/connectivity
+    (deliberately out of scope), and never link/connectivity
     data (links remain the sole source of connectivity). Omitted entirely,
     or an empty mapping, is valid -- existing topology files with no
     'interfaces' key at all need no migration."""
@@ -348,7 +348,7 @@ def validate_topology_data(name: str, data: Any) -> None:
     applies to a freshly loaded file.
 
     This is the single validation primitive shared by the MCP load path, the
-    Step 2 CLI commit path, and tests -- neither of the other callers
+    CLI commit path, and tests -- neither of the other callers
     duplicates these rules.
     """
     if not isinstance(data, dict):
@@ -709,7 +709,7 @@ def verify_device_in_active_topology(device_name: str) -> None:
     reading from a device stays scoped to the active topology for the
     whole lifetime of a session, not just at the moment terminal_open()
     created it: an already-open session survives an active-topology
-    change (tmux sessions are persistent, Step 3.3), so without this check
+    change (tmux sessions are persistent), so without this check
     terminal_open()'s own active-topology gate would be trivially bypassed
     simply by reusing a session opened before the topology changed.
 

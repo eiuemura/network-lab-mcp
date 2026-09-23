@@ -1,8 +1,8 @@
-"""Step 3.9 security hardening: private authentication input (a password,
-or a Telnet username) must never appear in any subprocess's own argv.
+"""Security hardening: private authentication input (a password, or a
+Telnet username) must never appear in any subprocess's own argv.
 
 Investigation found that `_send_literal_text()` (used by every credential
-send before this step) invokes `tmux send-keys -l -- <text>` -- placing
+send before this fix) invokes `tmux send-keys -l -- <text>` -- placing
 `text` directly as a literal argv element of that `tmux` subprocess for as
 long as it runs. A process listing on the host (`ps`, `/proc/<pid>/
 cmdline`, etc.) could observe that argv while the command is executing.

@@ -62,12 +62,11 @@ def test_help_claude_command_matches_readme():
     assert "claude mcp add --scope user --transport stdio network-lab -- network-lab-mcp" in readme
 
 
-def test_help_workflow_lists_ordered_steps_and_mentions_discovery_deferred():
+def test_help_workflow_lists_ordered_steps_and_mentions_discovery():
     text = climain.render_help_workflow()
     assert "1. Configure access-info" in text
     assert "8. Use Claude Code." in text
-    assert "discovery" in text.lower()
-    assert "not implemented yet" in text.lower()
+    assert "discover topology" in text.lower()
 
 
 def test_help_editor_describes_resolution_order_and_candidate_flow():

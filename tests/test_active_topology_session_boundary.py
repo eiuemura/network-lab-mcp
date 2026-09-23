@@ -1,11 +1,11 @@
-"""Step 3.9: managed-session / active-topology boundary.
+"""Managed-session / active-topology boundary.
 
 Investigation found a real inconsistency: `terminal_open()` already
 required the device to be present in the *active* topology
 (`lab.get_device()`), but `terminal_send()`/`terminal_read()` never
 checked this at all -- they dispatched straight to `terminal.send_to_
 device()`/`terminal.read_device()`, which only look at the tmux session
-name. Since managed sessions are persistent (Step 3.3) and survive an
+name. Since managed sessions are persistent and survive an
 active-topology change, this meant `terminal_open()`'s own active-topology
 gate was trivially bypassable simply by continuing to use a session that
 was already open before the topology changed.

@@ -1,17 +1,17 @@
-"""Step 3.8: private Telnet login for managed terminal sessions
+"""Private Telnet login for managed terminal sessions
 (`terminal_open()`).
 
 Closes the last remaining transport inconsistency: SSH managed sessions
-(Step 3.5) and Discovery's own Telnet login (discovery._login_ios_style(),
-Step 3.6/3.7) already authenticate privately -- managed Telnet sessions did
+and Discovery's own Telnet login (discovery._login_ios_style())
+already authenticate privately -- managed Telnet sessions did
 not, so a real Claude Code -> Network Lab MCP acceptance test against a
 real PAGENT-style device stopped at "Password:" and asked a human for the
 credential. `_authenticate_managed_telnet_session()` (terminal.py) closes
-that gap, dispatched from the same `_authenticate_managed_session()` Step
-3.5 already uses, reusing `resolve_target_password_prompt()` unchanged for
-the password and the shared `USERNAME_PROMPT_RE`/`IOS_STYLE_PROMPT_RE`
-(moved from discovery.py to terminal.py this step, see its own module
-comment) for the login sequence itself.
+that gap, dispatched from the same `_authenticate_managed_session()` SSH
+authentication already uses, reusing `resolve_target_password_prompt()`
+unchanged for the password and the shared
+`USERNAME_PROMPT_RE`/`IOS_STYLE_PROMPT_RE` (moved from discovery.py to
+terminal.py, see its own module comment) for the login sequence itself.
 
 Fake Telnet replacements are script *files* (never `bash -c "<inline
 text>"`), for the exact same reason documented at length in
@@ -164,9 +164,9 @@ def _monkeypatch_transport(monkeypatch, command: list[str]) -> None:
 def _track_sends(monkeypatch) -> list[str]:
     """Track every _send_literal_text()/_send_secret_text() call (in
     order) while still forwarding to the real implementation. The
-    username/password themselves are sent via _send_secret_text() (Step
-    3.9 -- never _send_literal_text(), so neither ever enters any
-    subprocess's own argv); both are tracked into the same list to keep
+    username/password themselves are sent via _send_secret_text() (never
+    _send_literal_text(), so neither ever enters any subprocess's own
+    argv); both are tracked into the same list to keep
     existing count/ordering assertions meaningful."""
     sent: list[str] = []
     real_send = terminal._send_literal_text

@@ -1,4 +1,4 @@
-"""Step 3.6: IOS XE target selection and end-to-end mixed IOS XR + IOS XE
+"""IOS XE target selection and end-to-end mixed IOS XR + IOS XE
 `discover_topology()` behavior (device collection itself is monkeypatched,
 same convention as tests/test_discovery_parallel_collection.py and
 tests/test_discovery_workflow.py -- never a real network/tmux operation
@@ -74,7 +74,7 @@ def _fake_iosxe_collect_pagent(device_id, cfg):
     return {
         "hostname": "PAGENT",
         "show_version": "x",
-        # Step 3.7: IOS XE now also collects LLDP -- disabled here (the
+        # IOS XE also collects LLDP -- disabled here (the
         # real, documented Cisco text), which must mean zero LLDP
         # observations, never a device/collection failure.
         "show_lldp_neighbors": "% LLDP is not enabled\n",

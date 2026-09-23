@@ -131,8 +131,8 @@ def _apply_structural_bang(session: cfgmod.CliSession) -> None:
 
 class MaskingHistory(History):
     """In-memory-only command history that never retains a raw password
-    value. History is never written to disk, matching Step 2's requirement
-    that history not persist across CLI process runs.
+    value. History is never written to disk -- it does not persist across
+    CLI process runs.
 
     `History.append_string()` unconditionally inserts into the in-memory
     `_loaded_strings` list that Up/Down navigation reads from -- overriding
@@ -218,7 +218,7 @@ def _no_definition_candidate_names(
 def _running_selectable_names(
     session: cfgmod.CliSession, kind: str, all_names: tuple[str, ...]
 ) -> tuple[str, ...]:
-    """`config-running# <kind> <name>` selector (Step D): see
+    """`config-running# <kind> <name>` selector: see
     grammar.CliContext's `running_<kind>_names` docstring -- every stored
     name of this kind, except one currently pending whole-definition
     deletion in the (separate) definition-editing candidate scope."""
@@ -228,7 +228,7 @@ def _running_selectable_names(
 
 
 def _monitor_terminal_target_names(session: cfgmod.CliSession) -> tuple[str, ...]:
-    """`monitor terminal <device-id>` (Step 3.4/3.4a): every device eligible
+    """`monitor terminal <device-id>`: every device eligible
     to be monitored right now -- see grammar.CliContext.monitor_terminal_
     device_ids's docstring for the exact rule. Used both to build that
     completion field and, independently, by h_monitor_terminal() to
@@ -236,7 +236,7 @@ def _monitor_terminal_target_names(session: cfgmod.CliSession) -> tuple[str, ...
     are never trusted as authoritative, matching every other identifier
     in this CLI).
 
-    Step 3.4a adds existing Discovery-session device IDs to the union: a
+    Existing Discovery-session device IDs are added to the union: a
     device being discovered for the very first time may not yet be in the
     committed active topology (discover_topology()'s targets come from
     access-info, not the topology), so without this a brand-new device's
@@ -410,7 +410,7 @@ _NONE_DISPLAY = "<none>"
 
 def _running_config_lines(settings: dict) -> str:
     """`show running-config` selection summary (EXEC/global/running --
-    one shared renderer). Step D.1: the `access-info` and `reference`
+    one shared renderer). The `access-info` and `reference`
     sections always appear, even when empty, showing the display-only
     `<none>` marker instead of being silently omitted -- this makes an
     optional selection's absence explicit rather than ambiguous (was it
@@ -421,7 +421,7 @@ def _running_config_lines(settings: dict) -> str:
 
     `topology`/`scenario` are mandatory selections and keep their
     pre-existing behavior unchanged (a section is only appended if a
-    name is actually present) -- Step D.1 does not introduce `<none>`
+    name is actually present) -- there is no `<none>`
     for them; a missing mandatory value is not a state this renderer
     tries to make presentable, it is left exactly as before."""
     sections: list[tuple[str, list[str]]] = []
@@ -772,7 +772,7 @@ def print_help_result(result: grammar.HelpResult) -> None:
         print("  <cr>")
 
 
-# Step D.1: purely explanatory footer for the exact `config-running# no ?`
+# Purely explanatory footer for the exact `config-running# no ?`
 # help context (grammar.is_bare_no_context() gates it). access-info and
 # reference are the ONLY real grammar candidates under running-config's
 # "no" -- topology/scenario never gained "no topology"/"no scenario" (both
@@ -798,7 +798,7 @@ def _render_running_config_selection_model() -> str:
 
 
 def _should_show_running_no_footer(mode: str, text_before: str) -> bool:
-    """Gate for the Step D.1 footer: only the spaced `no ?` context, only
+    """Gate for the running-config-selection-model footer: only the spaced `no ?` context, only
     in running mode. Factored out of the `?` key-binding so it is testable
     without prompt_toolkit machinery."""
     return mode == "running" and grammar.is_bare_no_context(mode, text_before)
@@ -1083,10 +1083,11 @@ def render_help_workflow() -> str:
             "  reference       Reusable knowledge",
             "  running-config  Definitions currently used by MCP",
             "",
-            "Topology can be created/edited with structured CLI commands or an",
-            "external YAML editor ('edit'). A future Step 3 will add topology",
-            "discovery as a third way to produce a topology candidate -- that",
-            "discovery step is not implemented yet.",
+            "Topology can be created/edited with structured CLI commands, an",
+            "external YAML editor ('edit'), or 'discover topology' (LLDP/CDP",
+            "neighbor discovery, in global configuration mode) -- all three",
+            "produce a topology candidate the same way; nothing is committed",
+            "until 'commit'.",
         ]
     )
 
@@ -1170,16 +1171,16 @@ def h_show_version(session: cfgmod.CliSession, args: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# `monitor terminal <device-id>` (EXEC only, Step 3.4/3.4a/3.4b) -- a live,
+# `monitor terminal <device-id>` (EXEC only) -- a live,
 # read-only human view of whichever Network Lab MCP terminal session
 # currently has priority for a device (managed > discovery > waiting; see
 # terminal.capture_device_terminal_view()'s own docstring). Passive
 # observation only: it never sends anything to a pane and never creates/
-# closes a session, and it deliberately does not take the Step 3.3
-# per-device lock (same rationale as before: observation is a plain read,
-# and the lock is process-local anyway).
+# closes a session, and it deliberately does not take the per-device
+# lock (observation is a plain read, and the lock is process-local
+# anyway).
 #
-# Step 3.4b: the UI is `full_screen=False` (never the alternate screen
+# The UI is `full_screen=False` (never the alternate screen
 # buffer), so terminal activity already streamed to the human stays in
 # the *normal* terminal emulator scrollback -- it is printed once via
 # run_in_terminal() (the same "print permanently above a live area"
@@ -1197,11 +1198,11 @@ def h_show_version(session: cfgmod.CliSession, args: dict) -> None:
 
 # Human-observation cadence: frequent enough to feel live, far below a
 # busy loop (a handful of tmux subprocess calls per second at most, only
-# while a human actually has a monitor open). Unchanged from Step 3.4.
+# while a human actually has a monitor open).
 _MONITOR_REFRESH_INTERVAL = 0.3
 
 # How much recent context to print once when a source first becomes
-# active (Step 3.4b Section 18) -- deliberately bounded (matches the
+# active -- deliberately bounded (matches the
 # existing "visible pane" convention, terminal.DEFAULT_READ_LINES), never
 # the full multi-thousand-line tmux history.
 _MONITOR_INITIAL_CONTEXT_LINES = terminal.DEFAULT_READ_LINES
@@ -1209,7 +1210,7 @@ _MONITOR_INITIAL_CONTEXT_LINES = terminal.DEFAULT_READ_LINES
 
 @dataclass
 class _MonitorStreamCursor:
-    """Per-monitor-run incremental-output bookkeeping (Step 3.4b). Pure UI
+    """Per-monitor-run incremental-output bookkeeping. Pure UI
     state, not a terminal.py concept: reset (a "new instance") whenever
     the observed source changes, or a same-named source's captured
     history no longer has the previously-seen prefix as its own prefix --
@@ -1235,8 +1236,7 @@ def _monitor_stream_step(device_id: str, cursor: _MonitorStreamCursor) -> tuple[
     latest snapshot). Deliberately separate from the async poll loop
     below so every lifecycle/incremental-output case is directly
     unit-testable without any real time passing or prompt_toolkit
-    machinery (same testability principle as Step 3.4's
-    _render_monitor_view()). Mutates `cursor` in place; never touches
+    machinery. Mutates `cursor` in place; never touches
     tmux beyond the one read-only terminal.capture_device_terminal_view()
     call (full history, so burst output between polls -- up to the
     20000-line history-limit -- is never lost merely because it scrolled
@@ -1269,7 +1269,7 @@ def _monitor_stream_step(device_id: str, cursor: _MonitorStreamCursor) -> tuple[
         printable.extend(full_lines[start:])
     elif len(full_lines) > cursor.lines_shown:
         printable.extend(full_lines[cursor.lines_shown :])
-    # else: unchanged poll -- append nothing (Step 3.4b Section 33).
+    # else: unchanged poll -- append nothing.
 
     cursor.source = snapshot.source
     cursor.lines_shown = len(full_lines)
@@ -1290,7 +1290,7 @@ def _monitor_status_line(device_id: str, snapshot: terminal.TerminalMonitorSnaps
 
 def _monitor_status_block(device_id: str, snapshot: terminal.TerminalMonitorSnapshot) -> str:
     """The small 3-line live status area (separator/content/separator),
-    width-adaptive (Step 3.4b Section 6) -- never touches the managed/
+    width-adaptive -- never touches the managed/
     Discovery tmux pane's own geometry, only this local rendering."""
     width = shutil.get_terminal_size(fallback=(80, 24)).columns
     separator = "-" * width
@@ -1303,7 +1303,7 @@ def _monitor_status_block(device_id: str, snapshot: terminal.TerminalMonitorSnap
 async def _monitor_poll_loop(
     device_id: str, cursor: _MonitorStreamCursor, status_holder: list[str], refresh_interval: float, app: Application
 ) -> None:
-    """Background task (Step 3.4b): polls, prints any new permanent
+    """Background task: polls, prints any new permanent
     activity via run_in_terminal() (the same mechanism the `?`/Tab key
     bindings already use to print above a live prompt_toolkit area), then
     updates the live status text and invalidates the display. Polls
@@ -1326,10 +1326,10 @@ def _build_monitor_application(device_id: str, refresh_interval: float) -> Appli
     from run_terminal_monitor() so tests can inspect its key bindings
     without entering the blocking event loop.
 
-    `full_screen=False` (Step 3.4b): never the alternate screen buffer,
+    `full_screen=False`: never the alternate screen buffer,
     so the terminal emulator's normal scrollback -- including whatever
     this run prints via _monitor_poll_loop()'s run_in_terminal() calls --
-    is preserved after exit, unlike Step 3.4/3.4a's full-screen view."""
+    is preserved after exit."""
     kb = KeyBindings()
 
     @kb.add("q")
@@ -1404,7 +1404,7 @@ def _format_session_start(started) -> str:
 
 
 def _render_log_summary_table(counts: list[tuple[str, int]]) -> str:
-    """`show logging` bare (Step B.1 section 14-15): one row per valid
+    """`show logging summary`: one row per valid
     device logging directory with its eligible log-file count -- an
     empty directory (e.g. after `delete logging <device> all`) is still
     shown, with 0, since it remains a meaningful `delete logging <device>
@@ -1425,11 +1425,9 @@ def _render_log_summary_table(counts: list[tuple[str, int]]) -> str:
 
 
 def h_show_logging(session: cfgmod.CliSession, args: dict) -> None:
-    """Bare `show logging` (Step B.1a: restored to its pre-Step-B.1
-    behavior -- see commit 972046b): a flat listing of every device's
-    persistent log files, newest first, exactly as `show logging` meant
-    before Step B.1 briefly overloaded it with the summary table now
-    available explicitly as `show logging summary`."""
+    """Bare `show logging`: a flat listing of every device's
+    persistent log files, newest first. The per-device eligible-log-count
+    table is available explicitly as `show logging summary`."""
     rows = [
         (device_id, _format_session_start(started), filename)
         for device_id in sorted(terminal.list_logged_device_ids())
@@ -1463,12 +1461,12 @@ def h_show_logging_device_file(session: cfgmod.CliSession, args: dict) -> None:
         print(content, end="" if content.endswith("\n") else "\n")
 
 
-# ---- delete logging (Step B / Step B.1, EXEC only) ----
+# ---- delete logging (EXEC only) ----
 #
 # terminal.py owns enumeration/preflight/manifest/deletion (DeletionPlan,
 # build_*_deletion_plan(), apply_deletion_plan()) and never reads
 # interactive input; this module owns the [y/N] confirmation and message
-# text only (Step B.1 section 50 boundary). terminal.TerminalError is
+# text only. terminal.TerminalError is
 # already caught generically by execute_command_line() and printed as
 # "% <message>", so a preflight rejection needs no handling here.
 
@@ -1527,7 +1525,7 @@ def _require_interactive(args: dict) -> None:
 
 def _confirm_and_apply(initial_plan, message: str, build_plan) -> "terminal.DeletionPlan | None":
     """Shared confirm-then-re-preflight-then-apply flow for every
-    destructive delete logging command (Step B.1 sections 10-12/51-52).
+    destructive delete logging command.
     `initial_plan` is what was already built (and used to compute
     `message`); `build_plan` is called again only after the user
     confirms, to catch anything that changed while they were deciding
@@ -2109,7 +2107,7 @@ def _make_key_bindings(session: cfgmod.CliSession) -> KeyBindings:
             # actually pressed, before the help lines that answer it.
             print(f"{prompt_text(session)}{text_before}?{text_after}")
             print_help_result(result)
-            # Step D.1: the running-config selection model footer is scoped
+            # The running-config selection model footer is scoped
             # to exactly the spaced "no ?" context in running mode -- never
             # the attached "no?", never any other mode/token. Presentation
             # only: it adds no grammar candidate and cannot affect Tab

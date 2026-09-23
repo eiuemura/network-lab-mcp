@@ -46,9 +46,9 @@ def test_show_logging_with_empty_log_directory(isolated_logs, lab_root, capsys):
 
 
 def test_show_logging_summarizes_device_counts_and_total(isolated_logs, lab_root, capsys):
-    """Step B.1a: the Step B.1 per-device count summary (with a Total
-    row) is now the explicit `show logging summary` command -- bare
-    `show logging` was restored to the original flat per-file listing
+    """The per-device count summary (with a Total row) is the explicit
+    `show logging summary` command -- bare `show logging` is the flat
+    per-file listing
     (see test_show_logging_device_multiple_sessions_newest_first below,
     that same shape, just scoped to one device)."""
     _write_log(isolated_logs, "R1", "20260921T091500")
@@ -168,7 +168,7 @@ def test_show_logging_tab_completion_devices_and_files():
     assert grammar.complete("exec", "show logging R1 ", ctx).candidates == ["20260921T091500.log"]
 
 
-# ---- h_show_logging_summary (Step B.1a: explicit summary command) ----
+# ---- h_show_logging_summary (explicit summary command) ----
 
 
 def test_show_logging_summary_parses_in_exec():

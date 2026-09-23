@@ -1,4 +1,4 @@
-"""Step 3.4/3.4a/3.4b: `monitor terminal <device-id>` -- read-only
+"""`monitor terminal <device-id>` -- read-only
 observation backend, incremental streaming, and monitor UI lifecycle.
 
 Three layers are tested largely independently:
@@ -8,7 +8,7 @@ Three layers are tested largely independently:
   source priority), exercised directly against real (isolated) tmux
   sessions -- deterministic, no monitor UI involved.
 - `cli.main._monitor_stream_step()`: the pure incremental-output/
-  transition-marker logic (Step 3.4b), exercised with a fully scripted
+  transition-marker logic, exercised with a fully scripted
   fake capture function -- deterministic, no tmux or real time involved.
 - `cli.main.run_terminal_monitor()`: the monitor UI itself (a
   `full_screen=False` prompt_toolkit Application, so already-streamed
@@ -51,7 +51,7 @@ def _cleanup_device_sessions():
     yield
     for session in terminal.list_device_sessions():
         terminal.close_device_terminal(session["device"])
-    # Step 3.4a source-priority tests also open Discovery-namespace fakes
+    # Source-priority tests also open Discovery-namespace fakes
     # directly (never through discover_topology()) -- clean those up too,
     # so a still-running one never leaks into (and is wrongly reused by)
     # the next test.
@@ -149,8 +149,7 @@ def _wait_until(predicate, timeout: float = _TIMEOUT, interval: float = 0.05) ->
 
 
 # ==========================================================================
-# Step 3.4a: source priority (managed > discovery > waiting)
-# (Sections 38-40, 44)
+# Source priority (managed > discovery > waiting)
 # ==========================================================================
 
 
@@ -245,7 +244,7 @@ def test_capture_race_recovers_once_capture_succeeds_again():
 
 
 # ==========================================================================
-# Pure incremental-stream step: _monitor_stream_step() (Step 3.4b)
+# Pure incremental-stream step: _monitor_stream_step()
 #
 # Fully deterministic, no real tmux/time/UI involved -- a fake
 # capture_device_terminal_view() drives each poll directly.
@@ -476,7 +475,7 @@ def test_stream_step_initial_context_is_bounded_not_full_history():
 
 
 # ==========================================================================
-# Status line / status block (Step 3.4b)
+# Status line / status block
 # ==========================================================================
 
 
@@ -860,7 +859,7 @@ def test_monitor_never_calls_any_mutating_terminal_helper():
 
 
 def test_monitor_never_calls_any_mutating_helper_across_discovery_and_managed():
-    """Step 3.4a/3.4b: extends the zero-write proof to the new
+    """Extends the zero-write proof to the
     source-fallback path, exercising the *real* capture_device_terminal_
     view() (not a fake) through WAITING -> DISCOVERY ACTIVE -> WAITING ->
     MANAGED ACTIVE -> quit, asserting zero calls to any mutating helper in
@@ -1008,8 +1007,7 @@ def test_two_monitors_of_the_same_device_are_independent():
 
 
 # ==========================================================================
-# Step 3.3 coexistence: monitor never holds the per-device lock
-# (Sections 10, 43)
+# Coexistence: monitor never holds the per-device lock
 # ==========================================================================
 
 

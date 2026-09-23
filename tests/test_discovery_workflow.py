@@ -315,7 +315,7 @@ def test_lldp_parse_failure_fails_discovery_without_touching_prior_candidate(lab
     assert lab.load_topology("sample_lab", lab_root) == committed_before
 
 
-# ---- Step 3.7: `ios` type + L3 interface enrichment through the same ----
+# ---- `ios` type + L3 interface enrichment through the same ----
 # ---- candidate/commit/clear system, no special-casing anywhere         ----
 
 
@@ -371,7 +371,7 @@ def test_ios_type_and_l3_interfaces_survive_commit_and_reload(lab_root, monkeypa
 
 
 def test_l3_enrichment_failure_for_one_device_does_not_lose_its_managed_link(lab_root, monkeypatch):
-    """Step 3.7 Section 38/69: L3 enrichment is additive/best-effort -- a
+    """L3 enrichment is additive/best-effort -- a
     device with a valid managed link but no L3 result this run (its
     'interfaces' key simply absent from DiscoveryResult.devices) must
     still keep that link and device in the candidate."""

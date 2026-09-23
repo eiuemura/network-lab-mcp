@@ -71,7 +71,7 @@ def test_normalize_device_type_accepts_unambiguous_abbreviation():
 
 
 def test_normalize_device_type_exact_ios_wins_over_abbreviation_ambiguity():
-    """Step 3.7: exact match must win before abbreviation resolution --
+    """Exact match must win before abbreviation resolution --
     `ios` is never rejected merely because it is also a prefix of
     `iosxr`/`iosxe`."""
     assert lab.normalize_device_type("ios") == "ios"
@@ -162,7 +162,7 @@ def test_access_info_rejects_unsupported_device_type(lab_root):
 
 @pytest.mark.parametrize("transport", ["ssh", "telnet"])
 def test_access_info_accepts_type_ios_over_ssh_or_telnet(lab_root, transport):
-    """Step 3.7: classic Cisco IOS is a first-class type, with the same
+    """Classic Cisco IOS is a first-class type, with the same
     structural rules (credential/transport/port schema unchanged) as
     every other network-device type -- sanitized fake credentials only,
     never real PAGENT access-info content."""
@@ -245,7 +245,7 @@ def test_get_device_fails_closed_when_selected_access_info_missing(lab_root, mon
 
 
 def test_old_global_ambiguity_search_no_longer_exists():
-    # The Step 2.5 temporary global device-ID uniqueness limitation (a
+    # The old temporary global device-ID uniqueness limitation (a
     # cross-file search over every committed access-info definition) is
     # removed entirely, not merely bypassed -- resolution now only ever
     # reads the one access-info definition selected in running-config.

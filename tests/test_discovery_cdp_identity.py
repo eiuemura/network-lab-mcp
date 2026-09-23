@@ -1,4 +1,4 @@
-"""Step 3.6: CDP identity resolution reuses resolve_remote_identity() as-is
+"""CDP identity resolution reuses resolve_remote_identity() as-is
 (it is protocol-agnostic pure string matching -- it never inspects
 `obs.source`), including the FQDN -> short-name path a CDP Device ID
 commonly needs (e.g. "asr9001-r1.example.com" -> "R1", whose observed

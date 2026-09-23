@@ -1,4 +1,4 @@
-"""Step D.1: running-config selection model clarifications.
+"""Running-config selection model clarifications.
 
 Two independent, additive changes to `config-running`'s already-existing
 selection semantics (access-info: optional/single/unsettable; topology:
@@ -97,7 +97,7 @@ def test_none_never_mixed_with_real_values_in_reference_section(lab_root):
 
 def test_topology_and_scenario_never_show_none():
     # Mandatory fields keep their pre-existing "omit if absent" behavior;
-    # Step D.1 never introduces <none> for them. (access-info/reference
+    # This never introduces <none> for them. (access-info/reference
     # legitimately show <none> here too, since this minimal settings dict
     # omits them as well -- that is not what this test is checking.)
     settings = {"active_topology": None, "active_scenario": None}

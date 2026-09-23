@@ -80,7 +80,7 @@ class TerminalError(Exception):
 
 
 # --------------------------------------------------------------------------
-# Shared safe SSH password-prompt attribution (Step 3.5)
+# Shared safe SSH password-prompt attribution
 #
 # OpenSSH's own client-side interactive password prompt is always exactly
 # "<user>@<host>'s password: " for whichever hop is currently
@@ -96,10 +96,10 @@ class TerminalError(Exception):
 PASSWORD_PROMPT_RE = re.compile(r"[Pp]assword:\s*$", re.MULTILINE)
 SSH_HOP_PASSWORD_PROMPT_RE = re.compile(r"(?P<hop_user>[^\s@]+)@(?P<hop_host>[^\s']+)'s password:\s*$")
 
-# Shared classic-IOS-style login text (Step 3.8): originally introduced in
-# discovery.py (Step 3.6/3.7, for Discovery's own IOS XE/IOS Telnet-or-SSH
-# login) and moved here once managed terminal_open()'s Telnet authentication
-# (below) needed the exact same two patterns -- one definition, not two
+# Shared classic-IOS-style login text: originally introduced in
+# discovery.py (for Discovery's own IOS XE/IOS Telnet-or-SSH login) and
+# moved here once managed terminal_open()'s Telnet authentication (below)
+# needed the exact same two patterns -- one definition, not two
 # independently-maintained copies. `discovery.py`'s own `_USERNAME_PROMPT_RE`/
 # `_IOS_STYLE_PROMPT_RE` now alias these. `IOS_STYLE_PROMPT_RE` matches a
 # classic-IOS-style exec prompt in full (just "hostname#"/"hostname>", unlike
@@ -211,7 +211,7 @@ def production_device_name(session_name: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# Per-session serialization (Step 3.3)
+# Per-session serialization
 #
 # Different devices execute concurrently; the same device's operations must
 # not race each other (tmux send/capture/kill against one pane, and the
@@ -228,7 +228,7 @@ def production_device_name(session_name: str) -> str:
 # targets, not by unbounded external input (every session name reaching
 # _session_lock() already passed derive_*_session_name()'s
 # _validate_identifier()), so a simple process-lifetime registry is
-# sufficient -- see Step 3.3 task Section 10. `_registry_guard` protects
+# sufficient. `_registry_guard` protects
 # only the dict's own get-or-create step, never the caller's actual
 # operation, so acquiring a per-session lock is never itself a point of
 # cross-device contention.
@@ -320,7 +320,7 @@ def _ensure_tmux_environment() -> bool:
 
     The "does any session exist yet" check below is the one place a
     different-device race can still reach across two distinct per-device
-    locks (Step 3.3): two different devices' first-ever opens can both see
+    locks: two different devices' first-ever opens can both see
     an empty server and both try to create the *same* shared bootstrap
     session name. Rather than adding a second, separate global lock just
     for this rare one-time window, tolerate the race directly -- a losing
@@ -477,7 +477,7 @@ def _wait_for_pattern(
     text, or raise TerminalError on timeout. Returns the full captured pane
     text at the moment of the match. Used by the private Discovery
     bootstrap path (see discovery.py) and by _authenticate_managed_session()
-    below (Step 3.5) -- terminal_read()/terminal_send() themselves remain a
+    below -- terminal_read()/terminal_send() themselves remain a
     simple, unattended capture/send with no waiting loop.
 
     `baseline_text`, when given, is the pane content captured *before* the
@@ -554,8 +554,8 @@ def list_logged_device_ids() -> list[str]:
     logs/terminal/ -- directory-existence based, not log-content based,
     so a device whose logs were all deleted (but whose directory was
     intentionally left behind, see delete_all_device_logs()) is still
-    listed, with zero logs (Step B.1 section 15). A symlink is never a
-    valid device logging directory (Step B.1 section 28) -- it is
+    listed, with zero logs. A symlink is never a
+    valid device logging directory -- it is
     excluded here, the single SSOT this and every other consumer (`show
     logging`, `delete logging ...`, directory-deletion eligibility) reads
     valid device directories from."""
@@ -615,7 +615,7 @@ def read_device_log(device_name: str, filename: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# Terminal log deletion (Step B: EXEC `delete logging ...`)
+# Terminal log deletion (EXEC `delete logging ...`)
 #
 # Eligibility is defined by reusing list_device_logs() -- the exact same
 # enumeration `show logging` uses -- so there is no second log-discovery
@@ -700,7 +700,7 @@ class DeletionPlan:
     apply_deletion_plan(). `device_name` is the single targeted device
     for a device-scoped operation, or None for a global one. `files` and
     `directories` are sorted deterministically so two independently-built
-    plans for the same real state always compare equal, and Step B.1's
+    plans for the same real state always compare equal, and the
     confirm-then-re-preflight flow (see cli/main.py) can detect drift by
     simple equality: build once to show the user what will happen, build
     again right after they confirm, and only apply if the two plans are
@@ -731,8 +731,8 @@ def build_device_all_deletion_plan(device_name: str) -> DeletionPlan:
     """Preflight for `delete logging <device> all`. Raises TerminalError
     if the device has no eligible logs at all, or if it currently has an
     active writer. The device's own logging *directory* is deliberately
-    never part of this plan -- `all` only ever targets files (Step B.1
-    section 36/37); use build_device_directory_deletion_plan() for
+    never part of this plan -- `all` only ever targets files;
+    use build_device_directory_deletion_plan() for
     directory removal."""
     if not _NAME_RE.match(device_name):
         raise TerminalError(f"No terminal logs found for device '{device_name}'.")
@@ -912,7 +912,7 @@ def _build_transport_command(device_config: dict, *, accept_new_host_keys: bool 
 
 
 # --------------------------------------------------------------------------
-# Private managed-terminal SSH authentication (Step 3.5)
+# Private managed-terminal SSH authentication
 #
 # Closes the gap between "native SSH session created" and "usable for
 # terminal_send()/terminal_read()" for a password-authenticated device:
@@ -935,12 +935,12 @@ def _build_transport_command(device_config: dict, *, accept_new_host_keys: bool 
 # that -- if no password prompt or failure ever appears (key/agent auth,
 # a host-key confirmation prompt, a slow connection, telnet), this
 # function does nothing further and normal interactive use proceeds
-# exactly as before Step 3.5.
+# unaffected.
 # --------------------------------------------------------------------------
 
 # Bounded waits, deliberately separate constants from Discovery's own
-# LOGIN_TIMEOUT_SECONDS/COMMAND_TIMEOUT_SECONDS (Step 3.5 Section 45: do
-# not change Discovery's existing timeouts) -- similar order of magnitude,
+# LOGIN_TIMEOUT_SECONDS/COMMAND_TIMEOUT_SECONDS (do not change Discovery's
+# existing timeouts) -- similar order of magnitude,
 # tuned for one interactive terminal_open() MCP call rather than an
 # unattended multi-command bootstrap collection.
 _MANAGED_LOGIN_TIMEOUT_SECONDS = 15
@@ -954,8 +954,8 @@ _SSH_AUTH_FAILURE_RE = re.compile(
     r"Connection timed out|Host key verification failed",
     re.IGNORECASE,
 )
-# re.MULTILINE + re.IGNORECASE re-applied on the combined pattern (Step
-# 3.8 finding): both flags are set individually on PASSWORD_PROMPT_RE/
+# re.MULTILINE + re.IGNORECASE re-applied on the combined pattern: both
+# flags are set individually on PASSWORD_PROMPT_RE/
 # _SSH_AUTH_FAILURE_RE, but combining their `.pattern` text into a new
 # re.compile() call does not carry those flags forward -- without
 # re.MULTILINE here, `$` only anchors to the true end of the whole
@@ -982,12 +982,11 @@ def _last_nonblank_line(text: str) -> str:
 def _authenticate_managed_session(
     device_name: str, device_config: dict, session_name: str, *, newly_created: bool
 ) -> None:
-    """Dispatch managed private authentication by transport (Step 3.8):
-    `ssh` reuses the existing Step 3.5 flow unchanged
-    (`_authenticate_managed_ssh_session()`); `telnet` uses the new Step 3.8
-    flow (`_authenticate_managed_telnet_session()`); any other/unknown
-    transport does nothing, exactly as before Step 3.8. Splitting by
-    transport here -- rather than inside one large function -- keeps each
+    """Dispatch managed private authentication by transport: `ssh` uses
+    `_authenticate_managed_ssh_session()`; `telnet` uses
+    `_authenticate_managed_telnet_session()`; any other/unknown transport
+    does nothing. Splitting by transport here -- rather than inside one
+    large function -- keeps each
     flow's own prompt/failure vocabulary (OpenSSH's for SSH, classic-IOS-
     style for Telnet) from leaking into the other."""
     transport = device_config.get("transport")
@@ -1011,7 +1010,7 @@ def _authenticate_managed_ssh_session(
 
     `newly_created` decides how the *first* observation is made, which is
     what keeps an already-authenticated, already-idempotent session
-    (Step 3.3/pre-3.5 behavior) completely undisturbed: a brand-new
+    completely undisturbed: a brand-new
     session's connection is still in flight, so this polls briefly for a
     prompt/failure to first appear; an already-existing session's pane is
     already settled, so this takes exactly one immediate read-only
@@ -1056,7 +1055,7 @@ def _authenticate_managed_ssh_session(
     settled_last_line = _last_nonblank_line(settled)
     if PASSWORD_PROMPT_RE.search(settled_last_line):
         # The same prompt reappeared -- the password was rejected. Never
-        # send it again (Step 3.5 Section 16/43): one attempt per call.
+        # send it again: one attempt per call.
         raise TerminalError(f"Device '{device_name}': SSH authentication failed (password rejected).")
     if _SSH_AUTH_FAILURE_RE.search(settled_last_line) or _SSH_AUTH_FAILURE_RE.search(settled):
         raise TerminalError(f"Device '{device_name}': SSH authentication failed.")
@@ -1067,12 +1066,12 @@ def _authenticate_managed_ssh_session(
 
 
 # --------------------------------------------------------------------------
-# Private managed-terminal Telnet authentication (Step 3.8)
+# Private managed-terminal Telnet authentication
 #
-# Closes the last transport inconsistency: SSH managed sessions (Step 3.5)
-# and Discovery's own Telnet login (discovery._login_ios_style(), Step
-# 3.6/3.7) both already authenticate privately -- managed Telnet sessions
-# did not. A real Claude Code -> Network Lab MCP acceptance test hit this
+# Closes the last transport inconsistency: SSH managed sessions and
+# Discovery's own Telnet login (discovery._login_ios_style()) both
+# already authenticate privately -- managed Telnet sessions did not. A
+# real Claude Code -> Network Lab MCP acceptance test hit this
 # exact gap on a real PAGENT-style device: terminal_open() reached
 # "Password:" over Telnet and simply stopped, leaving the AI to ask a
 # human for the password.
@@ -1216,7 +1215,7 @@ def _authenticate_managed_telnet_session(
 def open_device_terminal(device_name: str, device_config: dict) -> dict:
     """Open (or reuse) the production terminal session for an active-topology device.
 
-    Serialized per-device (Step 3.3): a concurrent open/send/read/close for
+    Serialized per-device: a concurrent open/send/read/close for
     this same device waits its turn instead of racing this one's
     check-then-create against it; a different device's call uses a
     different lock and proceeds independently -- so concurrent opens of
@@ -1227,8 +1226,8 @@ def open_device_terminal(device_name: str, device_config: dict) -> dict:
 
     Completes private authentication using the device's own access-info
     credentials if (and only if) a recognized login prompt actually
-    appears -- SSH password authentication (Step 3.5) or Telnet
-    username/password login (Step 3.8), depending on the device's own
+    appears -- SSH password authentication or Telnet
+    username/password login, depending on the device's own
     configured transport; see _authenticate_managed_session()'s own
     docstring for the exact per-transport rules. If *this* call created a
     new session and authentication definitively fails, that now-unusable
@@ -1254,7 +1253,7 @@ def open_device_terminal(device_name: str, device_config: dict) -> dict:
 
 def send_to_device(device_name: str, text: str | None, keys: list[str] | None, enter: bool) -> dict:
     """Send input to a device's production session: text, then keys, then Enter
-    (in that order). Serialized per-device (Step 3.3): see open_device_terminal()."""
+    (in that order). Serialized per-device: see open_device_terminal()."""
     session_name = derive_production_session_name(device_name)
     with _session_lock(session_name):
         if text:
@@ -1268,7 +1267,7 @@ def send_to_device(device_name: str, text: str | None, keys: list[str] | None, e
 
 def read_device(device_name: str, lines: int = DEFAULT_READ_LINES) -> dict:
     """Capture recent pane content from a device's production session.
-    Serialized per-device (Step 3.3): see open_device_terminal()."""
+    Serialized per-device: see open_device_terminal()."""
     session_name = derive_production_session_name(device_name)
     with _session_lock(session_name):
         content = _capture_pane(session_name, lines)
@@ -1283,7 +1282,7 @@ def list_device_sessions() -> list[dict]:
     matching the pre-existing contract), and tmux's own `list-sessions` is
     already a single atomic query against its server -- serializing it
     against every device's lock would only add contention, not
-    correctness (Step 3.3 Section 52)."""
+    correctness."""
     sessions = []
     for session_name in _list_sessions(PRODUCTION_PREFIX):
         sessions.append(
@@ -1298,7 +1297,7 @@ def list_device_sessions() -> list[dict]:
 
 def close_device_terminal(device_name: str) -> dict:
     """Close a device's production session. Never touches the validation
-    namespace. Serialized per-device (Step 3.3): see open_device_terminal()."""
+    namespace. Serialized per-device: see open_device_terminal()."""
     session_name = derive_production_session_name(device_name)
     with _session_lock(session_name):
         closed = _close_session(session_name)
@@ -1306,7 +1305,7 @@ def close_device_terminal(device_name: str) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Read-only human observation (Step 3.4: `monitor terminal <device-id>`)
+# Read-only human observation (`monitor terminal <device-id>`)
 #
 # Deliberately separate from terminal_read()/read_device(): that is an MCP
 # *operation* (part of the interactive AI terminal contract); this is a
@@ -1328,7 +1327,7 @@ def close_device_terminal(device_name: str) -> dict:
 # terminal_send()/terminal_read() for that device for no correctness
 # benefit -- and since `monitor terminal` normally runs in a separate
 # `./run_cli.sh` process with its own empty, process-local lock registry
-# (Step 3.3's locks are in-memory, not cross-process), taking the lock
+# (these locks are in-memory, not cross-process), taking the lock
 # here could not provide real cross-process exclusion even if it were
 # otherwise desirable.
 # --------------------------------------------------------------------------
@@ -1347,7 +1346,7 @@ class TerminalMonitorSnapshot:
                    exited (tmux's `remain-on-exit`) -- `pane_text` is its
                    last content, not live output
 
-    `source` (Step 3.4a) says which session `status`/`pane_text` describe:
+    `source` says which session `status`/`pane_text` describe:
     "managed" (the normal production session), "discovery" (a Discovery
     bootstrap session, in the absence of a managed one), or "none" (status
     is always "waiting" then).
@@ -1384,7 +1383,7 @@ def _observe_named_session(session_name: str, lines: int) -> tuple[str, str] | N
 
 def capture_device_terminal_view(device_name: str, lines: int = DEFAULT_READ_LINES) -> TerminalMonitorSnapshot:
     """Observe the currently preferred terminal activity for a device, for
-    `monitor terminal` (Step 3.4 / 3.4a). Never creates, closes, or sends
+    `monitor terminal`. Never creates, closes, or sends
     anything -- see the module section docstring above.
 
     Source priority, re-evaluated fresh on every call (so a managed
@@ -1427,7 +1426,7 @@ def discovery_device_name(session_name: str) -> str:
 
 def list_discovery_device_ids() -> list[str]:
     """Device IDs that currently have an active Discovery bootstrap
-    session. Step 3.4a `monitor terminal` target-eligibility use only
+    session. `monitor terminal` target-eligibility use only
     (a device being discovered for the first time may not yet be in the
     committed active topology at all) -- never a public MCP/terminal_*
     surface, and this enumeration itself never creates, closes, or
@@ -1454,7 +1453,7 @@ def open_bootstrap_terminal(device_name: str, device_config: dict) -> dict:
     close_bootstrap_terminal(), which callers must use once collection for
     that device finishes).
 
-    Serialized per-device (Step 3.3), using the Discovery namespace's own
+    Serialized per-device, using the Discovery namespace's own
     lock key (structurally distinct from that device's production session
     lock -- see derive_discovery_session_name()) -- one device's parallel
     Discovery collector thread never contends with another device's."""
@@ -1514,7 +1513,7 @@ def close_bootstrap_terminal(device_name: str) -> bool:
 # Internal local-validation helpers
 #
 # Not exposed as MCP tools and not a public transport. These exist only so
-# that local validation (Step 1 Section 55/56) can exercise the exact same
+# that local validation can exercise the exact same
 # session-management primitives used in production, against a safe local
 # command instead of `ssh`/`telnet`.
 # --------------------------------------------------------------------------

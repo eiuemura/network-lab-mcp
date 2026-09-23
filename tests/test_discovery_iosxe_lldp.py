@@ -1,12 +1,11 @@
-"""Step 3.7: IOS XE LLDP collection (added on top of Step 3.6's CDP-only
-IOS XE support) -- `% LLDP is not enabled` must mean zero LLDP
-observations, never a device failure, with CDP staying fully usable
-either way; an enabled IOS XE LLDP response parses correctly reusing
-parse_lldp_neighbors() unchanged (verified format-compatible against
-Cisco's own IOS XE Carrier Ethernet Command Reference -- see the final
-report / docs/architecture.md); LLDP+CDP dedup/conflict on IOS XE reuses
-the exact same reconcile_links() Step 3.6 already relies on, not a
-second implementation."""
+"""IOS XE LLDP collection (on top of IOS XE's existing CDP support) --
+`% LLDP is not enabled` must mean zero LLDP observations, never a device
+failure, with CDP staying fully usable either way; an enabled IOS XE LLDP
+response parses correctly reusing parse_lldp_neighbors() unchanged
+(verified format-compatible against Cisco's own IOS XE Carrier Ethernet
+Command Reference -- see docs/architecture.md); LLDP+CDP dedup/conflict
+on IOS XE reuses the exact same reconcile_links() IOS XE CDP already
+relies on, not a second implementation."""
 
 from __future__ import annotations
 

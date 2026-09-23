@@ -1,7 +1,7 @@
-"""Step 3.3: concurrency proven at the actual MCP tool boundary, not merely
-inside terminal.py's private helpers.
+"""Concurrency proven at the actual MCP tool boundary, not merely inside
+terminal.py's private helpers.
 
-Investigation (see the Step 3.3 final report) found that the MCP SDK in use
+Investigation found that the MCP SDK in use
 (mcp==2.2.0) already dispatches each `tools/call` request as its own anyio
 task (mcp.shared.jsonrpc_dispatcher.JSONRPCDispatcher._dispatch_request()
 spawns rather than awaits, for every method except "initialize"), and that
@@ -34,8 +34,8 @@ from network_lab_mcp import lab, mcp_server, terminal
 
 @pytest.fixture(autouse=True)
 def _patch_lab_root(lab_root, monkeypatch):
-    """terminal_send()/terminal_read() (Step 3.9) now verify the device is
-    present in the active topology before dispatching -- without this,
+    """terminal_send()/terminal_read() verify the device is present in the
+    active topology before dispatching -- without this,
     these tests would silently (and only by coincidence) depend on
     whatever the real repository's own private lab/ directory happens to
     define R1/R2 as, which is exactly the kind of test-isolation gap this

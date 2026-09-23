@@ -1,4 +1,4 @@
-"""Tests for the Step 2 lab.py additions: listing/existence helpers and
+"""Tests for lab.py's listing/existence helpers and
 atomic YAML persistence."""
 
 from __future__ import annotations

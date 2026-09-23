@@ -1,19 +1,19 @@
 """`delete logging all` / `delete logging <device> all` / `delete logging
 <device> <log-file>` / `delete logging <device> directory` / `delete
-logging all directory`: EXEC-only, destructive terminal-log deletion
-(Step B / Step B.1). Eligibility is derived by reusing the exact same
+logging all directory`: EXEC-only, destructive terminal-log deletion.
+Eligibility is derived by reusing the exact same
 stored-log enumeration `show logging` uses
 (terminal.list_logged_device_ids() / terminal.list_device_logs()), so
 what is deletable never drifts from what is displayed.
 
-Step B.1 adds mandatory [y/N] confirmation to every destructive form, a
+Every destructive form requires mandatory [y/N] confirmation, a
 confirm-then-re-preflight-then-apply flow (terminal.DeletionPlan /
 build_*_deletion_plan() / apply_deletion_plan()) that aborts safely if
-the target state changed while the user was deciding, and two new
+the target state changed while the user was deciding, and two
 directory-cleanup commands that remove a now-empty device logging
 directory (never recursively) after its eligible logs are deleted.
 
-The central safety invariant carried over from Step B is device-level
+The central safety invariant is device-level
 active-writer protection: a production session and a Discovery bootstrap
 session both attach persistent pipe-pane logging to the same
 logs/terminal/<device-id>/ directory, keyed only by device name -- so an
@@ -93,7 +93,7 @@ def _no_managed_auth_wait(monkeypatch):
     """This file exercises logging/active-writer safety, never SSH
     authentication -- `open_device_terminal(..., {"transport": "ssh", ...})`
     below is only ever a convenient stand-in for "some active managed
-    session", against a fake, non-routable address (Step 3.5's own
+    session", against a fake, non-routable address (the real
     authentication wait would otherwise poll for the bounded
     _MANAGED_LOGIN_TIMEOUT_SECONDS on every such call for nothing)."""
     monkeypatch.setattr(terminal, "_authenticate_managed_session", lambda *a, **k: None)
@@ -128,7 +128,7 @@ def _answer(monkeypatch, *answers):
 # ==========================================================================
 # Grammar: `delete` (EXEC only), `delete logging`, `all`/`directory`
 # literals combined with dynamic providers, `?`, Tab, executable
-# endpoints (Step B section 36, Step B.1 sections 46-49/77-80)
+# endpoints
 # ==========================================================================
 
 
@@ -389,7 +389,7 @@ def test_directory_keyword_cannot_collide_with_a_real_log_filename():
 
 
 # ==========================================================================
-# Single-file deletion, with confirmation (Step B.1 sections 38/57)
+# Single-file deletion, with confirmation
 # ==========================================================================
 
 
@@ -436,7 +436,7 @@ def test_delete_nonexistent_exact_filename_deletes_nothing_no_prompt(isolated_lo
 
 
 # ==========================================================================
-# Confirmation semantics -- mandatory, exhaustive (Step B.1 section 56)
+# Confirmation semantics -- mandatory, exhaustive
 # ==========================================================================
 
 
@@ -531,8 +531,7 @@ def test_confirmation_answer_never_enters_command_history(isolated_logs, lab_roo
 
 
 # ==========================================================================
-# Multi-line paste: confirmation-requiring commands fail closed (Step B.1
-# section 13)
+# Multi-line paste: confirmation-requiring commands fail closed
 # ==========================================================================
 
 
@@ -558,7 +557,7 @@ def test_single_line_delete_logging_remains_interactive(isolated_logs, lab_root,
 
 
 # ==========================================================================
-# Device-all deletion (Step B.1 sections 39/58)
+# Device-all deletion
 # ==========================================================================
 
 
@@ -607,7 +606,7 @@ def test_delete_all_for_a_device_already_emptied_by_deletion(isolated_logs, lab_
 
 
 # ==========================================================================
-# Global-all deletion (Step B.1 sections 40/60)
+# Global-all deletion
 # ==========================================================================
 
 
@@ -644,7 +643,7 @@ def test_delete_all_logs_globally_with_empty_dir_is_safe(isolated_logs, lab_root
 
 
 # ==========================================================================
-# Path traversal / symlink / unknown-file safety carried over from Step B
+# Path traversal / symlink / unknown-file safety
 # ==========================================================================
 
 
@@ -727,16 +726,15 @@ def test_delete_all_logs_globally_preserves_unrelated_files(isolated_logs, lab_r
 
 
 # ==========================================================================
-# `show logging` bare (restored, pre-Step-B.1 flat listing) vs. explicit
-# `show logging summary` (Step B.1's per-device count table, Step B.1a
-# sections 2-8/14/23-28/35/70-73)
+# `show logging` bare (flat listing) vs. explicit
+# `show logging summary` (per-device count table)
 # ==========================================================================
 
 
-def test_bare_show_logging_matches_restored_step_b_behavior(isolated_logs, lab_root, capsys):
-    """Step B.1a section 23: bare `show logging` must match the exact
-    pre-Step-B.1 (commit 972046b) flat, per-file, newest-first listing --
-    not the Step B.1 summary table, which now lives at `show logging
+def test_bare_show_logging_is_the_flat_per_file_listing(isolated_logs, lab_root, capsys):
+    """Bare `show logging` must match the exact
+    flat, per-file, newest-first listing --
+    not the summary table, which lives at `show logging
     summary` instead."""
     _write_log(isolated_logs, "R1", "20260921T091500")
     _write_log(isolated_logs, "R2", "20260921T091505")
@@ -856,7 +854,7 @@ def test_dynamic_help_reflects_deletion_immediately(isolated_logs, lab_root, mon
 
 
 def test_device_log_files_no_longer_advertised_once_all_are_gone(isolated_logs, lab_root, monkeypatch):
-    """Step B.1 section 31/74: once R1 has zero eligible log files, no
+    """Once R1 has zero eligible log files, no
     filename is offered for it, but R1 itself remains discoverable (its
     directory persists) so `delete logging R1 directory` is reachable."""
     _write_log(isolated_logs, "R1", "20260921T090000", "a")
@@ -871,7 +869,7 @@ def test_device_log_files_no_longer_advertised_once_all_are_gone(isolated_logs, 
 
 
 def test_device_disappears_from_discovery_after_directory_cleanup(isolated_logs, lab_root, monkeypatch):
-    """Step B.1 section 75."""
+    """Directory cleanup removes the device's log directory entirely."""
     _write_log(isolated_logs, "SW2", "20260921T090000", "a")
     _answer(monkeypatch, "y")
     session = cfgmod.CliSession(lab_root)
@@ -881,7 +879,7 @@ def test_device_disappears_from_discovery_after_directory_cleanup(isolated_logs,
 
 
 # ==========================================================================
-# Device-directory deletion (Step B.1 sections 22-29/59/65/68)
+# Device-directory deletion
 # ==========================================================================
 
 
@@ -1001,7 +999,7 @@ def test_symlink_device_directory_is_never_eligible(isolated_logs, lab_root, cap
 
 
 # ==========================================================================
-# Global directory deletion (Step B.1 sections 30-35/61/66/69/83-84)
+# Global directory deletion
 # ==========================================================================
 
 
@@ -1092,9 +1090,8 @@ def test_global_directory_deletion_unrelated_root_level_file_untouched(isolated_
 
 
 # ==========================================================================
-# Active-writer safety: normal production terminal session (Step B section
-# 40, Step B.1 sections 29/44/68), using a real (mocked-command) tmux
-# session
+# Active-writer safety: normal production terminal session, using a
+# real (mocked-command) tmux session
 # ==========================================================================
 
 
@@ -1189,9 +1186,9 @@ def test_active_normal_terminal_never_closed_by_rejected_deletion(isolated_logs,
 
 
 # ==========================================================================
-# Discovery bootstrap active-writer safety (Step B section 41, Step B.1
-# sections 29/45/68/69), using the actual open_bootstrap_terminal() writer
-# path -- never a renamed production session.
+# Discovery bootstrap active-writer safety, using the actual
+# open_bootstrap_terminal() writer path -- never a renamed production
+# session.
 # ==========================================================================
 
 
@@ -1309,8 +1306,7 @@ def test_discovery_active_never_closed_by_rejected_deletion(isolated_logs, lab_r
 
 
 # ==========================================================================
-# Bulk atomicity: preflight failure deletes zero files (Step B section 42,
-# Step B.1 sections 32/66)
+# Bulk atomicity: preflight failure deletes zero files
 # ==========================================================================
 
 
@@ -1367,8 +1363,7 @@ def test_global_directory_atomicity_with_active_discovery(isolated_logs, lab_roo
 
 
 # ==========================================================================
-# Re-preflight / confirmation-target-manifest stability (Step B.1 sections
-# 10-12/51-52/62-64)
+# Re-preflight / confirmation-target-manifest stability
 # ==========================================================================
 
 
@@ -1476,7 +1471,7 @@ def test_new_directory_appearing_during_confirmation_aborts_global_directory(
 
 
 # ==========================================================================
-# Directory auto-recreation compatibility (Step B.1 sections 41/76)
+# Directory auto-recreation compatibility
 # ==========================================================================
 
 

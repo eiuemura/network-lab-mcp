@@ -8,12 +8,12 @@ both together:
 - at most one definition candidate at a time (`definition_kind` /
   `definition_candidate`): a topology, access-info, scenario, or reference
   *definition* being created or edited. Selecting a different definition
-  while the current one is dirty is blocked, exactly like Step 2's original
+  while the current one is dirty is blocked, mirroring the original
   topology-switch guard; moving into or out of running-config mode is not,
   since it is an independent scope.
 
 Everything here is memory-only until commit() writes changed YAML to disk.
-Step 1's validators in `network_lab_mcp.lab` remain the single source of
+The validators in `network_lab_mcp.lab` remain the single source of
 truth for structural validity; this module does not duplicate those rules.
 It only adds the narrow, CLI-specific case-only topology-name collision
 safety check, which is not a validator replacement.
@@ -119,7 +119,7 @@ _DEFINITION_WRITERS: dict[str, Callable] = {
     "reference": lab.write_reference,
 }
 
-# Step D: every definition kind supports candidate deletion (`no <kind>
+# Every definition kind supports candidate deletion (`no <kind>
 # <name>`, see remove_definition()/commit() below) -- one entry per kind,
 # mirroring _DEFINITION_LOADERS/_DEFINITION_WRITERS exactly.
 _DEFINITION_DELETERS: dict[str, Callable] = {

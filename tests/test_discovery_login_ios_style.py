@@ -1,8 +1,7 @@
 """`discovery._login_ios_style()` -- the shared classic-IOS-style login
-used by *both* IOS XE and classic IOS (Step 3.7 Section 11: renamed from
-Step 3.6's IOS-XE-only `_login_iosxe()` once the same login sequence
-genuinely started being reused by classic IOS too -- the old name would
-have been misleading, so it's renamed here, not duplicated). Needed
+used by *both* IOS XE and classic IOS (named generically rather than
+`_login_iosxe()`, since the same login sequence genuinely applies to
+both). Needed
 because IOS XR's `_login()` waits for an IOS-XR-specific prompt shape
 (`RP/.../CPU0:hostname#`) that classic IOS/IOS XE never produces. Reuses
 the same shared, already-tested primitives as everything else here
@@ -196,10 +195,9 @@ def test_bootstrap_collect_iosxe_converts_login_timeout_to_discovery_error(tmp_p
 
 
 def test_bootstrap_collect_ios_uses_the_same_shared_login(tmp_path, monkeypatch):
-    """Classic IOS (Step 3.7) reuses _login_ios_style() exactly like IOS
-    XE does -- this is the shared-primitive refactor Section 11 asks for,
-    proven end-to-end (login through every collected command) rather than
-    just by code inspection."""
+    """Classic IOS reuses _login_ios_style() exactly like IOS
+    XE does, proven end-to-end (login through every collected command)
+    rather than just by code inspection."""
     _monkeypatch_transport(monkeypatch, _script_full_session(tmp_path, hostname="PAGENT"))
 
     info = discovery._bootstrap_collect_ios("PAGENT", _DIRECT_CONFIG)

@@ -9,31 +9,31 @@ from __future__ import annotations
 from network_lab_mcp.discovery import resolve_remote_identity
 
 IDENTITY_MAP = {
-    "R1": "APJC_JP_OSK_R1",
-    "R2": "APJC_JP_OSK_R2",
-    "R3": "APJC_JP_OSK_R3",
-    "R4": "APJC_JP_OSK_R4",
+    "R1": "LAB_DC_R1",
+    "R2": "LAB_DC_R2",
+    "R3": "LAB_DC_R3",
+    "R4": "LAB_DC_R4",
 }
 
 
 def test_exact_hostname_match():
-    assert resolve_remote_identity("APJC_JP_OSK_R1", IDENTITY_MAP) == "R1"
+    assert resolve_remote_identity("LAB_DC_R1", IDENTITY_MAP) == "R1"
 
 
 def test_fqdn_style_alias_resolves_uniquely():
-    assert resolve_remote_identity("APJC_JP_OSK_R2.cisco", IDENTITY_MAP) == "R2"
+    assert resolve_remote_identity("LAB_DC_R2.example", IDENTITY_MAP) == "R2"
 
 
 def test_case_insensitive_exact_match():
-    assert resolve_remote_identity("apjc_jp_osk_r3", IDENTITY_MAP) == "R3"
+    assert resolve_remote_identity("lab_dc_r3", IDENTITY_MAP) == "R3"
 
 
 def test_case_insensitive_alias_match():
-    assert resolve_remote_identity("apjc_jp_osk_r4.CISCO", IDENTITY_MAP) == "R4"
+    assert resolve_remote_identity("lab_dc_r4.EXAMPLE", IDENTITY_MAP) == "R4"
 
 
 def test_unknown_hostname_is_unresolved():
-    assert resolve_remote_identity("ASR9001_R1.cisco.com", IDENTITY_MAP) is None
+    assert resolve_remote_identity("ASR9001_R1.example.com", IDENTITY_MAP) is None
 
 
 def test_ambiguous_hostname_is_unresolved():
@@ -43,7 +43,7 @@ def test_ambiguous_hostname_is_unresolved():
 
 def test_ambiguous_alias_is_unresolved():
     ambiguous_map = {"R1": "DUP", "R2": "DUP"}
-    assert resolve_remote_identity("DUP.cisco", ambiguous_map) is None
+    assert resolve_remote_identity("DUP.example", ambiguous_map) is None
 
 
 def test_does_not_use_substring_matching():
@@ -54,4 +54,4 @@ def test_does_not_use_substring_matching():
 
 
 def test_empty_identity_map_is_unresolved():
-    assert resolve_remote_identity("APJC_JP_OSK_R1", {}) is None
+    assert resolve_remote_identity("LAB_DC_R1", {}) is None

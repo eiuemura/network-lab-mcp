@@ -1,4 +1,4 @@
-"""Step 3.7: L3 interface enrichment parsers -- parse_ipv4_interface_brief()
+"""L3 interface enrichment parsers -- parse_ipv4_interface_brief()
 (IOS XR's `show ipv4 interface brief`), parse_ip_interface_brief() +
 parse_show_vrf() (classic IOS / IOS XE's `show ip interface brief` +
 `show vrf`), _canonicalize_interface_name(), and

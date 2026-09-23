@@ -6,7 +6,7 @@ sub-editing (safe fields under topology, private fields under access-info),
 clear (replacing abort), commit ordering/validation, and external-editor
 integration.
 
-Old Step 2 selector semantics -- global `topology <name>` / `scenario
+The old selector semantics -- global `topology <name>` / `scenario
 <name>` / `reference <name>` directly changing the running-config selection
 -- are gone. `test_old_selector_semantics_are_no_longer_reachable` pins
 that down explicitly; every other selection test below exercises the new
@@ -804,7 +804,7 @@ def test_commit_persists_access_info_and_masks_nothing_on_disk(lab_root):
     session.commit()
     persisted = lab.load_access_info("lab_devices", lab_root)
     assert persisted["devices"]["R1"]["address"] == "192.0.2.99"
-    assert persisted["devices"]["R1"]["password"] == "s3cret"  # plaintext on disk, like Step 1
+    assert persisted["devices"]["R1"]["password"] == "s3cret"  # plaintext on disk (not a secret manager)
 
 
 def test_commit_rejects_access_field_smuggled_into_topology(lab_root):

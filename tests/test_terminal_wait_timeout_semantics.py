@@ -1,5 +1,5 @@
-"""Step 3.7a Section 7/8/43: characterize `terminal._wait_for_pattern()`'s
-current timeout semantics *before* changing anything else, with
+"""Characterize `terminal._wait_for_pattern()`'s
+current timeout semantics, with
 deterministic tests (an injectable fake clock -- never a real 25-second
 sleep) rather than inferring behavior from source inspection alone.
 

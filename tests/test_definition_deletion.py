@@ -1,4 +1,4 @@
-"""Step D: symmetric candidate-based deletion for all four stored
+"""Symmetric candidate-based deletion for all four stored
 definition kinds (`no access-info <name>`, `no topology <name>`, `no
 scenario <name>`, `no reference <name>`), from global configuration mode.
 

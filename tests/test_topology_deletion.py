@@ -68,8 +68,8 @@ def test_no_topology_bare_incomplete():
 
 
 def test_no_help_lists_all_four_kinds():
-    """Step D: `no ?` now lists all four definition kinds (Step C's
-    topology-only listing is generalized)."""
+    """`no ?` lists all four definition kinds (a generalization of the
+    original topology-only listing)."""
     ctx = grammar.CliContext()
     result = grammar.help("global", "no ", ctx)
     assert [(line.token, line.description) for line in result.lines] == [

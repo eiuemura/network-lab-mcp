@@ -1,6 +1,6 @@
 """Topology `interfaces` validation (lab.validate_topology_interfaces(),
-called from lab.validate_topology_data()) -- Step 3.7 L3 enrichment: a
-stable, directly observed IPv4 address + VRF per interface. Like `links`,
+called from lab.validate_topology_data()) -- L3 enrichment: a stable,
+directly observed IPv4 address + VRF per interface. Like `links`,
 `interfaces` has no structured CLI editing command; it is populated by
 `discover topology`, the external `edit`, or by hand-editing the committed
 YAML, so validation is the only guard against malformed data reaching disk
@@ -85,8 +85,8 @@ def test_interface_invalid_ipv4_address_rejected():
 
 
 def test_interface_rejects_unsupported_extra_field():
-    """Step 3.7 deliberately keeps the schema to exactly ipv4_address/vrf --
-    no prefix length, no operational state, no address-family framework."""
+    """The schema deliberately keeps to exactly ipv4_address/vrf -- no
+    prefix length, no operational state, no address-family framework."""
     data = {
         "name": "t",
         "devices": {
@@ -138,9 +138,9 @@ def test_interfaces_survive_write_and_load_round_trip(lab_root):
 
 
 def test_existing_topology_without_interfaces_key_remains_valid_no_migration(lab_root):
-    """Backward compatibility (Section 45): a topology written before Step
-    3.7 -- devices/links only, no 'interfaces' key anywhere -- must remain
-    valid with zero migration."""
+    """Backward compatibility: a topology written before L3 interface
+    enrichment existed -- devices/links only, no 'interfaces' key anywhere
+    -- must remain valid with zero migration."""
     data = {
         "name": "legacy",
         "devices": {"R1": {"type": "iosxr"}, "R2": {"type": "iosxr"}},

@@ -1,6 +1,6 @@
-"""Step 3.7a: Discovery disables terminal paging (`terminal length 0`)
+"""Discovery disables terminal paging (`terminal length 0`)
 immediately after successful login, before any show command, for IOS XE
-and classic IOS collectors (IOS XR already did this since Step 3 -- see
+and classic IOS collectors (IOS XR already did this -- see
 `_bootstrap_collect()`). Fixes a real observed failure: a C9200L (IOS XE)
 ran `show version` before pagination was disabled, its output stopped at
 the device's own `--More--` pager prompt, and the whole device's
@@ -87,10 +87,9 @@ def test_paging_command_is_sent_exactly_once_per_collection(monkeypatch):
 
 
 def test_paging_command_is_sent_exactly_once_for_iosxr_too(monkeypatch):
-    """IOS XR already disabled paging before Step 3.7a -- confirm the new
+    """IOS XR already disabled paging -- confirm the
     shared _disable_terminal_paging() helper preserves that exactly-once
-    behavior for IOS XR as well (Section 20's "must retain current
-    behavior")."""
+    behavior for IOS XR as well."""
     monkeypatch.setattr(discovery, "_login", lambda device_id, cfg: "R1")
     sent_commands = []
 
@@ -231,7 +230,7 @@ def _fake_c9200l_script(tmp_path) -> list[str]:
     new output) scrolls past `_wait_for_pattern()`'s last-5-lines match
     window before the stall -- otherwise the still-nearby stale prompt
     line (an orthogonal, pre-existing characteristic of the shared
-    tail-based matcher, unrelated to Step 3.7a) could satisfy the pattern
+    tail-based matcher) could satisfy the pattern
     prematurely and mask the very stall this model exists to prove."""
     body = (
         'stty -echo\n'
@@ -261,8 +260,7 @@ def _fake_c9200l_script(tmp_path) -> list[str]:
 
 def test_real_pager_regression_model_stalls_without_paging_disabled_first(tmp_path, monkeypatch):
     """Control test: proves the fake script faithfully reproduces the
-    real C9200L bug when paging is *not* disabled first (i.e. this is
-    what Discovery's behavior looked like before Step 3.7a) -- confirms
+    real C9200L bug when paging is *not* disabled first -- confirms
     the model itself is meaningful, not merely that our fix happens to
     pass against a script we designed to always succeed."""
     _monkeypatch_transport(monkeypatch, _fake_c9200l_script(tmp_path))
@@ -338,7 +336,7 @@ def test_two_devices_disable_paging_concurrently_no_global_lock(tmp_path, monkey
     """Two different devices' paging-disable steps happen concurrently,
     proving there is no accidental global pager lock/flag serializing
     them -- only the existing, per-device Discovery bootstrap session
-    lock (Step 3.3, unchanged) applies."""
+    lock applies."""
     import threading
 
     barrier = threading.Barrier(2, timeout=5)

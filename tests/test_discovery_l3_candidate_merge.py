@@ -1,5 +1,5 @@
-"""Step 3.7: build_topology_devices_and_links()'s per-interface L3 merge
-(Section 40/41) -- unlike every other device field, `interfaces` is never
+"""build_topology_devices_and_links()'s per-interface L3 merge -- unlike
+every other device field, `interfaces` is never
 replaced wholesale: an interface not re-observed this run is preserved, an
 interface re-observed with a new value is updated, and an interface
 explicitly observed as removed (unassigned, or excluded as a management

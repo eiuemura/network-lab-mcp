@@ -1,4 +1,4 @@
-"""Step 3.6: reconcile_links() with mixed LLDP + CDP observations.
+"""reconcile_links() with mixed LLDP + CDP observations.
 
 The same physical link observed via both protocols (or reciprocally from
 both ends, mixing protocols) becomes exactly one topology link -- keyed by

@@ -1,7 +1,7 @@
 """Persistent terminal transcript logging (logs/terminal/<device-id>/*.log).
 
 Uses real tmux sessions (in the isolated network-lab-mcp tmux server, via
-the same validation-session namespace other Step 1 tests use) so pipe-pane
+the same validation-session namespace other tests use) so pipe-pane
 behavior is genuinely exercised, but never a real router -- sessions run a
 safe local command instead of ssh/telnet. `terminal.LOGS_ROOT` is
 monkeypatched to a temporary directory so nothing here ever touches the
@@ -28,7 +28,7 @@ def _no_managed_auth_wait(monkeypatch):
     """This file exercises persistent logging, never SSH authentication --
     `open_device_terminal(..., {"transport": "ssh", ...})` below is only
     ever a convenient stand-in for "some active managed session", against
-    a fake, non-routable address (Step 3.5's own authentication wait would
+    a fake, non-routable address (managed-session authentication would
     otherwise poll for the bounded _MANAGED_LOGIN_TIMEOUT_SECONDS on every
     such call for nothing)."""
     monkeypatch.setattr(terminal, "_authenticate_managed_session", lambda *a, **k: None)

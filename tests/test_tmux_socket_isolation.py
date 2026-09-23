@@ -1,4 +1,4 @@
-"""Step 3.9 test isolation: ordinary pytest must never be able to list,
+"""Test isolation: ordinary pytest must never be able to list,
 read, send to, or close a real production managed session -- only the
 disposable, per-run tmux socket the `_isolated_tmux_socket` autouse
 fixture (conftest.py) redirects `terminal.TMUX_SOCKET_NAME` onto.

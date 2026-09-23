@@ -1,4 +1,4 @@
-"""Step 3.4: `monitor terminal <device-id>` grammar/CLI-dispatch tests.
+"""`monitor terminal <device-id>` grammar/CLI-dispatch tests.
 
 Covers only the grammar SSOT (parsing, abbreviation, `?`, Tab, `<cr>`,
 EXEC-only availability) and the dynamic target-eligibility rule
@@ -139,7 +139,7 @@ def test_existing_session_device_outside_topology_is_offered(lab_root, monkeypat
 
 
 def test_discovery_only_device_is_offered(lab_root, monkeypatch):
-    # Step 3.4a: a device being discovered for the first time may not yet
+    # A device being discovered for the first time may not yet
     # be in the committed topology or have a managed session at all -- its
     # live Discovery activity must still be a valid monitor target.
     monkeypatch.setattr("network_lab_mcp.terminal.list_device_sessions", lambda: [])

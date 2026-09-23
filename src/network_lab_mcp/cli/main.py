@@ -336,7 +336,10 @@ def render_topology_block(data: dict) -> list[str]:
     `link <a> <a-if> <b> <b-if>` command -- it is only ever set by
     `discover topology` or the external `edit`), so it is rendered as
     read-only review information, not as a re-typeable command line, under
-    its own `links` block."""
+    its own `links` block. A device's optional per-interface L3 data
+    (`ipv4_address`/`vrf`) is rendered the same way, one `interface <name>`
+    block per interface -- also only ever populated by `discover topology`
+    or the external `edit`, never a structured CLI command."""
     lines = [f"topology {data.get('name', '')}"]
     description = data.get("description")
     if description:
@@ -346,6 +349,15 @@ def render_topology_block(data: dict) -> list[str]:
         device_type = (device or {}).get("type")
         if device_type not in (None, ""):
             lines.append(f"  type {device_type}")
+        for interface_name, interface_data in ((device or {}).get("interfaces") or {}).items():
+            lines.append(f"  interface {interface_name}")
+            ipv4_address = (interface_data or {}).get("ipv4_address")
+            if ipv4_address not in (None, ""):
+                lines.append(f"   ipv4_address {ipv4_address}")
+            vrf = (interface_data or {}).get("vrf")
+            if vrf not in (None, ""):
+                lines.append(f"   vrf {vrf}")
+            lines.append("  !")
         lines.append(" !")
     links = data.get("links") or []
     if links:
@@ -539,6 +551,53 @@ def _field_delta_lines(original_obj: dict, candidate_obj: dict, field_order: tup
     return lines
 
 
+def _topology_device_interfaces_delta(original_interfaces: dict, candidate_interfaces: dict) -> list[str]:
+    """Render only the interfaces (within one topology device) that
+    actually changed, one nesting level deeper than the device's own
+    field lines: a whole interface entry removed from the candidate (e.g.
+    Discovery re-observed it as `unassigned`, or excluded it as a
+    management address -- see discovery.py's own removal semantics) as
+    '  no interface <name>'; an interface added or changed
+    (ipv4_address/vrf) as its own '  interface <name>' / field lines /
+    '  !' block. `interfaces` has no structured CLI editing command
+    (same precedent as `links`), so this is read-only review information."""
+    lines: list[str] = []
+    for interface_name in original_interfaces:
+        if interface_name not in candidate_interfaces:
+            lines.append(f"  no interface {interface_name}")
+    for interface_name, candidate_data in candidate_interfaces.items():
+        original_data = original_interfaces.get(interface_name) or {}
+        field_lines = _field_delta_lines(original_data, candidate_data or {}, ("ipv4_address", "vrf"))
+        if field_lines:
+            lines.append(f"  interface {interface_name}")
+            lines.extend(f" {line}" for line in field_lines)
+            lines.append("  !")
+    return lines
+
+
+def _topology_devices_delta(original_map: dict, candidate_map: dict) -> list[str]:
+    """Like _named_objects_delta(), but topology-specific: a device block
+    is rendered if its own `type` changed *or* if any of its interfaces'
+    L3 data changed -- an L3-only change (device type unchanged) must
+    still surface a device block, not disappear silently."""
+    lines: list[str] = []
+    for name in original_map:
+        if name not in candidate_map:
+            lines.append(f" no device {name}")
+    for name, candidate_obj in candidate_map.items():
+        original_obj = original_map.get(name) or {}
+        field_lines = _field_delta_lines(original_obj, candidate_obj or {}, ("type",))
+        interface_lines = _topology_device_interfaces_delta(
+            (original_obj or {}).get("interfaces") or {}, (candidate_obj or {}).get("interfaces") or {}
+        )
+        if field_lines or interface_lines:
+            lines.append(f" device {name}")
+            lines.extend(field_lines)
+            lines.extend(interface_lines)
+            lines.append(" !")
+    return lines
+
+
 def _named_objects_delta(keyword: str, original_map: dict, candidate_map: dict, field_order: tuple[str, ...]) -> list[str]:
     """Render only the named objects (devices/jump-hosts) that actually
     changed: a whole object present in `original_map` but absent from
@@ -592,7 +651,7 @@ def render_topology_configuration_delta(name: str, original: Optional[dict], can
     new_description = candidate.get("description")
     if old_description != new_description:
         lines.append(f" description {new_description}" if new_description else " no description")
-    lines += _named_objects_delta("device", original.get("devices") or {}, candidate.get("devices") or {}, ("type",))
+    lines += _topology_devices_delta(original.get("devices") or {}, candidate.get("devices") or {})
     if not lines:
         return ""
     return "\n".join([f"topology {name}", *lines, "!"])

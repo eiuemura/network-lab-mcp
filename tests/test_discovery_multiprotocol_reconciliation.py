@@ -8,7 +8,7 @@ replacing it. A local interface where LLDP and CDP disagree about the
 neighbor is reported as a conflict instead of silently picking one
 protocol; unrelated links elsewhere are unaffected. The same rule also
 catches two same-protocol observations disagreeing about one local
-interface (Section 29), not just cross-protocol disagreement."""
+interface, not just cross-protocol disagreement."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def test_lldp_and_cdp_disagree_about_the_same_local_interface_is_a_conflict():
 
 
 def test_two_cdp_rows_disagreeing_about_one_local_interface_is_also_a_conflict():
-    """Same-protocol disagreement (Section 29) uses the exact same rule as
+    """Same-protocol disagreement uses the exact same rule as
     cross-protocol disagreement -- not a separate special case."""
     from network_lab_mcp.discovery import reconcile_links
 

@@ -161,7 +161,7 @@ def test_mixed_iosxr_and_iosxe_definition_produces_expected_managed_links(lab_ro
 
 
 def test_only_iosxe_collector_is_invoked_for_iosxe_targets(lab_root, monkeypatch):
-    """Section 3 boundary: an IOS XE target is never routed through the
+    """An IOS XE target is never routed through the
     IOS XR collector (_bootstrap_collect), and vice versa."""
     iosxr_calls = []
     iosxe_calls = []

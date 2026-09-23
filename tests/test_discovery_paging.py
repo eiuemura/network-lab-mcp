@@ -13,7 +13,7 @@ This file has two kinds of tests:
   *sequencing* contract: paging is sent first, exactly once, and a paging
   failure never lets any Discovery show command run afterward.
 - A real (fake-command) tmux integration test directly modeling the
-  C9200L regression itself (Section 42): the fake device behaves exactly
+  C9200L regression itself: the fake device behaves exactly
   like the real one -- if the first command isn't `terminal length 0`, it
   stalls at `--More--` forever, exactly reproducing the original bug;
   Discovery's own collector, unmodified, must not trigger that path."""
@@ -37,7 +37,7 @@ def _cleanup_discovery_sessions():
         terminal.close_bootstrap_terminal(device_id)
 
 
-# ---- Unit-level: exact ordering / exactly-once / fail-closed (Sections 17-18, 38-39, 41) ----
+# ---- Unit-level: exact ordering / exactly-once / fail-closed ----
 
 
 def _fake_wait_always_succeeds(prompt_text):
@@ -109,7 +109,7 @@ def test_paging_command_is_sent_exactly_once_for_iosxr_too(monkeypatch):
 
 
 def test_paging_initialization_failure_is_bounded_and_no_show_command_follows(monkeypatch):
-    """Section 25/41: if the prompt never returns after `terminal length
+    """If the prompt never returns after `terminal length
     0`, the whole device fails closed -- no Discovery show command is
     ever attempted while terminal (page-length) state is unknown."""
     monkeypatch.setattr(discovery, "_login_ios_style", lambda device_id, cfg: "SW3")
@@ -173,7 +173,7 @@ _CONFIG = {"transport": "ssh", "address": "192.0.2.99", "username": "u", "passwo
 
 
 def test_show_version_is_not_sent_before_the_delayed_paging_prompt_returns(tmp_path, monkeypatch):
-    """Section 40: the paging-disable prompt is delayed by a couple of
+    """The paging-disable prompt is delayed by a couple of
     (real, short) seconds -- prove Discovery genuinely waited for it
     (rather than racing ahead) by measuring elapsed time and confirming
     `show version` still completes correctly afterward.
@@ -288,7 +288,7 @@ def test_bootstrap_collect_iosxe_disables_paging_and_never_stalls_at_more(tmp_pa
     assert "Cisco IOS XE Software, Version 17.18.02 (full)" in info["show_version"]
 
 
-# ---- Section 22/45: paging is Discovery-only, never sent by managed terminal_open() ----
+# ---- paging is Discovery-only, never sent by managed terminal_open() ----
 
 
 @pytest.fixture(autouse=True)
@@ -329,7 +329,7 @@ def test_terminal_open_never_sends_terminal_length_0(tmp_path, monkeypatch):
     assert "terminal length 0" not in sent
 
 
-# ---- Section 35/36/49: per-device paging init, no global state ----
+# ---- per-device paging init, no global state ----
 
 
 def test_two_devices_disable_paging_concurrently_no_global_lock(tmp_path, monkeypatch):

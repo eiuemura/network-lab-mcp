@@ -20,7 +20,7 @@ from network_lab_mcp.discovery import (
     parse_show_vrf,
 )
 
-# ---- interface-name canonicalization (Section 32) ----
+# ---- interface-name canonicalization ----
 
 
 @pytest.mark.parametrize(
@@ -45,7 +45,7 @@ def test_canonicalize_unknown_prefix_is_left_unchanged():
     assert _canonicalize_interface_name("WeirdIntf0/0") == "WeirdIntf0/0"
 
 
-# ---- IOS XR: show ipv4 interface brief (Section 29/30/60) ----
+# ---- IOS XR: show ipv4 interface brief ----
 
 _IOSXR_L3_HEADER = "Interface                     IP-Address   Status Protocol Vrf-Name"
 
@@ -92,7 +92,7 @@ def test_iosxr_l3_malformed_row_is_skipped():
     assert parse_ipv4_interface_brief(text) == {}
 
 
-# ---- classic IOS / IOS XE: show ip interface brief (Section 31/61/62) ----
+# ---- classic IOS / IOS XE: show ip interface brief ----
 
 _IP_BRIEF_HEADER = "Interface              IP-Address      OK? Method Status                Protocol"
 
@@ -126,7 +126,7 @@ def test_ip_interface_brief_unrecognized_output_raises():
         parse_ip_interface_brief("% Invalid input detected at '^' marker.\n")
 
 
-# ---- classic IOS / IOS XE: show vrf (Section 32/36) ----
+# ---- classic IOS / IOS XE: show vrf ----
 
 _VRF_HEADER = "  Name                             Default RD            Protocols   Interfaces"
 
@@ -166,7 +166,7 @@ def test_show_vrf_unrecognized_output_raises():
         parse_show_vrf("% Invalid input detected at '^' marker.\n")
 
 
-# ---- PAGENT-style combined example (Section 33/62) ----
+# ---- PAGENT-style combined example ----
 
 
 def test_pagent_style_combination_resolves_vrf_per_interface_default_otherwise():
@@ -203,7 +203,7 @@ def test_pagent_style_combination_resolves_vrf_per_interface_default_otherwise()
     assert combined["GigabitEthernet0/0"] == (None, "default")
 
 
-# ---- _build_device_interface_fields(): management exclusion + removal (Section 27/35/41) ----
+# ---- _build_device_interface_fields(): management exclusion + removal ----
 
 
 def test_build_device_interface_fields_creates_entries_only_for_assigned_addresses():
@@ -233,7 +233,7 @@ def test_build_device_interface_fields_no_operational_state_no_prefix():
 
 
 def test_duplicate_ipv4_address_across_different_vrfs_is_not_a_conflict():
-    """Section 37/68: the same address may legitimately appear in
+    """The same address may legitimately appear in
     different VRFs or isolated lab contexts -- no global uniqueness check
     exists anywhere in this pipeline."""
     raw_l3 = {"Gi0/0": ("10.20.0.10", "tgn1"), "Gi0/1": ("10.20.0.10", "tgn2")}

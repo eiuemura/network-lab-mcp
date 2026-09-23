@@ -1,4 +1,4 @@
-"""Step A: access-info configuration render/paste round-trip.
+"""access-info configuration render/paste round-trip.
 
 Rendered access-info configuration (render_access_info_block()) closes
 every jump-host/device block, and the whole access-info block itself,
@@ -42,7 +42,7 @@ def _rendered_committed_access_info(lab_root, name="sample_lab"):
 
 # ==========================================================================
 # Mandatory acceptance: full rendered access-info block, pasted from
-# global configuration mode (Step A section 31/49)
+# global configuration mode
 # ==========================================================================
 
 
@@ -79,7 +79,7 @@ def test_extra_trailing_bang_after_full_block_is_a_safe_noop_at_global(lab_root)
 
 # ==========================================================================
 # Mandatory acceptance: access-info body paste from access-info definition
-# mode -- the exact style the user encountered (Step A section 32)
+# mode -- the exact style the user encountered
 # ==========================================================================
 
 
@@ -124,7 +124,7 @@ def test_access_info_body_paste_from_access_info_definition_mode(lab_root):
 
 
 # ==========================================================================
-# Mandatory acceptance: jump-host paste round-trip (Step A section 33)
+# Mandatory acceptance: jump-host paste round-trip
 # ==========================================================================
 
 
@@ -156,7 +156,7 @@ def test_jump_host_paste_round_trip_with_device_reference(lab_root):
 
 
 # ==========================================================================
-# Extra trailing "!" safety (Step A section 30)
+# Extra trailing "!" safety
 # ==========================================================================
 
 
@@ -176,7 +176,7 @@ def test_exact_spec_example_extra_trailing_bang_from_global_config(lab_root):
 
 
 # ==========================================================================
-# Safe no-op at global configuration and EXEC (Step A section 26)
+# Safe no-op at global configuration and EXEC
 # ==========================================================================
 
 
@@ -206,8 +206,7 @@ def test_standalone_bang_at_exec_alongside_other_lines_never_terminates(lab_root
 
 
 # ==========================================================================
-# Explicit `exit` sibling paste syntax still works alongside "!" (Step A
-# section 34)
+# Explicit `exit` sibling paste syntax still works alongside "!"
 # ==========================================================================
 
 
@@ -231,7 +230,7 @@ def test_explicit_exit_and_structural_bang_are_both_valid_between_siblings(lab_r
 
 
 # ==========================================================================
-# Primary round-trip acceptance test (Step A section 49)
+# Primary round-trip acceptance test
 # ==========================================================================
 
 
@@ -269,7 +268,7 @@ def test_committed_access_info_render_paste_commit_round_trip(lab_root):
 
 
 # ==========================================================================
-# Mutation round-trip acceptance (Step A section 50)
+# Mutation round-trip acceptance
 # ==========================================================================
 
 

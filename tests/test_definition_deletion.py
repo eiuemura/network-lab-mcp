@@ -2,7 +2,7 @@
 definition kinds (`no access-info <name>`, `no topology <name>`, `no
 scenario <name>`, `no reference <name>`), from global configuration mode.
 
-This generalizes Step C's topology-only `no topology <name>` (see
+This generalizes the topology-only `no topology <name>` (see
 test_topology_deletion.py, which remains the authoritative regression
 suite for topology-specific behavior and is not duplicated here) via
 `CliSession.remove_definition(kind, name)` -- the exact same mechanism,
@@ -65,7 +65,7 @@ def _add_reference(lab_root, name, **fields):
 
 # ==========================================================================
 # Grammar: `no ?` lists all four kinds; each is a fixed, dynamically
-# completed child (sections 1/24/25/67)
+# completed child
 # ==========================================================================
 
 
@@ -160,7 +160,7 @@ def test_global_parent_help_wording():
 # ==========================================================================
 # Cross-kind conflicts: the single shared definition_candidate slot means
 # a dirty definition of ANY kind blocks a different definition of ANY
-# kind (sections 3/84)
+# kind
 # ==========================================================================
 
 
@@ -229,7 +229,7 @@ def test_pending_deletion_of_a_blocks_pending_deletion_of_different_kind(lab_roo
 
 
 def test_same_string_name_different_kind_is_a_different_candidate_identity(lab_root):
-    """Section 5: `topology test_lab` and `access-info test_lab` are
+    """`topology test_lab` and `access-info test_lab` are
     different stored definitions even though the name string matches."""
     _add_topology(lab_root, "test_lab")
     _add_access_info(lab_root, "test_lab")
@@ -247,7 +247,7 @@ def test_same_string_name_different_kind_is_a_different_candidate_identity(lab_r
 
 
 # ==========================================================================
-# Access-info deletion lifecycle + private-data safety (sections 7/8/17)
+# Access-info deletion lifecycle + private-data safety
 # ==========================================================================
 
 
@@ -275,7 +275,7 @@ def test_delete_active_access_info_fails_closed_without_leaking_credentials(lab_
 
 
 def test_access_info_delete_then_restore_preserves_private_fields(lab_root):
-    """Section 20/21: restoring after a pending deletion must not create
+    """Restoring after a pending deletion must not create
     a blank access-info and must not discard stored devices/jump-hosts."""
     session = cfgmod.CliSession(lab_root)
     session.enter_configure()
@@ -326,7 +326,7 @@ def test_nonexistent_access_info_deletion_is_clean(lab_root):
 
 
 def test_show_configuration_never_renders_access_info_field_diff_for_deletion(lab_root):
-    """Section 18: only the single whole-definition line, never a
+    """Only the single whole-definition line, never a
     per-field/per-device deletion diff that could leak credentials."""
     session = cfgmod.CliSession(lab_root)
     session.enter_configure()
@@ -397,7 +397,6 @@ def test_scenario_create_then_delete_net_zero(lab_root):
 
 # ==========================================================================
 # Reference deletion lifecycle + active-reference-set protection
-# (sections 11/12/48)
 # ==========================================================================
 
 
@@ -461,7 +460,7 @@ def test_reference_create_then_delete_net_zero(lab_root):
 
 
 # ==========================================================================
-# Clear symmetry across all kinds (section 60)
+# Clear symmetry across all kinds
 # ==========================================================================
 
 
@@ -479,7 +478,7 @@ def test_clear_cancels_pending_deletion_for_every_kind(lab_root, kind, name):
 
 
 # ==========================================================================
-# Fresh-process persistence (section 62)
+# Fresh-process persistence
 # ==========================================================================
 
 
@@ -503,7 +502,7 @@ def test_deletion_persists_across_fresh_sessions_for_every_kind(lab_root):
 
 
 # ==========================================================================
-# Running-config selector: dynamic completion + wording (sections 29-34)
+# Running-config selector: dynamic completion + wording
 # ==========================================================================
 
 
@@ -546,7 +545,7 @@ def test_running_selector_execution_still_validates_nonexistent_name(lab_root):
 
 
 def test_pending_topology_deletion_excluded_from_running_selector(lab_root):
-    """Mandatory (section 71): a topology pending deletion must not be
+    """A topology pending deletion must not be
     offered as a valid effective running-config selection."""
     session = cfgmod.CliSession(lab_root)
     session.enter_configure()
@@ -595,7 +594,7 @@ def test_running_selector_unaffected_by_dirty_edit_of_different_topology(lab_roo
 
 
 # ==========================================================================
-# Filesystem safety for access-info/scenario/reference (sections 15/50/51)
+# Filesystem safety for access-info/scenario/reference
 # ==========================================================================
 
 
@@ -647,7 +646,7 @@ def test_symlinked_access_info_excluded_at_candidate_creation(lab_root, tmp_path
 
 
 # ==========================================================================
-# Paste regression (section 74): edit + cross-kind delete rejection
+# Paste regression: edit + cross-kind delete rejection
 # ==========================================================================
 
 

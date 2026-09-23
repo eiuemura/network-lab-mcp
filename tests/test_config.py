@@ -446,7 +446,7 @@ def test_no_jump_host_command_end_to_end(lab_root):
 
 
 # ==========================================================================
-# Step A candidate-integrity regressions (Step A section 37/DoD 4-14)
+# Candidate-integrity regressions
 #
 # One candidate SSOT per edited definition: an existing definition's
 # candidate starts as a complete deep copy of the committed definition,
@@ -456,9 +456,9 @@ def test_no_jump_host_command_end_to_end(lab_root):
 # observation. Direct reproduction attempts (interactive-equivalent
 # sequences via CliSession/execute_command_line/execute_input_block, in
 # every plausible variation) did NOT reproduce data loss in this
-# codebase (1a1197a) -- see the Step A final report for details. These
-# tests lock in the correct, already-working behavior as a permanent
-# regression guard rather than "fix" a defect that could not be found.
+# codebase. These tests lock in the correct, already-working behavior as
+# a permanent regression guard rather than "fix" a defect that could not
+# be found.
 # ==========================================================================
 
 

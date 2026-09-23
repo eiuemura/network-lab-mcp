@@ -389,7 +389,7 @@ class CliSession:
     def remove_topology_definition(self, name: str) -> None:
         """`no topology <name>` -- see remove_definition(), the shared
         implementation this delegates to. Kept as its own method since
-        Step C's own tests/callers already use this exact name."""
+        existing tests/callers already use this exact name."""
         self.remove_definition("topology", name)
 
     def apply_discovery_result(self, result: "discovery.DiscoveryResult") -> None:

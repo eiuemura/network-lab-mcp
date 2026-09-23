@@ -3,9 +3,9 @@
 # Copy this file to settings.yaml (which is gitignored) before first use:
 #   cp lab/settings.example.yaml lab/settings.yaml
 #
-# Edit settings.yaml directly, or use the Step 2 CLI's `running-config`
-# configuration mode, to change the active access-info/topology/scenario/
-# references selection.
+# Edit settings.yaml directly, or use the human CLI's (./run_cli.sh)
+# `running-config` configuration mode, to change the active
+# access-info/topology/scenario/references selection.
 #
 # `active_access_info` is optional: a settings.yaml written before this
 # field existed (or with it removed via `no access-info`) is still valid --

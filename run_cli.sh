@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Human-facing entry point for the Network Lab CLI (Step 2).
+# Human-facing entry point for the Network Lab CLI.
 #
 # This launches the IOS XR-compatible Network Lab CLI: a human configuration
 # and control plane for lab/settings.yaml and lab/topologies/*.yaml, using a

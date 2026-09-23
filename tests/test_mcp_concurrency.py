@@ -44,7 +44,7 @@ def _patch_lab_root(lab_root, monkeypatch):
 
 
 # ==========================================================================
-# Different-device overlap at the MCP tool boundary (Sections 4, 11)
+# Different-device overlap at the MCP tool boundary
 # ==========================================================================
 
 
@@ -97,7 +97,7 @@ def test_sequential_mcp_calls_would_not_satisfy_the_barrier():
 
 
 # ==========================================================================
-# Same-device serialization at the MCP boundary (Section 12)
+# Same-device serialization at the MCP boundary
 # ==========================================================================
 
 
@@ -143,7 +143,7 @@ def test_same_device_mcp_calls_never_overlap(monkeypatch):
 
 
 # ==========================================================================
-# Mixed-tool concurrency (Section 64)
+# Mixed-tool concurrency
 # ==========================================================================
 
 
@@ -170,7 +170,7 @@ def test_mixed_tool_calls_for_different_devices_overlap(monkeypatch):
 
 
 # ==========================================================================
-# Error isolation (Section 66)
+# Error isolation
 # ==========================================================================
 
 

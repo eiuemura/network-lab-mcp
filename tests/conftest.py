@@ -9,6 +9,7 @@ topologies/, scenarios/, references/).
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -21,6 +22,37 @@ from network_lab_mcp import terminal
 # operation. Tests must never list, read, send to, or close sessions on
 # this socket -- only the isolated one below.
 PRODUCTION_TMUX_SOCKET_NAME = terminal.TMUX_SOCKET_NAME
+
+# Most of this suite deliberately validates against a real (isolated) tmux
+# server rather than mocking session mechanics away -- see "Local terminal
+# validation policy" in README.md. When `tmux` genuinely is not installed,
+# every one of those tests fails at the same single, well-defined boundary:
+# `terminal._tmux_base()` raising this exact TerminalError message. Rather
+# than either (a) leaving that as a confusing raw failure/fixture-teardown
+# error for every tmux-dependent test, or (b) trying to guess in advance
+# which test files are "pure" and skip them preemptively (which risks
+# hiding a genuinely broken test behind a wrong guess), this hook narrowly
+# reclassifies exactly that one sentinel exception as a skip, in whichever
+# phase (setup/call/teardown) it surfaces. A pure unit test that never
+# touches terminal.py is completely unaffected and still runs normally;
+# any *other* exception is reported exactly as it always was.
+_TMUX_MISSING_MESSAGE = "The 'tmux' binary is not available on this system."
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    if call.excinfo is not None and _TMUX_MISSING_MESSAGE in str(call.excinfo.value):
+        report = outcome.get_result()
+        report.outcome = "skipped"
+        # pytest's own "-rs"/folded-skip summary requires a skipped report's
+        # longrepr to be exactly this (path, lineno, reason) tuple shape --
+        # the same shape a real pytest.skip() call produces internally.
+        report.longrepr = (
+            str(item.fspath),
+            item.location[1],
+            f"Skipped: {_TMUX_MISSING_MESSAGE} (tmux is not installed)",
+        )
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -52,7 +84,8 @@ def _isolated_tmux_socket():
     terminal.TMUX_SOCKET_NAME = test_socket_name
     yield
     terminal.TMUX_SOCKET_NAME = PRODUCTION_TMUX_SOCKET_NAME
-    subprocess.run(["tmux", "-L", test_socket_name, "kill-server"], capture_output=True)
+    if shutil.which("tmux") is not None:
+        subprocess.run(["tmux", "-L", test_socket_name, "kill-server"], capture_output=True)
 
 
 @pytest.fixture()

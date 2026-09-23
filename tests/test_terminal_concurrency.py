@@ -50,7 +50,7 @@ def _open(device: str) -> dict:
 
 
 # ==========================================================================
-# Same-device serialization (Section 12)
+# Same-device serialization
 # ==========================================================================
 
 
@@ -124,7 +124,7 @@ def test_different_devices_max_concurrency_exceeds_one():
 
 
 # ==========================================================================
-# Open-vs-open same-device idempotency (Section 15)
+# Open-vs-open same-device idempotency
 # ==========================================================================
 
 
@@ -151,7 +151,7 @@ def test_concurrent_open_same_device_creates_exactly_one_session():
 
 
 # ==========================================================================
-# Open different devices concurrently (Section 16)
+# Open different devices concurrently
 # ==========================================================================
 
 
@@ -173,7 +173,7 @@ def test_open_different_devices_concurrently_both_succeed():
 
 
 # ==========================================================================
-# Cross-device isolation (Section 13)
+# Cross-device isolation
 # ==========================================================================
 
 
@@ -200,7 +200,7 @@ def test_send_routes_to_the_correct_devices_own_session():
 
 
 # ==========================================================================
-# Close-vs-operation race (Section 14)
+# Close-vs-operation race
 # ==========================================================================
 
 
@@ -259,7 +259,7 @@ def test_close_and_send_same_device_do_not_race():
 
 
 # ==========================================================================
-# Lock release on exception (Section 62)
+# Lock release on exception
 # ==========================================================================
 
 

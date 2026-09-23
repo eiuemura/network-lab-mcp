@@ -115,7 +115,7 @@ def test_all_four_fixtures_produce_expected_links():
     assert len(links) == 6  # two parallel links for each of the three router pairs
 
 
-# ---- unresolved-neighbor evidence (sections 42/68/70) ----
+# ---- unresolved-neighbor evidence ----
 
 
 def test_asr9001_remains_unresolved_and_is_not_a_managed_device():

@@ -281,14 +281,14 @@ def test_topology_device_paste(lab_root):
 
 # ---- standalone "!" separators (as produced by show-configuration output) ----
 #
-# Step A gave access-info's own three modes (access_info/access_device/
-# access_jump_host) a narrow, explicit meaning for a pasted standalone "!"
+# access-info's own three modes (access_info/access_device/
+# access_jump_host) give a pasted standalone "!" a narrow, explicit meaning
 # (exactly one level up, mirroring render_access_info_block()'s own
 # block-closing convention -- see _apply_structural_bang() in main.py).
 # This test previously asserted the OLD, now-fixed behavior ("!" always
-# ignored, which is exactly Step A bug 0.3: a rendered access-info block
+# ignored, which meant a rendered access-info block
 # could not be pasted back). It has been rewritten to assert the new,
-# correct, spec-mandated behavior instead of being left encoding a bug.
+# correct behavior instead of being left encoding a bug.
 # Full dedicated coverage (both access-info paste round-trip and the
 # unrelated-mode/global/EXEC no-op safety) lives in
 # test_structural_bang_paste.py.
@@ -313,7 +313,7 @@ def test_bang_inside_a_password_value_is_not_treated_as_a_separator(lab_root):
 
 
 def test_standalone_bang_in_topology_paste_remains_a_noop(lab_root):
-    """Step A section 27: the new structural "!" meaning is deliberately
+    """The structural "!" meaning is deliberately
     bounded to access-info's own three modes -- topology paste behavior
     is unchanged (a standalone "!" is still just dropped/ignored there)."""
     session = cfgmod.CliSession(lab_root)

@@ -67,7 +67,7 @@ class CliContext:
     # active_references, in committed order -- never candidate state and
     # never every stored reference file.
     committed_active_reference_names: tuple[str, ...] = ()
-    # `no <kind> <name>` (global configuration only, Step C/D): one field
+    # `no <kind> <name>` (global configuration only): one field
     # per definition kind, candidate-aware -- every stored name of that
     # kind when no dirty definition candidate is open; only the one
     # already-dirty identity of that *same* kind if an edit/pending-
@@ -739,7 +739,7 @@ def _build_global_root() -> Node:
     reference_next = reference_node.add_argument(reference_arg)
     reference_next.set_command("global.reference", "Create or edit a reference definition")
 
-    # `no <kind> <name>` (Step C/D): candidate deletion of a STORED
+    # `no <kind> <name>`: candidate deletion of a STORED
     # definition -- distinct from `config-running# no ...`, which (where
     # it exists at all) unsets/deactivates a *running-config selection*
     # instead, a completely separate candidate scope; see

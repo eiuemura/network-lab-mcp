@@ -58,7 +58,7 @@ def _track_bootstrap_close(monkeypatch):
 
 
 # ==========================================================================
-# Different-device overlap proof (Section 36)
+# Different-device overlap proof
 # ==========================================================================
 
 
@@ -91,7 +91,7 @@ def test_sequential_collector_would_not_satisfy_the_barrier():
 
 
 # ==========================================================================
-# Bounded worker concurrency (Section 37)
+# Bounded worker concurrency
 # ==========================================================================
 
 
@@ -124,7 +124,7 @@ def test_worker_concurrency_is_bounded(lab_root, monkeypatch):
 
 
 # ==========================================================================
-# Single-device regression (Section 38)
+# Single-device regression
 # ==========================================================================
 
 
@@ -140,7 +140,7 @@ def test_single_device_discovery_unchanged(lab_root, monkeypatch):
 
 
 # ==========================================================================
-# Deterministic aggregation ordering (Section 29)
+# Deterministic aggregation ordering
 # ==========================================================================
 
 
@@ -164,7 +164,7 @@ def test_result_ordering_is_deterministic_regardless_of_completion_order(lab_roo
 
 
 # ==========================================================================
-# Deterministic error attribution (Section 30) + fail-closed (Section 27)
+# Deterministic error attribution + fail-closed
 # ==========================================================================
 
 
@@ -203,7 +203,7 @@ def test_multiple_device_failures_still_fail_closed_with_zero_candidate_mutation
 
 
 # ==========================================================================
-# Unexpected worker exception (Section 31)
+# Unexpected worker exception
 # ==========================================================================
 
 
@@ -223,7 +223,6 @@ def test_unexpected_worker_exception_fails_closed_as_discovery_error(lab_root, m
 
 # ==========================================================================
 # Cleanup ownership: all bootstrap sessions closed in every outcome
-# (Sections 32/33)
 # ==========================================================================
 
 

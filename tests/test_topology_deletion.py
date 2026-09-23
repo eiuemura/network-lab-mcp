@@ -1,4 +1,4 @@
-"""`no topology <name>` (Step C): candidate-based deletion of a STORED
+"""`no topology <name>`: candidate-based deletion of a STORED
 topology definition, from global configuration mode.
 
 This is deliberately distinct from `config-running# no topology`, which
@@ -41,7 +41,7 @@ def _add_topology(lab_root, name, **fields):
 
 # ==========================================================================
 # Grammar: `no` (global-config only), `no topology <name>`, candidate-aware
-# provider, inline `?`, Tab, abbreviation (sections 46-51/22-24)
+# provider, inline `?`, Tab, abbreviation
 # ==========================================================================
 
 
@@ -123,7 +123,7 @@ def test_no_topology_abbreviation():
 
 
 # ==========================================================================
-# Candidate-aware help under dirty state (sections 22-24/50)
+# Candidate-aware help under dirty state
 # ==========================================================================
 
 
@@ -161,7 +161,7 @@ def test_no_topology_completion_full_when_clean(lab_root):
 
 
 # ==========================================================================
-# Candidate deletion: basic semantics (sections 14-21)
+# Candidate deletion: basic semantics
 # ==========================================================================
 
 
@@ -211,7 +211,7 @@ def test_nonexistent_topology_deletion_end_to_end(lab_root, capsys):
 
 
 # ==========================================================================
-# One-topology-candidate restriction (sections 2-5/25-27)
+# One-topology-candidate restriction
 # ==========================================================================
 
 
@@ -265,7 +265,7 @@ def test_pending_deletion_of_a_blocks_deletion_of_b(lab_root):
 
 
 def test_rejected_cross_topology_edit_end_to_end_via_paste(lab_root, capsys):
-    """Mandatory (section 74): edit lab_a, then attempt to delete lab_b in
+    """Edit lab_a, then attempt to delete lab_b in
     the same paste -- lab_a's edit is retained, the delete is rejected,
     no second topology candidate is created."""
     _add_topology(lab_root, "lab_a")
@@ -283,7 +283,7 @@ def test_rejected_cross_topology_edit_end_to_end_via_paste(lab_root, capsys):
 
 
 # ==========================================================================
-# Same-topology state transitions ARE allowed (sections 6-9/28-31)
+# Same-topology state transitions ARE allowed
 # ==========================================================================
 
 
@@ -352,7 +352,7 @@ def test_create_new_topology_then_delete_is_net_zero(lab_root):
 
 
 # ==========================================================================
-# `clear` cancels a pending deletion (section 19)
+# `clear` cancels a pending deletion
 # ==========================================================================
 
 
@@ -372,7 +372,7 @@ def test_clear_cancels_pending_deletion(lab_root):
 
 
 # ==========================================================================
-# Active-topology reference safety (sections 32-34)
+# Active-topology reference safety
 # ==========================================================================
 
 
@@ -391,7 +391,7 @@ def test_commit_fails_closed_when_deleting_the_active_topology(lab_root):
 
 
 def test_commit_succeeds_when_active_topology_is_switched_in_the_same_commit(lab_root):
-    """Section 33/34: a combined commit is safely supported here because
+    """A combined commit is safely supported here because
     the guard checks the *effective* settings_candidate, not the
     already-committed selection."""
     _add_topology(lab_root, "lab_c")
@@ -420,7 +420,7 @@ def test_deletion_never_cascades_to_running_config_selection(lab_root):
 
 
 # ==========================================================================
-# Persistence (sections 38-41/46-51/66-68)
+# Persistence
 # ==========================================================================
 
 
@@ -494,7 +494,7 @@ def test_deletion_not_recreatable_by_fresh_process(lab_root):
 
 
 # ==========================================================================
-# Filesystem safety (sections 42-44/52-55/85-86)
+# Filesystem safety
 # ==========================================================================
 
 
@@ -545,7 +545,7 @@ def test_symlink_topology_rejected_at_persistence_layer_directly(lab_root, tmp_p
 
 
 # ==========================================================================
-# Multi-line paste (sections 71-74)
+# Multi-line paste
 # ==========================================================================
 
 

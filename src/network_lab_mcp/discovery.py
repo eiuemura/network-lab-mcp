@@ -757,7 +757,7 @@ def parse_ipv4_interface_brief(raw_text: str) -> dict[str, tuple[str | None, str
     whitespace token and IP-Address is always the second, which is robust
     to that variation without depending on a fixed token count.
 
-    "unassigned" becomes None (Section 35) -- never the literal string,
+    "unassigned" becomes None -- never the literal string,
     never a fabricated address. Raises L3ParseError only when the
     "Interface ... IP-Address ... Vrf-Name" header itself is never found
     (e.g. an unsupported/mistyped command) -- a malformed individual row is
@@ -796,7 +796,7 @@ def parse_ip_interface_brief(raw_text: str) -> dict[str, str | None]:
     down", which would otherwise make a fixed-token-count split brittle --
     never needing to parse it at all sidesteps that entirely).
 
-    "unassigned" becomes None (Section 35). Raises L3ParseError only when
+    "unassigned" becomes None. Raises L3ParseError only when
     the "Interface ... IP-Address" header itself is never found."""
     interfaces: dict[str, str | None] = {}
     in_table = False
@@ -826,7 +826,7 @@ def parse_show_vrf(raw_text: str) -> dict[str, str]:
     """Parse classic IOS / IOS XE's `show vrf` into
     {canonical_interface_name: vrf_name} -- only non-default VRF
     membership; an interface never listed here is assumed `default` by the
-    caller (Section 32/36), never guessed here.
+    caller, never guessed here.
 
     The Name/Default-RD/Protocols/Interfaces columns are not fixed-width
     (e.g. "<not set>" is itself two whitespace tokens), so each row is read
@@ -872,12 +872,12 @@ def parse_show_vrf(raw_text: str) -> dict[str, str]:
 def _combine_ios_style_l3(
     ip_brief: dict[str, str | None], vrf_by_interface: dict[str, str]
 ) -> dict[str, tuple[str | None, str]]:
-    """Combine classic IOS/IOS XE's two required L3 sources (Section 31):
+    """Combine classic IOS/IOS XE's two required L3 sources:
     every interface `show ip interface brief` reports, paired with its VRF
-    from `show vrf` if listed there, else the literal `default` (Section
-    36) -- never guessed as default when `show vrf` itself failed to
-    parse (the caller only reaches this once *both* sources parsed
-    successfully; see discover_topology())."""
+    from `show vrf` if listed there, else the literal `default` -- never
+    guessed as default when `show vrf` itself failed to parse (the caller
+    only reaches this once *both* sources parsed successfully; see
+    discover_topology())."""
     return {name: (ipv4, vrf_by_interface.get(name, _DEFAULT_VRF)) for name, ipv4 in ip_brief.items()}
 
 
@@ -886,10 +886,10 @@ def _build_device_interface_fields(
 ) -> dict[str, dict | None]:
     """Turn one device's raw (interface -> (ipv4_or_None, vrf)) observation
     into the topology candidate's own {interface: {ipv4_address, vrf} |
-    None} shape (Section 40/41): a real, non-management-address
+    None} shape: a real, non-management-address
     observation becomes a dict to set; an explicitly-observed `unassigned`
     interface, or one whose address matches the access-info connection
-    address for this same device (Section 27 -- never persist the
+    address for this same device (never persist the
     management address into topology L3 data), becomes an explicit `None`
     removal signal so build_topology_devices_and_links() can safely drop
     any stale prior value for that same interface without erasing
@@ -981,7 +981,7 @@ def reconcile_links(
     field, which callers may use for diagnostics. A physical link is keyed
     by its unordered pair of (device, interface) endpoints, so two parallel
     links between the same router pair on different interfaces stay
-    distinct (section 46).
+    distinct.
 
     Two conflict cases are both reported (never silently resolved by
     picking one side), and both fail closed only for the specific local
@@ -1307,8 +1307,8 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
 
 def resolve_default_topology_name(lab_root=None) -> str:
     """The default Discovery target topology name: the committed selected
-    access-info definition's own name (section 53) -- same-basename is
-    only this default, never a runtime requirement (section 54). Exposed
+    access-info definition's own name -- same-basename is
+    only this default, never a runtime requirement. Exposed
     separately from discover_topology() so a caller (the CLI) can check
     candidate-switch safety *before* running the real, expensive Discovery
     flow, not just after."""
@@ -1332,7 +1332,7 @@ def build_topology_devices_and_links(result: DiscoveryResult, existing_candidate
     topology or an already-committed/candidate one). Conservative: never
     removes an existing device or link, and never duplicates a link that's
     already present (compared by its unordered (device, interface)
-    endpoint pair) -- see "Existing target topology behavior" (section 60).
+    endpoint pair).
     Pure/no I/O: the caller (cli/config.py) is responsible for actually
     writing the result into `session.definition_candidate`.
 
@@ -1340,10 +1340,10 @@ def build_topology_devices_and_links(result: DiscoveryResult, existing_candidate
     merged *per interface*, never with a blanket top-level dict.update()
     like every other field: a plain update() would silently replace the
     entire existing interfaces mapping, discarding L3 data for any
-    interface not re-observed this run (Section 40 -- absence/failure must
-    never erase previous data). Each interface's own value is either a
-    dict to set/overwrite, or `None` -- an explicit removal signal (Section
-    41, from an interface explicitly re-observed as `unassigned` or
+    interface not re-observed this run -- absence/failure must
+    never erase previous data. Each interface's own value is either a
+    dict to set/overwrite, or `None` -- an explicit removal signal (from
+    an interface explicitly re-observed as `unassigned` or
     excluded as a management address) that safely drops just that one
     interface's stale entry. A device with no L3 result at all this run
     (enrichment skipped/failed) simply has no "interfaces" key in

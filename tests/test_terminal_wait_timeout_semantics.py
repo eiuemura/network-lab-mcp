@@ -55,7 +55,7 @@ def fake_clock(monkeypatch):
 _NEVER_MATCHES_RE = terminal.re.compile(r"NEVER-APPEARS-PROMPT#\s*$")
 
 
-# ---- Test A: silent terminal (Section 8) ----
+# ---- Test A: silent terminal ----
 
 
 def test_wait_for_pattern_silent_terminal_times_out(monkeypatch, fake_clock):
@@ -71,7 +71,7 @@ def test_wait_for_pattern_silent_terminal_times_out(monkeypatch, fake_clock):
     assert 25.0 <= fake_clock.now < 25.0 + 0.3 + 1e-9
 
 
-# ---- Test B: continuous output, prompt never (yet) matches (Section 8) ----
+# ---- Test B: continuous output, prompt never (yet) matches ----
 
 
 def test_wait_for_pattern_continuous_new_output_does_not_extend_the_deadline(monkeypatch, fake_clock):
@@ -128,7 +128,7 @@ def test_wait_for_pattern_a_match_available_only_past_the_deadline_is_never_seen
     assert fake_clock.now < 26.0
 
 
-# ---- Test C: activity, then silence (Section 8) ----
+# ---- Test C: activity, then silence ----
 
 
 def test_wait_for_pattern_activity_then_silence_times_out_at_the_same_fixed_deadline(monkeypatch, fake_clock):

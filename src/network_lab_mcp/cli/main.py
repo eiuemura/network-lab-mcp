@@ -108,7 +108,7 @@ def _split_pasted_command_lines(text: str) -> list[str]:
     return lines
 
 
-# Step A access-info paste round-trip: rendered access-info configuration
+# access-info paste round-trip: rendered access-info configuration
 # closes every device/jump-host/definition block with a standalone "!"
 # (see render_access_info_block()), so pasting it back must let "!" close
 # the matching block -- otherwise a sibling "device R2" line right after
@@ -199,7 +199,7 @@ def prompt_text(session: cfgmod.CliSession) -> str:
 def _no_definition_candidate_names(
     session: cfgmod.CliSession, kind: str, all_names: tuple[str, ...]
 ) -> tuple[str, ...]:
-    """`no <kind> <name>` (Step C/D): see grammar.CliContext's
+    """`no <kind> <name>`: see grammar.CliContext's
     `no_<kind>_candidate_names` docstring for the exact rule -- every
     stored name of this kind when nothing (of any kind) is dirty; only
     this exact identity if it is the one already-dirty definition

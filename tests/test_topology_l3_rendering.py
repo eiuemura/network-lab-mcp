@@ -118,9 +118,8 @@ def test_delta_detects_interface_removed():
 
 def test_delta_detects_l3_only_change_with_device_type_unchanged():
     """The device's own `type` never changed -- only its interface data
-    did. This must still surface in the delta (Section 9's explicit
-    example), not disappear because the old field-order tuple was
-    `("type",)` only."""
+    did. This must still surface in the delta, not disappear because the
+    old field-order tuple was `("type",)` only."""
     original = {"name": "t", "devices": {"R1": {"type": "iosxr"}}, "links": []}
     candidate = {
         "name": "t",
@@ -198,7 +197,7 @@ def test_l3_only_candidate_edit_appears_in_show_configuration(lab_root, capsys):
     assert "ipv4_address 10.0.12.1" in out
 
 
-# ---- Section 10: Discovery result -> candidate -> review -> commit ->
+# ---- Discovery result -> candidate -> review -> commit ->
 # committed topology -> get_active_topology() all carry the same L3 data ----
 
 

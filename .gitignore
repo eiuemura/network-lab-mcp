@@ -6,6 +6,16 @@ build/
 dist/
 *.egg-info/
 
+# Test/coverage artifacts (pytest already ships its own nested
+# .pytest_cache/.gitignore, but an explicit top-level rule doesn't depend
+# on that generated file existing).
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor/OS artifacts.
+.DS_Store
+
 # Local runtime lab selection (private, machine-specific).
 lab/settings.yaml
 

@@ -292,7 +292,7 @@ def test_after_commit_running_config_shows_newly_committed_state(lab_root):
 
 
 # ==========================================================================
-# Step A bug 0.1: whole-object deletion was invisible in `show
+# Whole-object deletion was invisible in `show
 # configuration`. `_named_objects_delta()` only ever walked the candidate
 # map, so a device/jump-host removed via `no device <name>` / `no
 # jump-host <name>` never appeared in the delta at all, even though
@@ -356,7 +356,7 @@ def test_deletion_diff_shown_alongside_addition(lab_root):
     assert "  type iosxr" in text
 
 
-# ---- net-zero candidate changes never appear in the delta (Step A section 16) ----
+# ---- net-zero candidate changes never appear in the delta ----
 
 
 def test_add_then_delete_new_device_produces_no_net_diff(lab_root):
@@ -392,7 +392,7 @@ def test_modify_then_restore_leaf_produces_no_net_diff(lab_root):
     assert climain.render_configuration_candidate(session) == ""
 
 
-# ---- leaf deletion rendering (Step A section 13/39) ----
+# ---- leaf deletion rendering ----
 
 
 def test_cleared_leaf_of_existing_object_renders_as_no_field(lab_root):
@@ -414,7 +414,7 @@ def test_leaf_absent_from_committed_added_then_cleared_produces_no_diff(lab_root
     assert climain.render_configuration_candidate(session) == ""
 
 
-# ---- rendering scope is never commit scope (Step A section 41) ----
+# ---- rendering scope is never commit scope ----
 
 
 def test_device_scoped_show_never_implies_it_is_the_only_candidate_object(lab_root):

@@ -172,7 +172,7 @@ def _track_sends(monkeypatch) -> list[str]:
 
 
 # ==========================================================================
-# Direct SSH: positive path (Section 37)
+# Direct SSH: positive path
 # ==========================================================================
 
 
@@ -193,7 +193,7 @@ def test_password_send_count_is_exactly_one_on_success(monkeypatch, tmp_path):
 
 
 # ==========================================================================
-# Wrong-host / ambiguous prompt (Section 38)
+# Wrong-host / ambiguous prompt
 # ==========================================================================
 
 
@@ -210,7 +210,7 @@ def test_wrong_host_prompt_never_sends_password(monkeypatch, tmp_path):
 
 
 # ==========================================================================
-# Key/agent success: zero password sends (Section 41)
+# Key/agent success: zero password sends
 # ==========================================================================
 
 
@@ -223,7 +223,7 @@ def test_key_auth_success_sends_zero_passwords(monkeypatch, tmp_path):
 
 
 # ==========================================================================
-# No password configured (Section 42)
+# No password configured
 # ==========================================================================
 
 
@@ -237,7 +237,7 @@ def test_missing_configured_password_fails_safely(monkeypatch, tmp_path):
 
 
 # ==========================================================================
-# Repeated prompt after one send: fail closed, no second send (Section 43)
+# Repeated prompt after one send: fail closed, no second send
 # ==========================================================================
 
 
@@ -250,7 +250,7 @@ def test_repeated_prompt_after_send_fails_closed_without_resending(monkeypatch, 
 
 
 # ==========================================================================
-# Explicit authentication failure (Section 44)
+# Explicit authentication failure
 # ==========================================================================
 
 
@@ -263,7 +263,7 @@ def test_explicit_authentication_failure_message(monkeypatch, tmp_path):
 
 
 # ==========================================================================
-# Timeout (Section 45)
+# Timeout
 # ==========================================================================
 
 
@@ -279,7 +279,7 @@ def test_timeout_after_password_sent_fails_bounded(monkeypatch, tmp_path):
 
 
 # ==========================================================================
-# Session cleanup ownership (Section 18/55)
+# Session cleanup ownership
 # ==========================================================================
 
 
@@ -305,7 +305,7 @@ def test_pre_existing_session_is_not_destroyed_by_a_later_failed_open(monkeypatc
 
 
 # ==========================================================================
-# Pre-existing session already sitting at the password prompt (Section 19/46)
+# Pre-existing session already sitting at the password prompt
 # ==========================================================================
 
 
@@ -332,7 +332,6 @@ def test_preexisting_session_at_password_prompt_completes_authentication(monkeyp
 
 # ==========================================================================
 # Pre-existing already-authenticated session remains fully idempotent
-# (Section 20/47)
 # ==========================================================================
 
 
@@ -354,7 +353,7 @@ def test_preexisting_authenticated_session_is_untouched(monkeypatch, tmp_path):
 
 
 # ==========================================================================
-# Concurrency (Sections 26-28, 48-49)
+# Concurrency
 # ==========================================================================
 
 
@@ -460,7 +459,7 @@ def test_concurrent_different_device_authentication_overlaps_and_is_isolated(mon
 
 
 # ==========================================================================
-# Secret non-leak (Sections 50-53)
+# Secret non-leak
 # ==========================================================================
 
 

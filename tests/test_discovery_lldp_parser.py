@@ -69,7 +69,7 @@ def test_r4_fixture_parses_two_observations():
     assert {o.remote_device_id_raw for o in observations} == {"LAB_DC_R2.example"}
 
 
-# ---- robustness (section 66) ----
+# ---- robustness ----
 
 
 _HEADER = "Device ID       Local Intf                      Hold-time  Capability      Port ID"

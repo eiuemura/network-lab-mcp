@@ -77,7 +77,7 @@ def _open_discovery_fake(device: str, script: str = "sleep 5") -> None:
 
 
 # ==========================================================================
-# Observation backend: WAITING / ACTIVE / ENDED (Sections 26, 42-45)
+# Observation backend: WAITING / ACTIVE / ENDED
 # ==========================================================================
 
 
@@ -222,7 +222,6 @@ def test_discovery_race_target_vanishes_mid_observation(monkeypatch):
 
 # ==========================================================================
 # Capture race: target vanishes between the state check and the capture
-# (Section 27/49)
 # ==========================================================================
 
 
@@ -278,7 +277,7 @@ def test_stream_step_waiting_at_start_emits_nothing():
 
 
 def test_stream_step_basic_incremental_output():
-    """Section 34: poll1 -> A, poll2 -> A+B, poll3 -> A+B+C. Expected local
+    """poll1 -> A, poll2 -> A+B, poll3 -> A+B+C. Expected local
     output: A, then B, then C -- exactly once each."""
     cursor = climain._MonitorStreamCursor()
     fake = _fake_capture(
@@ -300,7 +299,7 @@ def test_stream_step_basic_incremental_output():
 
 
 def test_stream_step_unchanged_poll_emits_nothing_new():
-    """Section 33: several consecutive polls with no new output must
+    """several consecutive polls with no new output must
     append nothing beyond the very first poll's content."""
     cursor = climain._MonitorStreamCursor()
     fake = _fake_capture(
@@ -321,7 +320,7 @@ def test_stream_step_unchanged_poll_emits_nothing_new():
 
 
 def test_stream_step_repeated_identical_lines_preserved():
-    """Section 32/36: legitimate repeated lines (e.g. duplicate routes)
+    """legitimate repeated lines (e.g. duplicate routes)
     must never be collapsed as if they were duplicate polls."""
     cursor = climain._MonitorStreamCursor()
     fake = _fake_capture(
@@ -340,7 +339,7 @@ def test_stream_step_repeated_identical_lines_preserved():
 
 
 def test_stream_step_burst_output_preserved_even_if_it_exceeds_visible_pane():
-    """Section 31: a burst of output between two polls, larger than the
+    """a burst of output between two polls, larger than the
     tmux pane's own visible height (50 rows), must not be lost merely
     because the terminal/pane scrolled -- capture_device_terminal_view()
     is always called with lines=terminal.HISTORY_LIMIT precisely so the
@@ -365,7 +364,7 @@ def test_stream_step_burst_output_preserved_even_if_it_exceeds_visible_pane():
 
 
 def test_stream_step_session_generation_reset_does_not_suppress_new_instance():
-    """Section 36: instance A outputs READY, disappears, instance B (same
+    """instance A outputs READY, disappears, instance B (same
     session name) outputs READY again -- expected exactly twice, once per
     instance, never suppressed as a false duplicate."""
     cursor = climain._MonitorStreamCursor()
@@ -409,7 +408,7 @@ def test_stream_step_same_name_recreation_without_intermediate_waiting_poll():
 
 
 def test_stream_step_source_switch_produces_ordered_markers_no_duplication():
-    """Section 37: Discovery outputs DISCOVERY-A; managed takes over and
+    """Discovery outputs DISCOVERY-A; managed takes over and
     outputs MANAGED-A; managed disappears, Discovery (still active) is
     preferred again and outputs DISCOVERY-B. Expected scrollback: DISCOVERY-A,
     a transition marker, MANAGED-A, a transition marker, DISCOVERY-B -- no
@@ -438,7 +437,7 @@ def test_stream_step_source_switch_produces_ordered_markers_no_duplication():
 
 
 def test_stream_step_waiting_after_activity_prints_marker_once_then_nothing():
-    """Section 19/38: waiting must not print its marker repeatedly, and
+    """waiting must not print its marker repeatedly, and
     must not touch previously emitted content."""
     cursor = climain._MonitorStreamCursor()
     fake = _fake_capture(
@@ -459,7 +458,7 @@ def test_stream_step_waiting_after_activity_prints_marker_once_then_nothing():
 
 
 def test_stream_step_initial_context_is_bounded_not_full_history():
-    """Section 18: starting against an already-active session with a lot
+    """starting against an already-active session with a lot
     of prior content prints only a bounded recent window, never the
     entire history."""
     cursor = climain._MonitorStreamCursor()
@@ -519,7 +518,7 @@ def test_status_block_separators_match_terminal_width(monkeypatch):
 
 
 # ==========================================================================
-# Non-full-screen confirmation (Section 26)
+# Non-full-screen confirmation
 # ==========================================================================
 
 
@@ -529,7 +528,7 @@ def test_monitor_application_is_not_full_screen():
 
 
 # ==========================================================================
-# Monitor UI lifecycle through the real Application (Sections 42, 46, 47)
+# Monitor UI lifecycle through the real Application
 # ==========================================================================
 
 
@@ -643,10 +642,9 @@ def test_session_recreation_resumes_display():
 
 
 def test_waiting_does_not_erase_previously_streamed_activity():
-    """Section 38 (mandatory): Discovery outputs A/B/C, then disappears.
+    """Discovery outputs A/B/C, then disappears.
     The already-printed activity must remain in the captured local output,
-    and the status must become waiting -- this is the exact user-reported
-    issue this step fixes."""
+    and the status must become waiting."""
     device = "R1"
     _open_discovery_fake(device, "echo LINE-A; echo LINE-B; echo LINE-C; sleep 5")
 
@@ -686,7 +684,7 @@ def test_waiting_does_not_erase_previously_streamed_activity():
 
 
 def test_q_exit_preserves_streamed_activity():
-    """Section 39 (mandatory): activity already emitted is not cleared
+    """activity already emitted is not cleared
     by monitor shutdown, and the managed/Discovery session is untouched."""
     device = "R1"
     _open_fake(device, "echo KEEP-ME; sleep 5")
@@ -772,7 +770,7 @@ def test_other_keystrokes_are_ignored_never_forwarded():
 
 
 # ==========================================================================
-# No-write / read-only safety (Section 42)
+# No-write / read-only safety
 # ==========================================================================
 
 
@@ -941,7 +939,7 @@ def test_monitor_never_calls_any_mutating_helper_across_discovery_and_managed():
 
 
 # ==========================================================================
-# Multiple-monitor isolation (Section 44)
+# Multiple-monitor isolation
 # ==========================================================================
 
 

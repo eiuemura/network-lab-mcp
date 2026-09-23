@@ -41,7 +41,7 @@ def _settings(lab_root, **overrides):
 
 
 # ==========================================================================
-# "<none>" rendering (Change 2 / Sections 46-49 of the spec)
+# "<none>" rendering
 # ==========================================================================
 
 
@@ -270,7 +270,7 @@ def test_footer_not_shown_for_unrelated_running_tokens():
 
 # ==========================================================================
 # Grammar-level: footer never becomes a real candidate / never affects
-# parsing or Tab completion (Sections 41-45)
+# parsing or Tab completion
 # ==========================================================================
 
 
@@ -293,7 +293,7 @@ def test_running_no_tab_completion_only_lists_access_info_and_reference():
 
 
 # ==========================================================================
-# Semantic-drift guard (Section 18): the footer's claims must always
+# Semantic-drift guard: the footer's claims must always
 # match the real grammar shape.
 # ==========================================================================
 

@@ -49,9 +49,9 @@ _REAL_REPO_LOGS_ROOT = terminal.LOGS_ROOT  # captured once, before any monkeypat
 def isolated_logs(tmp_path, monkeypatch):
     logs_root = tmp_path / "logs" / "terminal"
     monkeypatch.setattr(terminal, "LOGS_ROOT", logs_root)
-    # Step A's real-lab incident (see git history) happened because an
-    # assumed redirection did not actually take effect. Prove it here,
-    # explicitly, before any destructive operation below can run.
+    # A prior real-lab incident happened because an assumed redirection
+    # did not actually take effect. Prove it here, explicitly, before any
+    # destructive operation below can run.
     assert terminal.LOGS_ROOT == logs_root
     assert terminal.LOGS_ROOT != _REAL_REPO_LOGS_ROOT
     assert tmp_path in terminal.LOGS_ROOT.parents

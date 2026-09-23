@@ -51,7 +51,7 @@ def test_reobserved_interface_updates_only_that_interface_not_the_whole_dict():
 def test_device_with_no_l3_result_this_run_keeps_all_prior_interfaces():
     """A device whose L3 enrichment failed/was skipped this run has no
     'interfaces' key at all in its DiscoveryResult fields -- its existing
-    candidate interfaces must be left completely untouched (Section 40)."""
+    candidate interfaces must be left completely untouched."""
     existing = {
         "devices": {
             "R1": {"type": "iosxr", "interfaces": {"Gi0/0": {"ipv4_address": "10.0.0.1", "vrf": "default"}}}

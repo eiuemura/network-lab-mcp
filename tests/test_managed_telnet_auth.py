@@ -74,7 +74,7 @@ def _write_script(tmp_path, name: str, body: str) -> list[str]:
 
 def _preamble() -> str:
     # Real native-telnet transport preamble -- must never be mistaken for
-    # login completion (Section 38).
+    # login completion.
     return 'echo "Trying 192.0.2.30..."\necho "Connected to 192.0.2.30."\necho "Escape character is \'^]\'."\necho\n'
 
 
@@ -186,7 +186,7 @@ def _track_sends(monkeypatch) -> list[str]:
 
 
 # ==========================================================================
-# Username + password flow (Section 42)
+# Username + password flow
 # ==========================================================================
 
 
@@ -200,10 +200,10 @@ def test_username_then_password_flow_succeeds(monkeypatch, tmp_path):
     # like a human typing it at a real Username: prompt would see it too
     # -- only the *password* is typed under suppressed echo (`stty -echo`,
     # mirroring real device/OpenSSH password-entry behavior), so only the
-    # password is expected to be absent from the raw pane transcript (see
-    # Section 19's "raw transcript" boundary: Network Lab MCP itself never
-    # deliberately logs/returns either value, which is what the MCP-
-    # boundary/exception/log non-leak tests below actually verify).
+    # password is expected to be absent from the raw pane transcript
+    # (Network Lab MCP itself never deliberately logs/returns either
+    # value, which is what the MCP-boundary/exception/log non-leak tests
+    # below actually verify).
     assert _SENTINEL_PASSWORD not in snapshot.pane_text
 
 
@@ -216,7 +216,7 @@ def test_username_and_password_are_each_sent_exactly_once(monkeypatch, tmp_path)
 
 
 # ==========================================================================
-# Password-only flow (Section 43)
+# Password-only flow
 # ==========================================================================
 
 
@@ -230,7 +230,7 @@ def test_password_only_flow_succeeds_without_sending_a_username(monkeypatch, tmp
 
 
 # ==========================================================================
-# Missing username (Section 44)
+# Missing username
 # ==========================================================================
 
 
@@ -247,7 +247,7 @@ def test_missing_configured_username_fails_safely(monkeypatch, tmp_path):
 
 
 # ==========================================================================
-# Missing password (Section 45)
+# Missing password
 # ==========================================================================
 
 
@@ -262,7 +262,7 @@ def test_missing_configured_password_fails_safely(monkeypatch, tmp_path):
 
 
 # ==========================================================================
-# Repeated password prompt: fail closed, no second send (Section 46)
+# Repeated password prompt: fail closed, no second send
 # ==========================================================================
 
 
@@ -275,7 +275,7 @@ def test_repeated_password_prompt_fails_closed_without_resending(monkeypatch, tm
 
 
 # ==========================================================================
-# Explicit login failure (Section 47)
+# Explicit login failure
 # ==========================================================================
 
 
@@ -289,7 +289,7 @@ def test_explicit_login_failure_message(monkeypatch, tmp_path):
 
 
 # ==========================================================================
-# Login timeout (Section 48)
+# Login timeout
 # ==========================================================================
 
 
@@ -313,7 +313,7 @@ def test_no_login_prompt_ever_appears_fails_bounded_and_leaves_session_usable(mo
 
 
 # ==========================================================================
-# Newly-created session cleanup on definitive failure (Section 28)
+# Newly-created session cleanup on definitive failure
 # ==========================================================================
 
 
@@ -337,7 +337,7 @@ def test_pre_existing_session_is_not_destroyed_by_a_later_failed_open(monkeypatc
 
 
 # ==========================================================================
-# Existing session states (Sections 20-21, 49-52)
+# Existing session states
 # ==========================================================================
 
 
@@ -420,7 +420,7 @@ def test_ambiguous_existing_session_is_never_injected_into(monkeypatch, tmp_path
 
 
 # ==========================================================================
-# Concurrency (Sections 30-31, 53-55)
+# Concurrency
 # ==========================================================================
 
 
@@ -605,7 +605,7 @@ def test_two_telnet_devices_authenticate_independently_without_crosstalk(monkeyp
 
 
 # ==========================================================================
-# Secret non-leak (Sections 56-59)
+# Secret non-leak
 # ==========================================================================
 
 

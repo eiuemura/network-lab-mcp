@@ -31,4 +31,4 @@ __license__ = _metadata_field("License")
 # Not a standard packaging metadata field, so pyproject.toml has nowhere to
 # put it; this constant is the single source of truth for it instead of a
 # second copy living in cli/main.py.
-__release_date__ = "2026-09-20"
+__release_date__ = "2026-09-23"

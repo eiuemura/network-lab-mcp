@@ -119,7 +119,7 @@ def test_version_matches_expected_release_metadata():
     import network_lab_mcp
 
     assert network_lab_mcp.__version__ == "0.1.0"
-    assert network_lab_mcp.__release_date__ == "2026-09-20"
+    assert network_lab_mcp.__release_date__ == "2026-09-23"
     assert network_lab_mcp.__author__ == "Eitaro Uemura"
     assert network_lab_mcp.__license__ == "GNU General Public License v3.0"
 

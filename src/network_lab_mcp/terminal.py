@@ -368,42 +368,62 @@ def _ensure_managed_session(session_name: str, command: list[str], *, log_device
     return reused
 
 
-def _send_literal_text(session_name: str, text: str) -> None:
+def _send_text_via_stdin(session_name: str, buffer_name: str, text: str) -> None:
+    """Deliver `text` into `session_name`'s pane without ever placing it in
+    a subprocess's own argv (a process listing on the host, or a
+    `f"...{' '.join(args)}..."`-style error message from a failed command,
+    could otherwise reveal it): `text` is piped to `tmux load-buffer -`
+    over stdin into a `buffer_name`-named buffer, then `tmux paste-buffer
+    -r -d` types that buffer's content into the pane and deletes the
+    buffer immediately afterward. `-r` ("no replacement") is required, not
+    optional -- paste-buffer's own default silently replaces every LF in
+    the buffer with a CR separator, which would corrupt any literal text
+    or secret containing an embedded newline; `-r` preserves every byte
+    exactly, matching `send-keys -l --`'s own literal, unmodified-byte
+    behavior (confirmed empirically against a real tmux session; see
+    tests/test_terminal_send_literal_text_injection.py). `buffer_name`
+    must be unique across concurrently-active sessions (the caller derives
+    it from `session_name`), so concurrent text delivery on different
+    sessions never shares a buffer. Neither this function's own tmux
+    command lines nor its error messages ever include `text` itself."""
     if not _session_exists(session_name):
         raise TerminalError(f"Session '{session_name}' does not exist.")
-    _run(["send-keys", "-t", session_name, "-l", "--", text])
-
-
-def _send_secret_text(session_name: str, secret: str) -> None:
-    """Like _send_literal_text(), but for credential input only (a
-    password, or a Telnet username): `tmux send-keys -l -- <text>` would
-    place `text` directly in that `tmux` subprocess's own argv for as long
-    as it runs -- fine for ordinary operator input, but not appropriate
-    for a credential, since a process listing on the host could reveal it.
-    Instead, the secret is piped to `tmux load-buffer -` over stdin (never
-    an argv element) into a session-specific named buffer, then
-    `tmux paste-buffer -d` types that buffer's content into the pane and
-    deletes the buffer immediately afterward. The buffer name is derived
-    from `session_name`, so concurrent authentication on different
-    sessions never shares a buffer."""
-    if not _session_exists(session_name):
-        raise TerminalError(f"Session '{session_name}' does not exist.")
-    buffer_name = f"secret-{session_name}"
     load_result = subprocess.run(
         _tmux_base() + ["load-buffer", "-b", buffer_name, "-"],
-        input=secret,
+        input=text,
         capture_output=True,
         text=True,
     )
     if load_result.returncode != 0:
         raise TerminalError(f"tmux command failed: load-buffer: {load_result.stderr.strip()}")
     try:
-        _run(["paste-buffer", "-d", "-b", buffer_name, "-t", session_name])
+        _run(["paste-buffer", "-r", "-d", "-b", buffer_name, "-t", session_name])
     finally:
         # Defensive: `paste-buffer -d` already deletes the buffer itself on
         # success; this only guards against a buffer surviving if
         # paste-buffer raised (e.g. the session vanished mid-operation).
         _run(["delete-buffer", "-b", buffer_name], check=False)
+
+
+def _send_literal_text(session_name: str, text: str) -> None:
+    """Ordinary operator/terminal_send() text -- see _send_text_via_stdin()
+    for why this never uses `send-keys -l --` (which would place `text` in
+    that tmux subprocess's own argv, and potentially in a raised
+    TerminalError's message on failure). `text` may itself be a username,
+    password, or other private configuration value being typed into a
+    device, so this path gets the same argv/error-message safety as
+    dedicated credential input, without changing terminal_send()'s public
+    byte-level delivery contract."""
+    _send_text_via_stdin(session_name, f"text-{session_name}", text)
+
+
+def _send_secret_text(session_name: str, secret: str) -> None:
+    """Dedicated credential input (a password, or a Telnet username): see
+    _send_text_via_stdin() for the shared transport. Kept as its own named
+    wrapper (rather than calling _send_text_via_stdin() directly at each
+    call site) so every credential call site reads unambiguously as
+    credential-handling code."""
+    _send_text_via_stdin(session_name, f"secret-{session_name}", secret)
 
 
 def _send_special_keys(session_name: str, keys: list[str]) -> None:
@@ -1195,7 +1215,7 @@ def _authenticate_managed_telnet_session(
         return  # success -- reached the device's own exec prompt
     if PASSWORD_PROMPT_RE.search(settled_last_line):
         # The same prompt reappeared -- the password was rejected. Never
-        # send it again: one attempt per call (Section 25/46).
+        # send it again: one attempt per call.
         raise TerminalError(f"Device '{device_name}': Telnet authentication failed (password rejected).")
     if _TELNET_AUTH_FAILURE_RE.search(settled):
         raise TerminalError(f"Device '{device_name}': Telnet authentication failed.")

@@ -244,6 +244,28 @@ def test_get_device_fails_closed_when_selected_access_info_missing(lab_root, mon
         lab.get_device("R1")
 
 
+def test_get_device_resolves_topology_and_access_info_from_one_settings_snapshot(lab_root, monkeypatch):
+    """get_device() must read settings.yaml exactly once and derive both
+    the active topology name and the active access-info name from that
+    single snapshot -- never two independent reads that could straddle a
+    concurrent human-CLI commit and resolve topology from one running-
+    config selection and access-info from a different, later one."""
+    monkeypatch.setattr(lab, "find_lab_root", lambda: lab_root)
+    real_read_settings = lab.read_settings
+    call_count = 0
+
+    def counting_read_settings(root=None):
+        nonlocal call_count
+        call_count += 1
+        return real_read_settings(root)
+
+    monkeypatch.setattr(lab, "read_settings", counting_read_settings)
+
+    lab.get_device("R1")
+
+    assert call_count == 1
+
+
 def test_old_global_ambiguity_search_no_longer_exists():
     # The old temporary global device-ID uniqueness limitation (a
     # cross-file search over every committed access-info definition) is

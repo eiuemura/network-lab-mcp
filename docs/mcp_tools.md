@@ -233,7 +233,14 @@ Examples:
 | `keys=["Enter"], enter=true` | Enter is sent **twice** — nothing is deduplicated |
 
 `text` may contain credentials (e.g. a password prompt response). It is
-never logged, never persisted, and never echoed back in the tool's response.
+delivered to the pane without ever passing through a subprocess's own argv
+or appearing in an error message, and this MCP server does not separately
+log it or echo it back in the tool's response. It is not hidden from the
+device's own terminal transcript, though: this project intentionally
+records the raw pane output via tmux `pipe-pane` (see [`show
+logging`](cli_reference.md#show-logging)), and if the remote endpoint
+echoes back what it received, that echo may naturally appear in that
+transcript like any other terminal output.
 
 **Important behavior — active-topology membership**: the device must still
 be present in the active topology, reloaded from disk on every call. An

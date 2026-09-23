@@ -752,17 +752,23 @@ def get_device(device_name: str) -> tuple[str, dict]:
       access-info definition (structurally impossible for a *committed*
       file, since validate_access_info_data() already rejects that, but a
       defensive check costs nothing).
+
+    Reads `settings.yaml` exactly once and resolves both the active
+    topology name and the active access-info name from that single
+    snapshot -- never two independent reads (one via a helper, one
+    directly), which could otherwise straddle a concurrent human-CLI
+    `commit` and resolve a topology from one running-config selection and
+    access-info from a different, later one.
     """
     lab_root = find_lab_root()
-    active = get_active_topology()
-    topology_devices = active["topology"].get("devices") or {}
+    settings = read_settings(lab_root)
+    topology_name = get_active_topology_name(settings)
+    topology = load_topology(topology_name, lab_root)
+    topology_devices = topology.get("devices") or {}
     topology_device = topology_devices.get(device_name)
     if topology_device is None:
-        raise LabConfigError(
-            f"Device '{device_name}' is not present in active topology '{active['active_topology']}'."
-        )
+        raise LabConfigError(f"Device '{device_name}' is not present in active topology '{topology_name}'.")
 
-    settings = read_settings(lab_root)
     access_info_name = get_active_access_info_name(settings)
     if not access_info_name:
         raise LabConfigError("No access-info is selected in running-config.")
@@ -795,7 +801,7 @@ def get_device(device_name: str) -> tuple[str, dict]:
             )
         access_device["jump_host_config"] = dict(jump_host)
 
-    return active["active_topology"], access_device
+    return topology_name, access_device
 
 
 # --------------------------------------------------------------------------

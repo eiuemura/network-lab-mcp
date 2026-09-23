@@ -59,13 +59,16 @@ def get_execution_instructions() -> dict:
 def terminal_open(device: str) -> dict:
     """Open (or reuse) a terminal session for a device in the active topology,
     launching ssh or telnet inside a dedicated tmux environment. The active
-    topology is reloaded from disk before opening the session. For SSH, an
-    interactive password prompt from the device itself is answered
+    topology is reloaded from disk before opening the session. An
+    interactive login prompt from the device itself is answered
     automatically using the active access-info definition's own private
-    password, once it can be safely confirmed to belong to the target
+    credentials, once it can be safely confirmed to belong to the target
     device (never a jump host) -- credentials are never returned by this
-    tool or any other. A host-key confirmation prompt, or any other
-    situation this cannot safely resolve on its own, is still left for
+    tool or any other. This works for SSH (the client's own password
+    prompt) and for Telnet (a classic-IOS-style Username:/Password:
+    sequence); which one applies depends on the device's own configured
+    transport. A host-key confirmation prompt, or any other situation this
+    cannot safely resolve on its own, is still left for
     terminal_read()/terminal_send() to handle interactively."""
     try:
         _, device_config = lab.get_device(device)
@@ -90,8 +93,14 @@ def terminal_send(
     literally first, then any `keys` (e.g. "C-c", "Tab", "Up") are sent in the
     supplied order, then Enter is sent last if `enter` is true. Nothing is
     deduplicated: passing keys=["Enter"] together with enter=true sends Enter
-    twice. The `text` value is never logged or echoed back, since it may
-    contain credentials."""
+    twice. `text` is delivered to the pane without ever passing through a
+    subprocess's own argv or appearing in an error message, and this MCP
+    server does not separately log or echo it back in any tool result. It
+    is not hidden from the device's own terminal transcript, though: this
+    project intentionally records the raw pane output via tmux pipe-pane
+    (see `show logging`), and if the remote endpoint echoes back what it
+    received, that echo may naturally appear in that transcript like any
+    other terminal output."""
     try:
         lab.verify_device_in_active_topology(device)
         return terminal.send_to_device(device, text, keys, enter)

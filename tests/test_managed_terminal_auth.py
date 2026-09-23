@@ -145,19 +145,29 @@ def _monkeypatch_transport(monkeypatch, command: list[str]) -> None:
 
 
 def _track_sends(monkeypatch) -> list[str]:
-    """Track every _send_literal_text() call while still forwarding to the
-    real implementation -- a fake replacement that merely records and
-    discards would also silently swallow _create_logged_session()'s own
-    use of _send_literal_text() to type the fake ssh command itself into
-    the pane, so nothing would ever actually run there."""
+    """Track every _send_literal_text()/_send_secret_text() call (in the
+    order they happen) while still forwarding to the real implementation --
+    a fake replacement that merely records and discards would also
+    silently swallow _create_logged_session()'s own use of
+    _send_literal_text() to type the fake ssh command itself into the pane,
+    so nothing would ever actually run there. The password itself is sent
+    via _send_secret_text() (Step 3.9 -- never _send_literal_text(), so it
+    never enters any subprocess's own argv), so both are tracked into the
+    same list to keep existing count/ordering assertions meaningful."""
     sent: list[str] = []
     real_send = terminal._send_literal_text
+    real_secret_send = terminal._send_secret_text
 
     def tracked(session_name, text):
         sent.append(text)
         return real_send(session_name, text)
 
+    def tracked_secret(session_name, secret):
+        sent.append(secret)
+        return real_secret_send(session_name, secret)
+
     monkeypatch.setattr(terminal, "_send_literal_text", tracked)
+    monkeypatch.setattr(terminal, "_send_secret_text", tracked_secret)
     return sent
 
 
@@ -333,6 +343,7 @@ def test_preexisting_authenticated_session_is_untouched(monkeypatch, tmp_path):
 
     sent = []
     monkeypatch.setattr(terminal, "_send_literal_text", lambda *a: sent.append(a[1]))
+    monkeypatch.setattr(terminal, "_send_secret_text", lambda *a: sent.append(a[1]))
     monkeypatch.setattr(terminal, "_send_enter", lambda *a: sent.append("<enter>"))
 
     result = terminal.open_device_terminal("R1", _DIRECT_CONFIG)
@@ -352,13 +363,20 @@ def test_concurrent_same_device_open_sends_password_at_most_once(monkeypatch, tm
     sent = []
     send_lock = threading.Lock()
     real_send = terminal._send_literal_text
+    real_secret_send = terminal._send_secret_text
 
     def tracked(session_name, text):
         with send_lock:
             sent.append(text)
         return real_send(session_name, text)
 
+    def tracked_secret(session_name, secret):
+        with send_lock:
+            sent.append(secret)
+        return real_secret_send(session_name, secret)
+
     monkeypatch.setattr(terminal, "_send_literal_text", tracked)
+    monkeypatch.setattr(terminal, "_send_secret_text", tracked_secret)
 
     results: list[dict] = []
     errors: list[Exception] = []
@@ -386,6 +404,7 @@ def test_concurrent_different_device_authentication_overlaps_and_is_isolated(mon
     sent: dict[str, list[str]] = {"R1": [], "R2": []}
     sent_lock = threading.Lock()
     real_send = terminal._send_literal_text
+    real_secret_send = terminal._send_secret_text
 
     def tracked(session_name, text):
         device = terminal.production_device_name(session_name)
@@ -393,7 +412,14 @@ def test_concurrent_different_device_authentication_overlaps_and_is_isolated(mon
             sent[device].append(text)
         return real_send(session_name, text)
 
+    def tracked_secret(session_name, secret):
+        device = terminal.production_device_name(session_name)
+        with sent_lock:
+            sent[device].append(secret)
+        return real_secret_send(session_name, secret)
+
     monkeypatch.setattr(terminal, "_send_literal_text", tracked)
+    monkeypatch.setattr(terminal, "_send_secret_text", tracked_secret)
 
     real_wait = terminal._wait_for_pattern
     entered: list[str] = []

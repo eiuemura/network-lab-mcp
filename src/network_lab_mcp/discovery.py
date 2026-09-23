@@ -181,7 +181,7 @@ def _login(device_id: str, device_config: dict) -> str:
     last_line = _last_nonblank_line(text)
     if terminal.PASSWORD_PROMPT_RE.search(last_line):
         password = _resolve_login_password(device_id, device_config, last_line)
-        terminal.send_to_bootstrap(device_id, password, None, True)
+        terminal.send_secret_to_bootstrap(device_id, password)
         text = terminal.wait_for_bootstrap_pattern(device_id, _IOSXR_PROMPT_RE, LOGIN_TIMEOUT_SECONDS)
     match = _IOSXR_PROMPT_RE.search(_last_nonblank_line(text))
     if not match:
@@ -218,14 +218,14 @@ def _login_ios_style(device_id: str, device_config: dict) -> str:
                 f"Device '{device_id}': a username prompt appeared but no username is configured in "
                 "the active access-info definition."
             )
-        terminal.send_to_bootstrap(device_id, str(username), None, True)
+        terminal.send_secret_to_bootstrap(device_id, str(username))
         text = terminal.wait_for_bootstrap_pattern(
             device_id, _IOS_STYLE_LOGIN_WAIT_RE, LOGIN_TIMEOUT_SECONDS, baseline_text=text
         )
         last_line = _last_nonblank_line(text)
     if terminal.PASSWORD_PROMPT_RE.search(last_line):
         password = _resolve_login_password(device_id, device_config, last_line)
-        terminal.send_to_bootstrap(device_id, password, None, True)
+        terminal.send_secret_to_bootstrap(device_id, password)
         text = terminal.wait_for_bootstrap_pattern(device_id, _IOS_STYLE_PROMPT_RE, LOGIN_TIMEOUT_SECONDS)
     match = _IOS_STYLE_PROMPT_RE.search(_last_nonblank_line(text))
     if not match:

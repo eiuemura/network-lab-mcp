@@ -374,6 +374,38 @@ def _send_literal_text(session_name: str, text: str) -> None:
     _run(["send-keys", "-t", session_name, "-l", "--", text])
 
 
+def _send_secret_text(session_name: str, secret: str) -> None:
+    """Like _send_literal_text(), but for credential input only (a
+    password, or a Telnet username): `tmux send-keys -l -- <text>` would
+    place `text` directly in that `tmux` subprocess's own argv for as long
+    as it runs -- fine for ordinary operator input, but not appropriate
+    for a credential, since a process listing on the host could reveal it.
+    Instead, the secret is piped to `tmux load-buffer -` over stdin (never
+    an argv element) into a session-specific named buffer, then
+    `tmux paste-buffer -d` types that buffer's content into the pane and
+    deletes the buffer immediately afterward. The buffer name is derived
+    from `session_name`, so concurrent authentication on different
+    sessions never shares a buffer."""
+    if not _session_exists(session_name):
+        raise TerminalError(f"Session '{session_name}' does not exist.")
+    buffer_name = f"secret-{session_name}"
+    load_result = subprocess.run(
+        _tmux_base() + ["load-buffer", "-b", buffer_name, "-"],
+        input=secret,
+        capture_output=True,
+        text=True,
+    )
+    if load_result.returncode != 0:
+        raise TerminalError(f"tmux command failed: load-buffer: {load_result.stderr.strip()}")
+    try:
+        _run(["paste-buffer", "-d", "-b", buffer_name, "-t", session_name])
+    finally:
+        # Defensive: `paste-buffer -d` already deletes the buffer itself on
+        # success; this only guards against a buffer surviving if
+        # paste-buffer raised (e.g. the session vanished mid-operation).
+        _run(["delete-buffer", "-b", buffer_name], check=False)
+
+
 def _send_special_keys(session_name: str, keys: list[str]) -> None:
     if not _session_exists(session_name):
         raise TerminalError(f"Session '{session_name}' does not exist.")
@@ -1012,7 +1044,7 @@ def _authenticate_managed_ssh_session(
         )
 
     baseline = text
-    _send_literal_text(session_name, outcome.password)
+    _send_secret_text(session_name, outcome.password)
     _send_enter(session_name)
     try:
         settled = _wait_for_pattern(
@@ -1121,7 +1153,7 @@ def _authenticate_managed_telnet_session(
                 f"Device '{device_name}': a username prompt appeared but no username is configured "
                 "in the active access-info definition."
             )
-        _send_literal_text(session_name, str(username))
+        _send_secret_text(session_name, str(username))
         _send_enter(session_name)
         try:
             text = _wait_for_pattern(
@@ -1150,7 +1182,7 @@ def _authenticate_managed_telnet_session(
         )
 
     baseline = text
-    _send_literal_text(session_name, outcome.password)
+    _send_secret_text(session_name, outcome.password)
     _send_enter(session_name)
     try:
         settled = _wait_for_pattern(
@@ -1443,6 +1475,19 @@ def send_to_bootstrap(device_name: str, text: str | None, keys: list[str] | None
             _send_special_keys(session_name, keys)
         if enter:
             _send_enter(session_name)
+
+
+def send_secret_to_bootstrap(device_name: str, secret: str) -> None:
+    """Like send_to_bootstrap(), but for credential input only (a Discovery
+    login's username or password): types `secret` without ever placing it
+    in any subprocess's own argv -- see _send_secret_text()'s own
+    docstring. Always followed by Enter, matching every current caller's
+    own usage (Discovery answers exactly one line of credential input at a
+    time)."""
+    session_name = derive_discovery_session_name(device_name)
+    with _session_lock(session_name):
+        _send_secret_text(session_name, secret)
+        _send_enter(session_name)
 
 
 def wait_for_bootstrap_pattern(

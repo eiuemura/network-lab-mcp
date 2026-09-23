@@ -29,7 +29,18 @@ import anyio
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
-from network_lab_mcp import mcp_server, terminal
+from network_lab_mcp import lab, mcp_server, terminal
+
+
+@pytest.fixture(autouse=True)
+def _patch_lab_root(lab_root, monkeypatch):
+    """terminal_send()/terminal_read() (Step 3.9) now verify the device is
+    present in the active topology before dispatching -- without this,
+    these tests would silently (and only by coincidence) depend on
+    whatever the real repository's own private lab/ directory happens to
+    define R1/R2 as, which is exactly the kind of test-isolation gap this
+    project's other test files already avoid via this same fixture."""
+    monkeypatch.setattr(lab, "find_lab_root", lambda: lab_root)
 
 
 # ==========================================================================

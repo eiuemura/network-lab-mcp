@@ -700,6 +700,32 @@ def get_execution_instructions() -> dict:
     }
 
 
+def verify_device_in_active_topology(device_name: str) -> None:
+    """Fail closed (LabConfigError) unless `device_name` is present in the
+    currently active topology -- reloaded from disk on every call, exactly
+    like get_active_topology()/get_device().
+
+    Used by terminal_send()/terminal_read() so that actively sending to or
+    reading from a device stays scoped to the active topology for the
+    whole lifetime of a session, not just at the moment terminal_open()
+    created it: an already-open session survives an active-topology
+    change (tmux sessions are persistent, Step 3.3), so without this check
+    terminal_open()'s own active-topology gate would be trivially bypassed
+    simply by reusing a session opened before the topology changed.
+
+    Deliberately does not affect terminal_list() (which continues to show
+    every managed session, so a session for a device no longer in the
+    active topology remains visible) or terminal_close() (which can always
+    close such a session) -- otherwise a stale session could become
+    impossible to discover or clean up."""
+    active = get_active_topology()
+    topology_devices = active["topology"].get("devices") or {}
+    if device_name not in topology_devices:
+        raise LabConfigError(
+            f"Device '{device_name}' is not present in active topology '{active['active_topology']}'."
+        )
+
+
 def get_device(device_name: str) -> tuple[str, dict]:
     """Verify `device_name` exists in the active topology, then resolve its
     private access information from the *selected* access-info definition

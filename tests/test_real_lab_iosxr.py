@@ -67,9 +67,11 @@ def test_real_device_login_and_required_commands(device_id, iosxr_targets):
 
     assert info["hostname"], f"{device_id}: no hostname resolved from the IOS XR prompt"
     assert info["show_version"].strip(), f"{device_id}: 'show version' returned empty output"
-    assert info["show_running_config"].strip(), f"{device_id}: 'show running-config' returned empty output"
-    # 'show lldp neighbors' may legitimately report zero neighbors; the
-    # command having executed without raising (above) is what's asserted.
+    # 'show running-config' is deliberately not collected (unused
+    # downstream; avoids persisting the device's full configuration into
+    # the terminal log for no benefit). 'show lldp neighbors' may
+    # legitimately report zero neighbors; the command having executed
+    # without raising (above) is what's asserted.
 
     logs = terminal.list_device_logs(device_id)
     assert logs, f"{device_id}: no terminal log file was created"

@@ -81,7 +81,10 @@ def terminal_send(
     keys: list[str] | None = None,
     enter: bool = False,
 ) -> dict:
-    """Send input to a device's open terminal session.
+    """Send input to a device's open terminal session. The device must
+    still be present in the active topology, reloaded from disk on every
+    call -- an already-open session does not stay usable if the active
+    topology changes to no longer include this device.
 
     Execution order is fixed and deterministic: if `text` is given it is sent
     literally first, then any `keys` (e.g. "C-c", "Tab", "Up") are sent in the
@@ -90,8 +93,9 @@ def terminal_send(
     twice. The `text` value is never logged or echoed back, since it may
     contain credentials."""
     try:
+        lab.verify_device_in_active_topology(device)
         return terminal.send_to_device(device, text, keys, enter)
-    except terminal.TerminalError as exc:
+    except (lab.LabConfigError, terminal.TerminalError) as exc:
         raise ToolError(str(exc)) from exc
 
 
@@ -101,25 +105,37 @@ def terminal_read(device: str, lines: int = terminal.DEFAULT_READ_LINES) -> dict
     the current prompt, command output, a password/interactive prompt, paging
     state, or unexpected errors. `lines` limits how much recent scrollback is
     returned (default 100); the underlying tmux session retains a much larger
-    history buffer."""
+    history buffer. The device must still be present in the active topology,
+    reloaded from disk on every call -- an already-open session does not
+    stay readable if the active topology changes to no longer include this
+    device."""
     try:
+        lab.verify_device_in_active_topology(device)
         return terminal.read_device(device, lines)
-    except terminal.TerminalError as exc:
+    except (lab.LabConfigError, terminal.TerminalError) as exc:
         raise ToolError(str(exc)) from exc
 
 
 @mcp.tool()
 def terminal_list() -> dict:
-    """List managed production terminal sessions for active-topology devices
-    only. Local validation sessions are never included, regardless of whether
-    a device happens to be named similarly to a validation identifier."""
+    """List every currently managed production terminal session,
+    regardless of whether each device is still present in the active
+    topology -- including a stale session left over from before the
+    active topology changed, so it remains visible and closeable via
+    terminal_close() even though terminal_send()/terminal_read() will
+    refuse to use it. Local validation sessions are never included,
+    regardless of whether a device happens to be named similarly to a
+    validation identifier."""
     return {"sessions": terminal.list_device_sessions()}
 
 
 @mcp.tool()
 def terminal_close(device: str) -> dict:
     """Close a device's managed production terminal session. Only ever targets
-    the production session namespace; cannot affect validation sessions."""
+    the production session namespace; cannot affect validation sessions.
+    Deliberately does not require the device to still be present in the
+    active topology, so a stale session left over from before the active
+    topology changed can always be closed."""
     try:
         return terminal.close_device_terminal(device)
     except terminal.TerminalError as exc:

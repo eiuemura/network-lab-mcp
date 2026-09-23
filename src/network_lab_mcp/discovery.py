@@ -322,14 +322,18 @@ def _disable_terminal_paging(device_id: str, prompt_re: re.Pattern) -> None:
 
 def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
     """IOS XR collection: log in, disable pagination, and collect the
-    read-only commands -- `show version`/`show running-config` (unused
-    downstream today, kept for diagnostic parity/future use), both
-    neighbor-discovery protocols (Step 3.6 Section 3: IOS XR gets LLDP and
-    CDP), and `show ipv4 interface brief` (Step 3.7 L3 enrichment,
-    collected tolerantly -- see _run_command_tolerant()). CDP/L3 being
-    unavailable is not a collection failure -- only a login, LLDP/CDP
-    command, or timeout failure is (DiscoveryError). The caller is
-    responsible for closing the bootstrap session either way."""
+    read-only commands -- `show version` (identity/diagnostic parity),
+    both neighbor-discovery protocols (IOS XR gets LLDP and CDP), and
+    `show ipv4 interface brief` (L3 enrichment, collected tolerantly --
+    see _run_command_tolerant()). `show running-config` is deliberately
+    not collected: nothing in the Discovery result, parser, or
+    reconciliation logic ever read it, so collecting the device's
+    complete configuration -- which can be large and carries far more
+    device-specific detail than Discovery needs -- would only persist
+    unnecessary information into the terminal log for no benefit. CDP/L3
+    being unavailable is not a collection failure -- only a login,
+    LLDP/CDP command, or timeout failure is (DiscoveryError). The caller
+    is responsible for closing the bootstrap session either way."""
     try:
         hostname = _login(device_id, device_config)
         # Discovery sessions are temporary and closed right after
@@ -337,7 +341,6 @@ def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
         # afterwards (see docs/architecture.md).
         _disable_terminal_paging(device_id, _IOSXR_PROMPT_RE)
         show_version = _run_command(device_id, "show version")
-        show_running_config = _run_command(device_id, "show running-config")
         show_lldp_neighbors = _run_command(device_id, "show lldp neighbors")
         show_cdp_neighbors = _run_command(device_id, "show cdp neighbors")
         show_ipv4_interface_brief = _run_command_tolerant(device_id, "show ipv4 interface brief", _IOSXR_PROMPT_RE)
@@ -346,7 +349,6 @@ def _bootstrap_collect(device_id: str, device_config: dict) -> dict:
     return {
         "hostname": hostname,
         "show_version": show_version,
-        "show_running_config": show_running_config,
         "show_lldp_neighbors": show_lldp_neighbors,
         "show_cdp_neighbors": show_cdp_neighbors,
         "show_ipv4_interface_brief": show_ipv4_interface_brief,

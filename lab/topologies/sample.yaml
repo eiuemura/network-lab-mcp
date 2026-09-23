@@ -5,7 +5,7 @@
 # connection data (address/transport/port/username/password) lives in a
 # separate access-info definition instead; see lab/access-info/sample.yaml.
 # The two are independent definitions -- filenames never associate a
-# topology with an access-info definition (see "Known limitations" in
+# topology with an access-info definition (see "Documentation" in
 # README.md).
 #
 # This file exists to validate YAML loading, MCP structured output, and

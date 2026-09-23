@@ -5,7 +5,7 @@
 # This is the only access-info YAML tracked in Git; every other file under
 # lab/access-info/ is a user's own private local data and stays gitignored
 # (see .gitignore). Its name is independent of any topology name -- the two
-# are never associated by filename (see "Known limitations" in README.md).
+# are never associated by filename (see "Documentation" in README.md).
 # terminal_open() resolves a device's access information from the
 # access-info definition *selected* in running-config's `active_access_info`
 # only -- never by searching other access-info files.
@@ -15,7 +15,9 @@
 #
 # IMPORTANT: the addresses below use the RFC 5737 documentation-only range
 # (192.0.2.0/24, "TEST-NET-1"). They are not reachable and must not be
-# treated as connectivity targets.
+# treated as connectivity targets. The password below (example-password)
+# is not a real credential -- create your own private access-info file
+# for a real lab; only this one fictional sample is tracked in git.
 
 name: sample
 

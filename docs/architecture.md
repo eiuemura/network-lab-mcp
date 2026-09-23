@@ -1,5 +1,7 @@
 # Architecture
 
+## Design goals
+
 Network Lab MCP provides a lightweight "AI Network Engineer Layer" designed to
 maximize the reasoning capabilities of AI in network lab environments.
 
@@ -13,13 +15,66 @@ thin layer that gives Claude Code (or any other MCP client) two things:
    ever handing Claude the private connection details.
 
 All actual network engineering judgment — what command to run next, how to
-interpret output, when a task is done — is left to Claude Code.
+interpret output, when a task is done — is left to Claude Code. This drives
+every other design choice in this document:
+
+- **Fail closed, never guess.** A missing selection, an unresolvable device,
+  a type mismatch, an ambiguous Discovery neighbor — each is a clear,
+  sanitized error rather than an inferred default.
+- **Human-observable terminals.** Sessions are driven the way a human
+  operator would drive one (read, decide, send), in a dedicated tmux
+  environment a human can watch live.
+- **Private data stays private.** Access-info (credentials, addresses) is
+  structurally separate from topology (safe logical data) and never crosses
+  the MCP boundary.
+- **Candidate before commit.** The human configuration CLI never writes
+  disk, and Claude Code never sees a change, until an explicit commit
+  succeeds.
+- **Discovery informs, never decides.** Topology discovery only ever
+  produces a candidate for human review — it never auto-commits and never
+  auto-selects the result as the active topology.
+- **Minimal surface.** Exactly seven MCP tools; no batch/parallel tool, no
+  generic automation framework, no second persistence layer alongside lab
+  YAML and tmux.
+
+## System overview
+
+```
+Claude Code                          Human Operator
+    |                                     |
+Network Lab MCP (this repository)   ./run_cli.sh (this repository)
+    |                                     |
+dedicated tmux environment           Candidate configuration -> commit
+(socket: network-lab-mcp)                 |
+    |                                Committed lab YAML
+ssh / telnet                              |  (running-config, topology,
+    |                                     |   access-info, scenario, reference)
+Lab Devices                          (read by Network Lab MCP above)
+```
+
+Two processes share one lab root:
+
+- **The MCP server** (`network-lab-mcp`, `src/network_lab_mcp/mcp_server.py`)
+  — a stdio MCP server exposing exactly seven tools to an MCP client. It
+  holds essentially no state of its own: lab YAML on disk is the single
+  source of truth for configuration, and tmux is the single source of truth
+  for terminal session lifetime.
+- **The human configuration CLI** (`./run_cli.sh`,
+  `src/network_lab_mcp/cli/`) — an IOS XR-compatible CLI a human operator
+  uses to create and edit lab definitions and the running-config selection,
+  through a candidate/commit model. It is a separate process that never
+  speaks the MCP stdio protocol, and it can also give a human a live,
+  read-only view of a terminal session the AI is driving (`monitor
+  terminal`).
+
+Both read and write the same committed lab YAML under `lab/`; a successful
+`commit` from the CLI is visible to the MCP server on its very next tool
+call, with no server restart.
 
 ## Configuration model
 
 Five kinds of lab data are deliberately kept separate (see README.md's
-[Configuration model](../README.md#configuration-model) for the reader-facing
-summary):
+[How it works](../README.md#how-it-works) for the reader-facing summary):
 
 ```
 Human
@@ -88,7 +143,7 @@ currently in committed `active_references` -- a reference that exists on
 disk but isn't selected is rejected, exactly like it isn't part of
 running-config anywhere else in this project.
 
-## Request path
+## MCP interface
 
 ```
 Claude Code
@@ -109,10 +164,34 @@ Lab Devices
 The MCP server itself is a thin translation layer: lab tools read YAML from
 disk and return it as structured data; terminal tools translate a logical
 device name into tmux commands, privately resolving access-info along the
-way (see "Device access resolution" below). It holds essentially no state of
-its own — tmux is the single source of truth for terminal session lifetime,
-and lab YAML on disk is the single source of truth for running-config/
-topology/access-info/scenario/reference content.
+way (see "Device access" below). See [mcp_tools.md](mcp_tools.md) for the
+full per-tool contract, including arguments, return shapes, and error
+behavior.
+
+### Lab YAML reload policy
+
+None of `get_active_topology()`, `get_execution_instructions()`, or
+`terminal_open()` cache lab YAML at server startup. Each reads
+`lab/settings.yaml` and whatever it references (including, for
+`terminal_open()`, every `lab/access-info/*.yaml` file) fresh from disk on
+every call. This means editing lab YAML, or committing a change from the
+human CLI, takes effect on the very next tool call, without restarting the
+MCP server.
+
+### Managed sessions vs. the active topology
+
+`terminal_open()`, `terminal_send()`, and `terminal_read()` all require the
+device to currently be present in the active topology (verified fresh on
+every call via `lab.verify_device_in_active_topology()`); `terminal_list()`
+and `terminal_close()` are deliberately unrestricted. This matters because
+managed sessions are persistent (tmux, not the MCP server, is their source
+of truth) and outlive a running-config change: without this check, a
+session opened while a device was in the active topology could keep being
+driven after that device left it, silently bypassing `terminal_open()`'s
+own membership gate. `terminal_list()` stays unrestricted so a stale
+session remains discoverable, and `terminal_close()` stays unrestricted so
+a stale session is never unclosable. See [mcp_tools.md](mcp_tools.md#managed-sessions-vs-the-active-topology)
+for the full per-tool table.
 
 ## Device access resolution
 
@@ -166,18 +245,24 @@ host within the same definition. No credential value ever appears in a
 "no access-info selected", "does not exist", "not present", "type
 mismatch", or "unknown jump host" error.
 
-### Access-info lookup is no longer global
+### Access-info lookup is scoped to one selected definition
 
-An earlier version of this resolver searched every committed
-`lab/access-info/*.yaml` file for a matching device ID and failed closed
-on ambiguity if more than one file contained it — a temporary, unscoped
-lookup used before running-config could explicitly select one access-info
-definition. That global search is now removed entirely (not bypassed): only
-the definition named by `active_access_info` is ever read. The same device
-ID may safely appear in other, unselected access-info files; selecting a
-different access-info in running-config (see `cli/config.py`'s
+Only the definition named by running-config's `active_access_info` is ever
+read for device resolution — there is no fallback search across every
+committed `lab/access-info/*.yaml` file. The same device ID may safely
+appear in other, unselected access-info files:
+
+```
+lab/access-info/lab_a.yaml   R1
+lab/access-info/lab_b.yaml   R1
+```
+
+With `active_access_info: lab_a`, `terminal_open("R1")` resolves `lab_a`'s
+`R1` only; selecting `lab_b` instead resolves `lab_b`'s `R1` instead.
+Selecting a different access-info in running-config (`cli/config.py`'s
 `select_access_info()`/`clear_access_info_selection()`) is what changes
-which one resolves a given device.
+which one resolves a given device — never a matching topology filename,
+edit recency, or alphabetical order.
 
 ### Single-hop OpenSSH ProxyJump
 
@@ -199,34 +284,17 @@ applied identically whether the data came from a CLI commit or a manually
 edited file. Nesting one jump host behind another is not represented in
 the schema at all, so multi-hop chains cannot occur even by mistake.
 
-## Installation model and lab root ownership
+### Topology/access-info device.type consistency
 
-Step 1 supports exactly one installation model: a local repository checkout
-installed with `pip install -e .`. The repository checkout **owns** the
-`lab/` directory. `network_lab_mcp.lab.find_lab_root()` resolves this
-directory relative to the installed package's own source location (its
-`__file__`), never relative to the current working directory of the process
-that launched the MCP server — Claude Code is normally started from an
-unrelated task workspace, so depending on its working directory would be
-incorrect.
-
-Non-editable or wheel installation (`pip install .`, a built wheel, or a
-package-index install) is **not a supported configuration in Step 1**: such
-an install has no `lab/` directory to find, since lab data is repository-local
-operational data rather than a packaged resource. Supporting that would
-require packaging work (e.g. `importlib.resources`, an external writable
-config directory, or an environment-variable-based lab-root override) that is
-explicitly deferred to a later step.
-
-## Lab YAML reload policy
-
-None of `get_active_topology()`, `get_execution_instructions()`, or
-`terminal_open()` cache lab YAML at server startup. Each reads
-`lab/settings.yaml` and whatever it references (including, for
-`terminal_open()`, every `lab/access-info/*.yaml` file) fresh from disk on
-every call. This means editing lab YAML, or committing a change from the
-Step 2 CLI, takes effect on the very next tool call, without restarting the
-MCP server.
+Topology and access-info are independent, separately authored definitions,
+so nothing stops them from disagreeing about the same device's platform.
+`terminal_open()` performs a lightweight runtime check when resolving a
+device — not a general cross-file consistency framework — and fails closed
+if both sides specify `type` and, once normalized through the shared
+`DEVICE_TYPES` enum, they disagree (`% Device type mismatch for '<device>'
+between topology and access information.`). If either side leaves `type`
+unset (already allowed), there is nothing to compare and resolution
+proceeds normally. Credential values are never included in this error.
 
 ## Terminal architecture
 
@@ -244,7 +312,60 @@ attempt to parse device prompts (IOS XR or otherwise). Instead, Claude Code
 reads the pane with `terminal_read()`, decides what a prompt means, and
 responds with `terminal_send()` — the same loop a human operator would use.
 
-### Concurrency model (Step 3.3)
+### Structurally separate session namespaces
+
+Three structurally distinct namespaces exist, chosen by the type of caller
+(production tool, Discovery, or internal validation), never by
+pattern-matching on a device's name:
+
+```
+Production:  network-lab-device-<device-id>
+Discovery:   network-lab-discovery-<device-id>
+Validation:  network-lab-validation-<validation-id>
+```
+
+`derive_production_session_name()`, `derive_discovery_session_name()`, and
+`derive_validation_session_name()` are the only functions that produce
+these names, and each only ever produces a name in its own namespace.
+Because the three prefixes are fixed and distinct strings, a session name
+can belong to at most one namespace — there is no ambiguity to resolve at
+runtime. Concretely, a topology device literally named `validation-router`
+maps to the production session `network-lab-device-validation-router`; it
+is not, and cannot become, a validation-namespace or Discovery-namespace
+session.
+
+The public tools (`terminal_open`, `terminal_send`, `terminal_read`,
+`terminal_list`, `terminal_close`) only ever derive and act on production
+session names. Discovery's bootstrap connectivity reuses the exact same
+`_build_transport_command()` (direct SSH and single-hop ProxyJump alike)
+and session primitives as production, in its own structurally separate
+namespace, so a Discovery session can never collide with, appear in, or be
+closed by any public `terminal_*` tool call. A small set of internal
+validation helpers (`open_validation_session`, `send_to_validation`,
+`read_validation`, `list_validation_sessions`, `close_validation_session`
+in `terminal.py`) only ever derive and act on validation session names, and
+exist purely to exercise the shared session-management primitives locally
+against a safe local command (e.g. `cat`) rather than `ssh`/`telnet` — this
+is internal only, adding no public "shell" transport and no new MCP tool.
+
+Because Discovery must work before a topology fully exists yet (its whole
+point is to help build one), its bootstrap session is opened directly
+against a selected access-info device by logical ID, with no
+active-topology membership check at all — unlike `terminal_open()`, which
+requires the device to be in the active topology. This is intentional and
+does not weaken `terminal_open()`'s own restriction, which is a completely
+separate code path. The one difference passed to `_build_transport_command()`
+for Discovery is `accept_new_host_keys=True` (`ssh -o
+StrictHostKeyChecking=accept-new`): Discovery is unattended, with no human
+to answer an interactive host-key confirmation prompt, so it avoids that
+prompt outright for a genuinely new host key, rather than automating the
+confirmation. It never bypasses a *changed*-host-key failure
+(`StrictHostKeyChecking=no`/`UserKnownHostsFile=/dev/null` are never used)
+— that remains a hard failure the operator must resolve themselves (e.g.
+`ssh-keygen -R <address>`) after independently verifying the new
+fingerprint really is the expected device.
+
+### Concurrency model
 
 The core invariant: **different devices execute concurrently; the same
 device's operations are serialized.**
@@ -260,45 +381,46 @@ R1 open/send/read/close      same device: serialized through one lock
 **MCP boundary.** The public MCP interface stays exactly the seven tools
 listed above -- there is no `terminal_send_parallel()` or batch API.
 Parallelism is a property of the existing tools' execution, not a new tool.
-Investigation of the MCP SDK in use (`mcp` 2.2.0) found that this already
-works with no change to `mcp_server.py`'s dispatch model: every incoming
-`tools/call` request (other than the connection handshake) is spawned as
-its own `anyio` task rather than awaited in place
-(`mcp.shared.jsonrpc_dispatcher.JSONRPCDispatcher._dispatch_request()`),
-and each `@mcp.tool()` function here is a plain synchronous `def`, which the
-framework invokes via `anyio.to_thread.run_sync()` -- offloaded to a real
-worker thread, never blocking the event loop other requests share. Two
-different-device tool calls issued back-to-back by an MCP client can
-therefore already overlap.
+The MCP SDK in use (`mcp` 2.2.0) already supports this with no change to
+`mcp_server.py`'s dispatch model: every incoming `tools/call` request (other
+than the connection handshake) is spawned as its own `anyio` task rather
+than awaited in place, and each `@mcp.tool()` function here is a plain
+synchronous `def`, which the framework invokes via
+`anyio.to_thread.run_sync()` -- offloaded to a real worker thread, never
+blocking the event loop other requests share. Two different-device tool
+calls issued back-to-back by an MCP client can therefore already overlap.
 
 **terminal.py serialization.** `terminal.py` keeps no session registry of
 its own (tmux remains the sole source of truth), so most operations are
 naturally device-isolated -- every tmux command is scoped to one session
-name derived from the device. Two real races existed before Step 3.3,
-both from check-then-act patterns:
-
-- Same-device `open`/`send`/`read`/`close` could interleave (e.g. two
-  concurrent `terminal_open()` calls for the same device could both see no
-  existing session and both try to create it, the second failing on
-  tmux's own duplicate-session error instead of reusing the first).
-- The very first session ever created in the tmux server's lifetime could
-  race across two *different* devices' simultaneous first opens (both
-  see an empty server and both try to create the shared bootstrap
-  session).
-
-The fix is one `threading.Lock` per underlying tmux session name
-(`terminal._session_lock()`, a small process-lifetime registry keyed by
-the already-validated session name -- never a single lock shared by every
-device, which would serialize all devices and defeat the point). Each
-public per-session operation (`open_device_terminal`, `send_to_device`,
-`read_device`, `close_device_terminal`, and the private Discovery bootstrap
-equivalents) holds that one lock for its whole body. The rare
-cross-device first-bootstrap race is handled separately, by making
+name derived from the device. Two real races are closed by one
+`threading.Lock` per underlying tmux session name (`terminal._session_lock()`,
+a small process-lifetime registry keyed by the already-validated session
+name -- never a single lock shared by every device, which would serialize
+all devices and defeat the point): same-device `open`/`send`/`read`/`close`
+interleaving (e.g. two concurrent `terminal_open()` calls for the same
+device both seeing no existing session and both trying to create it), and a
+rare cross-device race on the very first session the tmux server ever
+creates. Each public per-session operation (`open_device_terminal`,
+`send_to_device`, `read_device`, `close_device_terminal`, and the private
+Discovery bootstrap equivalents) holds that one lock for its whole body.
+The cross-device first-bootstrap race is handled separately, by making
 `_ensure_tmux_environment()` tolerate losing that race rather than by a
 second lock. `terminal_list()` stays unlocked: it is a read-only query
 that tmux itself answers atomically.
 
-### Live read-only human monitoring (Step 3.4 / 3.4a / 3.4b)
+**Discovery's own per-device collection also runs concurrently** (bounded
+`concurrent.futures.ThreadPoolExecutor`, `DISCOVERY_MAX_WORKERS = 8` — a
+small internal constant, not a CLI/config knob), while a single device's
+own command sequence stays strictly ordered within its own worker.
+Aggregation and error reporting are always by original target order, never
+by whichever thread happened to finish first, so scheduler order can never
+change which device's result lands where or which device's failure is the
+one reported. Any collection failure — expected or an unexpected worker
+exception (converted to a bounded error, never a leaked raw traceback) —
+still fails the whole operation with zero candidate mutation.
+
+### Live read-only human monitoring
 
 ```
                         AI / MCP
@@ -351,14 +473,14 @@ observation implementation. Both paths use only `_pane_state()`/
 `_capture_pane()` (has-session/list-panes/capture-pane equivalents), never
 `send-keys`/`new-session`/`kill-session`; observing a Discovery session
 never creates one (only `discover_topology()` does that) and never delays
-its cleanup. It is deliberately not wrapped in the Step 3.3 per-device
-lock: every call it makes is already a plain read, the only "race" it
-could have (a session disappearing between its own two tmux calls, in
-either namespace) is exactly the WAITING/fallback transition it is
-designed to tolerate rather than prevent, and since `monitor terminal`
-normally runs in a separate `./run_cli.sh` process with its own empty,
-process-local lock registry, taking that lock here could not provide real
-cross-process exclusion anyway.
+its cleanup. It is deliberately not wrapped in the per-device lock the
+concurrency model above uses: every call it makes is already a plain read,
+the only "race" it could have (a session disappearing between its own two
+tmux calls, in either namespace) is exactly the WAITING/fallback transition
+it is designed to tolerate rather than prevent, and since `monitor
+terminal` normally runs in a separate `./run_cli.sh` process with its own
+empty, process-local lock registry, taking that lock here could not
+provide real cross-process exclusion anyway.
 
 The monitor models exactly three states -- `waiting` (neither session
 exists), `active` (the selected session/pane is alive), `ended` (pane
@@ -375,52 +497,50 @@ lifetime is independent of session lifetime by design: it starts in
 live display once a session (managed or Discovery) exists again; only the
 human quitting (`q`/`Q`/Ctrl-C) ends it.
 
-**Scrollback-preserving UI (Step 3.4b).** The monitor's `prompt_toolkit`
-`Application` is `full_screen=False` -- it never switches to the alternate
-screen buffer, so everything it prints stays in the terminal emulator's own
+**Scrollback-preserving UI.** The monitor's `prompt_toolkit` `Application`
+is `full_screen=False` -- it never switches to the alternate screen
+buffer, so everything it prints stays in the terminal emulator's own
 normal scrollback exactly like ordinary command output, both during and
 after the run. A background `asyncio` task (`cli/main.py`'s
-`_monitor_poll_loop()`, driven by the same `refresh_interval` cadence as
-before -- no busier than Step 3.4/3.4a) polls
-`capture_device_terminal_view()`, and prints any new activity via
-`run_in_terminal()` (the same "print permanently above a live area"
-mechanism the CLI's own `?`/Tab key bindings already use) -- never a manual
-`termios`/`tty`/`fcntl` clear/redraw. Only a small 3-line status block at the
-bottom (`Monitoring terminal <device> | Read-only | Source: ... | Status:
-... | q: quit`, width-adaptive via `shutil.get_terminal_size()`) is
-continuously redrawn in place; on exit, `prompt_toolkit`'s own
-`renderer.erase()` removes just that live area, leaving everything already
-printed untouched.
+`_monitor_poll_loop()`) polls `capture_device_terminal_view()`, and prints
+any new activity via `run_in_terminal()` (the same "print permanently above
+a live area" mechanism the CLI's own `?`/Tab key bindings already use) --
+never a manual `termios`/`tty`/`fcntl` clear/redraw. Only a small 3-line
+status block at the bottom (`Monitoring terminal <device> | Read-only |
+Source: ... | Status: ... | q: quit`, width-adaptive via
+`shutil.get_terminal_size()`) is continuously redrawn in place; on exit,
+`prompt_toolkit`'s own `renderer.erase()` removes just that live area,
+leaving everything already printed untouched.
 
 **Incremental stream (`cli/main.py`'s `_monitor_stream_step()` /
 `_MonitorStreamCursor`).** Each poll calls `capture_device_terminal_view()`
 with `lines=terminal.HISTORY_LIMIT` (its full-history mode -- tmux's
 `capture-pane -S -` already captures up to the 20000-line history-limit
 regardless of the `lines` argument, so this costs no extra tmux call
-compared to the small on-screen window Step 3.4/3.4a used; only how much of
-that same captured text is returned changes). The cursor tracks, per
-monitor run, how many lines of the current source's output have already
-been streamed, and diffs by list position (never by string search), so:
-repeated identical lines (e.g. duplicate routes) are never collapsed;
-output that arrives in a burst larger than the pane's own visible height is
-never lost merely because the visible pane scrolled, since the full
-history buffer -- not just the screen -- is what gets compared; and an
-unchanged poll appends nothing. A session being recreated under the same
-name is detected without any extra tmux identity query (no `pane_id`/
-`session_id` lookup): a fresh pane's history never shares the previously
-seen prefix, so the same position-based integrity check that powers normal
-incremental diffing also catches recreation, treated identically to an
-explicit source switch -- both start a bounded initial-context window
-(`terminal.DEFAULT_READ_LINES`, matching the pre-3.4b "visible pane"
-convention) rather than replaying the entire history, and both print a
-small one-line `[monitor] ...` marker (`started`/`switched to ...`/`ended;
-waiting`/`resumed`) so scrollback stays legible without being flooded on
-every ordinary poll. The one honestly-acknowledged limitation: if a single
-session's own output exceeds the 20000-line history-limit, tmux itself
-starts evicting its oldest lines, which this cursor cannot distinguish from
-a genuine recreation -- handled the same safe way (a bounded fresh context,
-never a crash or silently dropped correctness), just occasionally
-reprinting a small amount of already-seen tail content in that rare case.
+compared to a small on-screen window; only how much of that same captured
+text is returned changes). The cursor tracks, per monitor run, how many
+lines of the current source's output have already been streamed, and diffs
+by list position (never by string search), so: repeated identical lines
+(e.g. duplicate routes) are never collapsed; output that arrives in a burst
+larger than the pane's own visible height is never lost merely because the
+visible pane scrolled, since the full history buffer -- not just the screen
+-- is what gets compared; and an unchanged poll appends nothing. A session
+being recreated under the same name is detected without any extra tmux
+identity query (no `pane_id`/`session_id` lookup): a fresh pane's history
+never shares the previously seen prefix, so the same position-based
+integrity check that powers normal incremental diffing also catches
+recreation, treated identically to an explicit source switch -- both start
+a bounded initial-context window (`terminal.DEFAULT_READ_LINES`, matching
+the "visible pane" convention) rather than replaying the entire history,
+and both print a small one-line `[monitor] ...` marker (`started`/
+`switched to ...`/`ended; waiting`/`resumed`) so scrollback stays legible
+without being flooded on every ordinary poll. The one honestly-acknowledged
+limitation: if a single session's own output exceeds the 20000-line
+history-limit, tmux itself starts evicting its oldest lines, which this
+cursor cannot distinguish from a genuine recreation -- handled the same
+safe way (a bounded fresh context, never a crash or silently dropped
+correctness), just occasionally reprinting a small amount of already-seen
+tail content in that rare case.
 
 Multiple monitors -- of the same or different devices, from separate CLI
 processes -- are fully independent: tmux remains the only session state,
@@ -440,37 +560,6 @@ remains the durable historical-evidence SSOT, unaffected by any of this --
 the monitor never creates a log, never touches `pipe-pane`, and never
 writes captured pane text anywhere but the local terminal.
 
-### Structurally separate session namespaces
-
-Two structurally distinct namespaces exist, chosen by the type of caller
-(production tool vs. internal validation), never by pattern-matching on a
-device's name:
-
-```
-Production:  network-lab-device-<device-id>
-Validation:  network-lab-validation-<validation-id>
-```
-
-`derive_production_session_name()` and `derive_validation_session_name()` are
-the only two functions that produce these names, and each only ever produces
-a name in its own namespace. Because the two prefixes are fixed and distinct
-strings, a session name can belong to at most one namespace — there is no
-ambiguity to resolve at runtime. Concretely, a topology device literally
-named `validation-router` maps to the production session
-`network-lab-device-validation-router`; it is not, and cannot become, a
-validation-namespace session such as `network-lab-validation-terminal-io`.
-
-The public tools (`terminal_open`, `terminal_send`, `terminal_read`,
-`terminal_list`, `terminal_close`) only ever derive and act on production
-session names. A small set of internal validation helpers
-(`open_validation_session`, `send_to_validation`, `read_validation`,
-`list_validation_sessions`, `close_validation_session` in `terminal.py`) only
-ever derive and act on validation session names. Both sets of callers share
-the same underlying session-management primitives (session creation/reuse,
-send text/keys, capture pane, list, close) — local validation exercises the
-real production code path, just against a safe local command (e.g. `cat`)
-instead of `ssh`/`telnet`.
-
 ### Persistent terminal session logging
 
 Every device session -- production and Discovery's private bootstrap
@@ -482,12 +571,13 @@ mechanism: nothing here re-renders or duplicates pane content into a
 second application log, and `terminal_send()`'s payload is never logged
 separately from what the pane/log itself already shows. tmux's pane
 remains the runtime session source of truth and `terminal_read()` is
-completely unchanged -- the log is a separate, write-only, persistent
+completely unaffected -- the log is a separate, write-only, persistent
 historical record at `logs/terminal/<device-id>/<session-start>.log`
 (`YYYYMMDDTHHMMSS`), which is gitignored. `show logging` (EXEC only, see
-below) is the only reader of these files.
+[cli_reference.md](cli_reference.md#show-logging)) is the only reader of
+these files.
 
-### Terminal log deletion (Step B / Step B.1 / Step B.1a)
+### Terminal log deletion
 
 `delete logging all` / `delete logging <device-id> all` / `delete
 logging <device-id> <log-file>` (files only) and `delete logging all
@@ -499,19 +589,6 @@ enumeration `show logging` reads (`list_logged_device_ids()` /
 `list_device_logs()`) -- a symlink (a log file, or a device directory
 itself) is excluded, never followed or treated as eligible.
 
-`show logging`'s own command surface briefly conflated two different
-views: Step B.1 changed bare `show logging` from its original flat
-per-file listing into the per-device eligible-log-count summary. Step
-B.1a split these back into two separate commands -- bare `show logging`
-is once again the original flat listing (`h_show_logging()` in
-cli/main.py, restored verbatim from the Step B implementation), and
-`show logging summary` (`h_show_logging_summary()`) is the count table,
-reachable as `logging`'s `summary` literal child living alongside its
-existing dynamic `<device-id>` argument -- the same "a node combines
-fixed literal children with a further dynamic argument" grammar shape
-Step B/B.1 already introduced for `delete logging`'s `all`/`directory`,
-reused here with no further grammar core changes.
-
 `terminal.DeletionPlan` is the shared unit of work: an immutable,
 comparable (`==`) snapshot of exactly which files and which device
 directories one operation would touch. Each `build_*_deletion_plan()`
@@ -520,12 +597,11 @@ function (`build_file_deletion_plan`, `build_device_all_deletion_plan`,
 `build_global_directory_deletion_plan`) either raises `TerminalError`
 (nothing eligible, or something unsafe) or returns a plan; none of them
 ever prompt or read input -- `cli/main.py` owns confirmation and message
-text entirely (Step B.1's boundary: interactive `[y/N]` behavior does not
-belong inside the logging backend). `apply_deletion_plan()` unlinks the
-plan's files, then `rmdir`s its directories (never `shutil.rmtree`/a
-recursive delete) -- non-recursive by construction, so an unexpected
-directory content can only ever block a plan at build time, never cause
-a partial deletion at apply time.
+text entirely (deletion backend never handles interactive `[y/N]` input
+itself). `apply_deletion_plan()` unlinks the plan's files, then `rmdir`s
+its directories (never `shutil.rmtree`/a recursive delete) -- non-recursive
+by construction, so an unexpected directory content can only ever block a
+plan at build time, never cause a partial deletion at apply time.
 
 `cli/main.py`'s `_confirm_and_apply()` is the shared confirm-then-verify
 flow every destructive handler uses: build the plan once (to compute
@@ -541,9 +617,9 @@ a re-preflight failure, which propagates as an ordinary `TerminalError`)
 aborts with nothing deleted; only an unchanged, still-safe plan is ever
 applied. `_read_confirmation_line()`/`_confirm_delete()` use plain
 `input()`, never `PromptSession`, so a confirmation answer can never
-reach `MaskingHistory`. A destructive command reached through
-`execute_input_block()`'s multi-line paste path always fails closed
-(`execute_command_line(..., interactive=False)` threads a synthetic
+reach the CLI's command-history masking. A destructive command reached
+through `execute_input_block()`'s multi-line paste path always fails
+closed (`execute_command_line(..., interactive=False)` threads a synthetic
 `"_interactive": False` into the handler's `args`) instead of blocking on
 stdin or risking the next pasted line being misread as the answer --
 every other handler ignores that key entirely.
@@ -584,41 +660,13 @@ whole operation. `logs/terminal/` itself is never a removal target, only
 its valid, non-symlink direct child device directories are; unrelated
 files directly under it are left alone. Deletion never closes a session,
 stops `pipe-pane`, or otherwise touches session lifecycle; that remains
-entirely the concern of `terminal_close()`/Discovery's own cleanup.
-
-### A third session namespace: Discovery bootstrap
+entirely the concern of `terminal_close()`/Discovery's own cleanup. If a
+production or Discovery session currently exists for a device, an attempt
+to delete its logging directory fails with:
 
 ```
-Production:  network-lab-device-<device-id>
-Validation:  network-lab-validation-<validation-id>
-Discovery:   network-lab-discovery-<device-id>
+% Cannot delete logging directory for '<device>' while a managed terminal session is still open.
 ```
-
-Step 3's Discovery bootstrap connectivity reuses the exact same
-`_build_transport_command()` (direct SSH and single-hop ProxyJump alike)
-and session primitives as production, in this third, structurally
-separate namespace, so a Discovery session can never collide with,
-appear in, or be closed by any public `terminal_*` tool call -- the public
-`terminal_open()` topology-membership restriction is completely
-unaffected. The one difference passed to `_build_transport_command()` is
-`accept_new_host_keys=True` (`ssh -o StrictHostKeyChecking=accept-new`):
-Discovery is an unattended flow with no human to answer an interactive
-host-key confirmation prompt, so it avoids that prompt outright for a
-genuinely new host key, rather than automating the confirmation. It never
-bypasses a *changed*-host-key failure (`StrictHostKeyChecking=no`/
-`UserKnownHostsFile=/dev/null` are never used) -- that remains a hard
-failure the operator must resolve themselves (e.g. `ssh-keygen -R
-<address>`) after independently verifying the new fingerprint really is
-the expected device, exactly as OpenSSH's own normal host-key security
-model requires.
-
-Because Discovery must work before a topology fully exists yet (its
-whole point is to help build one), the bootstrap session is opened
-directly against a selected access-info device by logical ID, with no
-active-topology membership check at all -- unlike `terminal_open()`, which
-requires the device to be in the active topology. This is intentional and
-does not weaken `terminal_open()`'s own restriction, which is a completely
-separate code path.
 
 ### Minimal internal command runner
 
@@ -639,8 +687,8 @@ it, which is what lets `_bootstrap_collect_iosxe()`/`_bootstrap_collect_
 ios()` reuse the exact same send/wait/slice runner with the shared
 classic-IOS-style prompt shape (`_IOS_STYLE_PROMPT_RE`, matching a
 `hostname#`/`hostname>` line in full) instead of writing a second command
-runner. `_run_command_tolerant()` (Step 3.7) wraps this the same way for
-the *optional* L3 enrichment commands only: it catches `TerminalError` and
+runner. `_run_command_tolerant()` wraps this the same way for the
+*optional* L3 enrichment commands only: it catches `TerminalError` and
 returns `""` instead of raising, so a transport-level hang on one of
 those specific commands degrades to "L3 unavailable for this device"
 rather than failing the whole device -- every other command (login, LLDP,
@@ -653,71 +701,55 @@ function from `_login()` -- not a generalized/parameterized version of it
 that classic IOS/IOS XE never produces. It answers at most one optional
 `Username:` prompt (some login configurations show one, some don't) and
 one `Password:` prompt, reusing `_resolve_login_password()`/`terminal.
-resolve_target_password_prompt()` unchanged for the password itself --
-see the next section for why no telnet-specific attribution logic was
-needed. Introduced in Step 3.6 as `_login_iosxe()` (IOS XE only); renamed
-in Step 3.7 to `_login_ios_style()` once classic IOS started reusing the
-exact same login sequence unchanged -- the old name would have been
-actively misleading once a second, non-XE caller existed. This is the
-"shared IOS-style login primitive" refactor, deliberately scoped to just
-the login step: `_bootstrap_collect_iosxe()` and `_bootstrap_collect_ios()`
-remain two separate, explicit collector functions (each listing its own
-small set of commands) rather than one parametrized collector -- Step 3.7
-explicitly avoids a generalized multi-vendor collection framework.
+resolve_target_password_prompt()` unchanged for the password itself (see
+"Shared safe SSH password-prompt attribution" below for why no
+telnet-specific attribution logic was needed). `_bootstrap_collect_iosxe()`
+and `_bootstrap_collect_ios()` remain two separate, explicit collector
+functions (each listing its own small set of commands) rather than one
+parametrized collector — this project deliberately avoids a generalized
+multi-vendor collection framework.
 
-### Discovery disables terminal paging before collection (Step 3.7a)
+### Discovery disables terminal paging before collection
 
-A real IOS XE C9200L Discovery run failed: `show version`'s output
-stopped at the device's own `--More--` pager prompt (which never returns
-the expected exec prompt), and the whole device's collection timed out.
-IOS XR already sent `terminal length 0` immediately after login (since
-Step 3, via a bare inline `_run_command()` call); IOS XE and classic IOS
-never did. `_disable_terminal_paging(device_id, prompt_re)` is a small
-helper -- send `terminal length 0`, wait for the device's own prompt to
-return, fail closed (bounded `TerminalError`, converted to `DiscoveryError`
-with a phase-specific message) if it doesn't -- called exactly once,
-immediately after a successful login, by all three collectors
+Discovery disables terminal pagination (`terminal length 0`) immediately
+after successful login, before collecting any command output.
+`_disable_terminal_paging(device_id, prompt_re)` is a small helper -- send
+`terminal length 0`, wait for the device's own prompt to return, fail
+closed (bounded `TerminalError`, converted to `DiscoveryError` with a
+phase-specific message) if it doesn't -- called exactly once, immediately
+after a successful login, by all three collectors
 (`_bootstrap_collect()`/`_bootstrap_collect_iosxe()`/
 `_bootstrap_collect_ios()`) before any other command. It is deliberately
 *not* a pager state machine (no `--More--` detection/Space-key handling):
-preventing the pager from ever activating is simpler and sufficient, and
-was not shown to be insufficient for any currently supported platform.
-Paging is Discovery-only and session-local (a plain EXEC-mode command,
-never entering configuration mode) -- managed `terminal_open()` never
-sends it, and there is no global pager state; each device's paging-disable
-step is fully independent, protected only by the existing per-device
-Discovery bootstrap session lock (Step 3.3, unchanged).
+preventing the pager from ever activating is simpler and sufficient. Paging
+is Discovery-only and session-local (a plain EXEC-mode command, never
+entering configuration mode) -- managed `terminal_open()` never sends it,
+and there is no global pager state; each device's paging-disable step is
+fully independent, protected only by the existing per-device Discovery
+bootstrap session lock (unchanged from the concurrency model above).
 
-**Timeout semantics, characterized (not changed):** `terminal.
-_wait_for_pattern()` -- the one shared command-wait primitive used by
-every Discovery login/command and by managed `terminal_open()`'s private
-authentication alike -- computes `deadline = time.monotonic() + timeout`
-exactly once and loops `while time.monotonic() < deadline`. This is a
-**fixed total deadline, not an inactivity timeout**: new pane content
-arriving only ever unlocks whether a match is considered at all (the
-existing stale-prompt-race guard against `baseline_text`), it never
-recomputes or extends `deadline`. Proven with deterministic tests
-(`tests/test_terminal_wait_timeout_semantics.py`, an injectable fake
-monotonic clock/sleep -- no real 25-second waits) covering a silent
-terminal, continuously-changing-but-never-matching output for the whole
-window, and activity followed by silence: all three time out at the same
-configured deadline, and a match that only becomes available *after* the
-deadline (proven by scheduling one at simulated t=26s against a 25s
-timeout) is never seen, because the loop has already exited by then. Step
-3.7a's own fix does not depend on or change this characterization: the
-real C9200L failure is fully explained by the pager stall (output stopped
-entirely, it did not continue arriving), so the documented "only change
-timeout semantics if output was demonstrably still arriving" carve-out
-does not apply here, and the 25-second value is unchanged. Separately
-noted (not implemented): since this *is* a fixed total deadline, a
-command whose valid output genuinely takes longer than the configured
-timeout to fully arrive (independent of any pager) would still time out --
-a real, distinct reliability question a possible future "Step 3.7b"
-(inactivity-based command timeout) could address, deliberately left
-unimplemented here to keep this fix narrowly scoped and independently
-reviewable.
+**Timeout semantics.** `terminal._wait_for_pattern()` -- the one shared
+command-wait primitive used by every Discovery login/command and by
+managed `terminal_open()`'s private authentication alike -- computes
+`deadline = time.monotonic() + timeout` exactly once and loops `while
+time.monotonic() < deadline`. This is a **fixed total deadline, not an
+inactivity timeout**: new pane content arriving only ever unlocks whether a
+match is considered at all (a stale-prompt-race guard against
+`baseline_text`), it never recomputes or extends `deadline`. Proven with
+deterministic tests (`tests/test_terminal_wait_timeout_semantics.py`, an
+injectable fake monotonic clock/sleep -- no real 25-second waits) covering
+a silent terminal, continuously-changing-but-never-matching output for the
+whole window, and activity followed by silence: all three time out at the
+same configured deadline, and a match that only becomes available *after*
+the deadline is never seen, because the loop has already exited by then.
+One honestly-acknowledged limitation: since this *is* a fixed total
+deadline, a command whose valid output genuinely takes longer than the
+configured timeout to fully arrive (independent of any pager) would still
+time out — an inactivity-based command timeout would address this, and is
+deliberately not implemented, to keep the pager fix narrowly scoped and
+independently reviewable.
 
-### Shared safe SSH password-prompt attribution (Step 3.5)
+### Shared safe SSH password-prompt attribution
 
 Both Discovery's bootstrap login and normal managed `terminal_open()`
 need to answer the exact same kind of prompt safely: OpenSSH's own
@@ -741,13 +773,13 @@ callers -- never two independently-written password-prompt parsers:
   agent-based) for both Discovery and managed `terminal_open()` alike --
   neither one will ever answer a jump host's own password prompt.
 
-**Telnet (Step 3.6) reuses this same function unchanged, with no telnet-
-specific code at all.** Telnet has no client-side host-wrapping prompt
-text (unlike OpenSSH's `"<user>@<host>'s password:"`), so on its own this
-function's `SSH_HOP_PASSWORD_PROMPT_RE` attribution wouldn't apply -- but
-it doesn't need to: the access-info schema's own jump-host validation
-requires `transport: ssh` for any device that references a `jump_host`, so
-a telnet device can structurally never have one. That means
+**Telnet reuses this same function unchanged, with no telnet-specific code
+at all.** Telnet has no client-side host-wrapping prompt text (unlike
+OpenSSH's `"<user>@<host>'s password:"`), so on its own this function's
+`SSH_HOP_PASSWORD_PROMPT_RE` attribution wouldn't apply -- but it doesn't
+need to: the access-info schema's own jump-host validation requires
+`transport: ssh` for any device that references a `jump_host`, so a telnet
+device can structurally never have one. That means
 `resolve_target_password_prompt()`'s very first check -- "no
 `jump_host_config` -> unambiguous, answer with the target's own configured
 password" -- already handles a telnet password prompt correctly, without
@@ -760,44 +792,38 @@ function -- translating a rejected outcome into their own wording
 (`DiscoveryError` vs. `TerminalError`), never re-implementing the
 attribution rule itself.
 
-### Managed-terminal private authentication (Step 3.5, extended in Step 3.8)
+### Managed-terminal private authentication
 
-`terminal_open()` previously never automated a password prompt at all --
-only Discovery's separate bootstrap login did -- so the first real
-end-to-end Claude Code test hit a real gap: after `terminal_open(R1)`,
-Claude saw the device's own SSH password prompt and had to stop and ask
-the human for the router's password. Since the active access-info
-definition already privately holds that password, the credential belongs
-to Network Lab MCP, not the AI, so `terminal_open()` now completes
-authentication itself. Step 3.8 closed the one remaining transport gap
-this left: managed Telnet sessions (e.g. a real-lab PAGENT) still stopped
-at `Password:` and asked a human, even though SSH managed sessions and
-Discovery's own Telnet login both already authenticated privately.
+`terminal.open_device_terminal()` completes target authentication itself,
+for either transport, immediately after the managed session is created or
+reused, using the resolved access-info's own private credential —
+the credential belongs to Network Lab MCP, not the AI, so the AI never has
+to be asked for it.
 
 `terminal._authenticate_managed_session()` runs after the managed session
-is created or reused, still inside the existing Step 3.3 per-device lock
-(so a concurrent `terminal_open(R1)` from two callers can never send its
-password twice, while a different device continues to authenticate fully
-in parallel), and now dispatches by the device's own configured
-transport: `_authenticate_managed_ssh_session()` (Step 3.5, unchanged) for
-`ssh`, `_authenticate_managed_telnet_session()` (Step 3.8, new) for
-`telnet`, nothing for any other/unknown transport. Splitting by transport
--- rather than one function trying to recognize both vocabularies --
-keeps SSH's OpenSSH-specific prompt/failure text and Telnet's classic-
-IOS-style prompt/failure text from leaking into each other.
+is created or reused, still inside the concurrency model's per-device
+lock (so a concurrent `terminal_open(R1)` from two callers can never send
+its password twice, while a different device continues to authenticate
+fully in parallel), and dispatches by the device's own configured
+transport: `_authenticate_managed_ssh_session()` for `ssh`,
+`_authenticate_managed_telnet_session()` for `telnet`, nothing for any
+other/unknown transport. Splitting by transport -- rather than one
+function trying to recognize both vocabularies -- keeps SSH's
+OpenSSH-specific prompt/failure text and Telnet's classic-IOS-style
+prompt/failure text from leaking into each other.
 
 - **Transport-level (SSH), not device-CLI-specific.** SSH recognizes only
   OpenSSH's own password prompt and a small, stable set of OpenSSH's own
   authentication-failure messages (`Permission denied`, `Authentication
   failed`, `Connection refused`, ...) -- never an IOS XR (or any other
   vendor) CLI prompt. This keeps it safe for every device type
-  `terminal_open()` supports, and preserves the project's existing "Claude
-  reads the pane" model for anything this cannot resolve on its own (a
-  host-key confirmation prompt, a device-CLI-level interaction).
+  `terminal_open()` supports, and preserves "Claude reads the pane" for
+  anything this cannot resolve on its own (a host-key confirmation prompt,
+  a device-CLI-level interaction).
 - **Narrowly device-shaped (Telnet), by design.** Unlike SSH, Telnet has no
   client-side wrapping text to recognize generically -- login is a plain
-  conversation with the device itself. Step 3.8 deliberately does not
-  generalize this into an interactive-login framework: it answers only an
+  conversation with the device itself. This deliberately does not
+  generalize into an interactive-login framework: it answers only an
   optional `Username:` prompt followed by `Password:` (the exact sequence
   Discovery's own `_login_ios_style()` already proved for classic-IOS-style
   lab devices), requires positively reaching the shared `IOS_STYLE_PROMPT_RE`
@@ -805,39 +831,13 @@ IOS-style prompt/failure text from leaking into each other.
   lenient "anything else counts as progress" model), and recognizes a
   small, fixed set of classic-IOS-style login-failure text
   (`_TELNET_AUTH_FAILURE_RE`: "% Bad passwords", "% Login invalid",
-  "Connection closed by foreign host" -- the first and third observed
-  directly against a real device during this feature's own development).
-  Once the exec prompt is reached, authentication automation stops
-  watching entirely -- never a persistent prompt-answering loop over the
-  life of the session, and never enable/TACACS/OTP/MFA automation.
-  `USERNAME_PROMPT_RE`/`IOS_STYLE_PROMPT_RE` moved from `discovery.py` to
-  `terminal.py` this step (Discovery's own names now alias them) once
-  managed Telnet auth needed the exact same two patterns -- one
-  definition, not two independently-maintained copies; Discovery's
-  session lifecycle (temporary, closed after collection) and managed
-  terminal_open()'s (persistent, tmux SSOT, reused across calls) remain
-  otherwise completely separate, only the login primitive is shared.
-- **A real regex-flag bug found and fixed along the way.** `_wait_for_
-  pattern()`'s multi-line tail matching requires `re.MULTILINE` on the
-  pattern it is given; combining several already-`re.MULTILINE` patterns'
-  own `.pattern` text into a *new* `re.compile()` call (as `_LOGIN_WAIT_RE`
-  /`_IOS_STYLE_LOGIN_WAIT_RE`/`_MANAGED_LOGIN_WAIT_RE` all do, to build one
-  "any of these" pattern) does not carry that flag forward -- without
-  re-applying it explicitly on the combined pattern, `$` only anchors to
-  the true end of the whole captured string, so a match on a line that is
-  not the literal last line (e.g. once the device's own prompt has already
-  appeared after it) silently fails. This had been latent and harmless in
-  Discovery's own login (its final "did we reach the prompt" check
-  already used the standalone, correctly-flagged `_IOS_STYLE_PROMPT_RE`
-  directly, not the combined pattern) -- but Step 3.8's Telnet auth needed
-  the *combined* pattern for its final post-password wait too (to detect
-  a re-appearing password prompt -- rejected -- as fast and explicitly as
-  SSH already does), which is what surfaced it. Fixed by re-applying
-  `re.MULTILINE` (and `re.IGNORECASE`, similarly lost, where a combined
-  sub-pattern needs it) on all three combined patterns -- a pure
-  correctness fix with no behavior change for any already-passing case
-  (confirmed by the full regression suite), not a timeout-semantics
-  redesign.
+  "Connection closed by foreign host"). Once the exec prompt is reached,
+  authentication automation stops watching entirely -- never a persistent
+  prompt-answering loop over the life of the session, and never
+  enable/TACACS/OTP/MFA automation. `USERNAME_PROMPT_RE`/
+  `IOS_STYLE_PROMPT_RE` live in `terminal.py` (Discovery's own names alias
+  them) so managed Telnet auth and Discovery's own Telnet login share one
+  definition, not two independently-maintained copies.
 - **New vs. existing session.** A brand-new session's connection is still
   in flight, so this polls briefly (bounded) for a prompt/failure to first
   appear. An already-existing session's pane is already settled, so this
@@ -849,9 +849,9 @@ IOS-style prompt/failure text from leaking into each other.
   already be sitting at the password prompt (e.g. after an MCP server
   restart) get authenticated on the very next `terminal_open()`, with no
   need to manually destroy it first.
-- **Sends the password at most once.** If the same prompt reappears after
-  one send (rejected), or an explicit failure message appears, or the
-  wait after sending times out, authentication fails closed
+- **Sends the credential at most once.** If the same prompt reappears
+  after one send (rejected), or an explicit failure message appears, or
+  the wait after sending times out, authentication fails closed
   (`TerminalError`, always sanitized -- never includes the password or
   any other access-info content) -- never a retry loop.
 - **Cleanup ownership.** If *this* `terminal_open()` call created a new
@@ -860,16 +860,17 @@ IOS-style prompt/failure text from leaking into each other.
   touched, even if authenticating it fails.
 - **Credential boundary.** The password is read from the committed active
   access-info definition, passed through this one narrow call path, and
-  sent only via the existing `_send_literal_text()` primitive (the same
-  one Discovery's own login already uses) -- never returned by any MCP
-  tool, never included in a sanitized error, never separately logged
-  (tmux's own pipe-pane transcript remains the only thing that might show
-  a prompt or remote echo, exactly as it always could for any terminal
-  content), and never passed as a `sshpass`-style process argument. No
+  sent only via `_send_secret_text()` — a dedicated tmux `load-buffer`
+  (stdin) + `paste-buffer` primitive, never `tmux send-keys -l -- <secret>`,
+  which would place the secret in that subprocess's own command-line
+  arguments. The password never reaches any MCP tool result, any sanitized
+  error, any log line (tmux's own pipe-pane transcript remains the only
+  thing that might show a prompt or remote echo, exactly as it always
+  could for any terminal content), or any process's argv. No
   module-global credential state is introduced; authentication context is
   local to each `terminal_open()` call.
 
-## Step 3: IOS XR + LLDP topology discovery
+## Topology discovery
 
 ```
 committed active_access_info
@@ -877,17 +878,16 @@ committed active_access_info
        _select_ios_targets() (type iosxr / iosxe / ios; host is skipped,
        not failed; nxos is skipped; unless zero targets of any kind remain)
     -> discovery._bootstrap_collect() (iosxr: login, _disable_terminal_
-       paging(), `show version`, `show running-config`, `show lldp
-       neighbors`, `show cdp neighbors`, `show ipv4 interface brief`
-       tolerantly) / _bootstrap_collect_iosxe() (iosxe: _login_ios_style(),
-       _disable_terminal_paging(), `show version`, `show lldp neighbors`,
-       `show cdp neighbors`, `show vrf` + `show ip interface brief`
-       tolerantly) / _bootstrap_collect_ios() (ios: _login_ios_style(),
+       paging(), `show version`, `show lldp neighbors`, `show cdp
+       neighbors`, `show ipv4 interface brief` tolerantly) /
+       _bootstrap_collect_iosxe() (iosxe: _login_ios_style(),
+       _disable_terminal_paging(), `show version`, `show lldp
+       neighbors`, `show cdp neighbors`, `show vrf` + `show ip interface
+       brief` tolerantly) / _bootstrap_collect_ios() (ios: _login_ios_style(),
        _disable_terminal_paging(), `show version`, `show cdp neighbors`,
        `show vrf` + `show ip interface brief` tolerantly) -- paging
        disabled exactly once per session, immediately after login and
-       before any other command (Step 3.7a); all logged persistently, see
-       above
+       before any other command; all logged persistently, see above
     -> discovery.parse_lldp_neighbors() / parse_cdp_neighbors()  (raw
        text -> NeighborObservation, tagged `source="lldp"`/`"cdp"`, never
        resolving identity itself)
@@ -900,8 +900,8 @@ committed active_access_info
        cross-protocol disagreement is a conflict)
     -> discovery.parse_ipv4_interface_brief() / parse_ip_interface_brief()
        + parse_show_vrf()  (raw text -> {interface: (ipv4_or_None, vrf)};
-       L3ParseError skips just this device's enrichment, never the whole
-       operation -- see "L3 interface enrichment" below)
+       an L3ParseError skips just this device's enrichment, never the
+       whole operation -- see "L3 interface enrichment" below)
     -> discovery.DiscoveryResult  (in-memory only)
     -> cli/config.py CliSession.apply_discovery_result()  (opens/creates
        the topology candidate via the *same* plan_topology_definition()/
@@ -909,66 +909,29 @@ committed active_access_info
        <name>`, then merges in discovery.build_topology_devices_and_links())
 ```
 
-Step 3.6 added CDP + IOS XE support, and Step 3.7 added classic IOS (`ios`)
-support plus L3 interface enrichment, entirely inside `discovery.py` (plus
-a few new summary lines in `cli/main.py`'s `render_discovery_summary()`
-and a new `lab.validate_topology_interfaces()`): `mcp_server.py` has zero
-diff and `cli/grammar.py` needed only its two hard-coded `type` hint
-strings extended (the `type ?` help/completion themselves already
-delegate to `lab.DEVICE_TYPES`) -- `discover topology` remains the only
-Discovery command, with protocol/device-type selection happening
-internally, never as a CLI choice.
+`discover topology` (global configuration mode only): reads *committed*
+`active_access_info` (never an uncommitted candidate selection), selects
+its `type: iosxr`, `type: iosxe`, and `type: ios` devices (`type: host` is
+skipped, not an error; `nxos` is unsupported and skipped; zero supported
+targets of any kind is a hard failure), and requires **all** of them to
+succeed for neighbor discovery -- any login/command/timeout failure fails
+the whole operation before the prior candidate is touched. L3 enrichment is
+the one exception: it is additive/best-effort per device (see below), never
+a reason to fail the whole operation. On success it prints a Discovery
+summary and, if any neighbor could not be resolved to a managed device, an
+explicit "Unresolved neighbors" section (raw Device ID, observing
+device/interface, remote port, capability) — then enters topology
+configuration mode with the result applied as the candidate, exactly like a
+manually typed `topology <name>`. It never commits and never changes
+`active_topology` itself.
 
 `discovery.py` owns every Discovery-specific behavior (bootstrap
 connectivity reuses `terminal.py`'s primitives, but the login sequence,
 command runner, parser, identity resolution, and reconciliation are all
-here) and is the *only* new module Step 3 adds; `cli/config.py`'s
-`apply_discovery_result()` is the only new candidate-mutation logic, and
-it is a thin adapter onto the pre-existing topology candidate machinery
+here) and is the *only* module dedicated to Discovery; `cli/config.py`'s
+`apply_discovery_result()` is the only candidate-mutation logic for it,
+and it is a thin adapter onto the pre-existing topology candidate machinery
 -- there is no separate Discovery datastore, history table, or schema.
-
-### Parallel per-device collection (Step 3.3)
-
-`_bootstrap_collect()` for each device now runs on a bounded
-`concurrent.futures.ThreadPoolExecutor` (`DISCOVERY_MAX_WORKERS = 8` --
-small, internal, not a CLI/config knob; comfortably covers real lab scale
-while bounding concurrent SSH/tmux session creation) instead of a plain
-sequential loop:
-
-```
-R1 collect -----|
-R2 collect -----|
-R3 collect -----| concurrent, bounded by DISCOVERY_MAX_WORKERS
-R4 collect -----|
-                |
-                v
-     every future finished (success or failure)
-                |
-                v
-     close every target's bootstrap session (unconditional cleanup,
-     unchanged ownership: one outer step closes all of them, exactly
-     as the previous sequential loop's own try/finally did)
-                |
-                v
-     aggregate results in original target order, never completion
-     order -- parsing/identity/reconciliation are unchanged and still
-     run only after every device's result (or first failure) is known
-```
-
-Parallelism is device-level only: within one device, `_bootstrap_collect()`
-/`_bootstrap_collect_iosxe()` themselves are strictly sequential (login,
-then each command in order, in that device's own worker); IOS XR and IOS
-XE targets are submitted to the *same* thread pool, just dispatched to
-their own collector function. Workers are value-oriented -- each returns its
-own collected dict; nothing here mutates a shared candidate, link list, or
-conflict list from more than one thread. Aggregation and error attribution
-are always by original target order, not by whichever thread happened to
-finish first, so scheduler order can never change which device's result
-lands where or which device's failure is the one reported. Any collection
-failure -- expected (`DiscoveryError`) or an unexpected worker exception,
-which is still converted to a bounded `DiscoveryError` rather than leaking
-a raw traceback -- still fails the whole operation with zero candidate
-mutation, exactly like the pre-Step-3.3 sequential loop.
 
 ### Identity resolution is bounded and fails closed
 
@@ -984,9 +947,9 @@ neighbor stays unresolved:
 2. case-normalized exact match
 3. short-name/FQDN-style alias match (the raw ID's segment before its
    first `.`, compared case-insensitively against each hostname --
-   e.g. `APJC_JP_OSK_R2.cisco` matches hostname `APJC_JP_OSK_R2`; this is
-   also the path a CDP-reported FQDN like `ASR9001_R1.cisco.com` resolves
-   through, exactly the same as an LLDP one)
+   e.g. `LAB_R2.example` matches hostname `LAB_R2`; this is also the path a
+   CDP-reported FQDN like `LAB-SW1.example.com` resolves through, exactly
+   the same as an LLDP one)
 
 There is no substring search, no fuzzy matching, and no inference from
 the logical device ID itself (never `"R2" in device_id`). A neighbor that
@@ -1015,7 +978,7 @@ no `show discover`/discovery-history command, and no unresolved-neighbor
 record written into the committed topology YAML. Re-running `discover
 topology` produces a fresh normalized result the same way every time.
 
-### Link reconciliation (multi-protocol, Step 3.6)
+### Link reconciliation (multi-protocol)
 
 `reconcile_links()` first groups *all* resolved observations (LLDP and
 CDP mixed together) by their own `(local_device_id, local_interface)` key
@@ -1042,8 +1005,8 @@ Only endpoints that survived that first pass (i.e. have one agreed-upon
 candidate) go through the existing reciprocal check:
 
 - if the *remote* endpoint has no observation of its own, the link is
-  one-sided but still created (section 48: bidirectional discovery is not
-  an absolute requirement);
+  one-sided but still created (bidirectional discovery is not an absolute
+  requirement);
 - if it does, and it reciprocally agrees (claims the same original local
   device/interface back), the pair collapses into one `ManagedLink`;
 - if it does, but disagrees (a different interface mapping), a
@@ -1055,7 +1018,7 @@ A link's identity is its unordered pair of `(device, interface)`
 endpoints, so two parallel links between the same router pair on
 different interfaces are never deduplicated together.
 
-### L3 interface enrichment (Step 3.7)
+### L3 interface enrichment
 
 Additive topology context -- IPv4 address + VRF per interface, so Claude
 can reason about questions like "check reachability from each router"
@@ -1096,19 +1059,16 @@ columns are read only far enough to skip past them (see
 would be brittle against IOS's two-word `administratively down` status),
 never persisted.
 
-**Interface-name canonicalization** (`_canonicalize_interface_name()`,
-Step 3.7): classic IOS/IOS XE's `show vrf` and `show ip interface brief`
-can report the *same* interface in different abbreviated forms (e.g.
-`show vrf`'s Interfaces column showing `Gi0/0` while `show ip interface
-brief` shows `GigabitEthernet0/0`) -- a small, fixed lookup table expands
-known abbreviations to one canonical full name so the two commands'
-output can be matched up; an unrecognized prefix is left completely
-unchanged rather than guessed. This is a new, small SSOT (no such
-normalization existed before Step 3.7 -- Step 3.6's CDP/LLDP dedup never
-needed to compare interface names *across* commands, only within one
-device's own single command output) -- introduced once, reused for both
-`show vrf`/`show ip interface brief` reconciliation and as the
-canonical key written into a device's `interfaces` mapping.
+**Interface-name canonicalization** (`_canonicalize_interface_name()`):
+classic IOS/IOS XE's `show vrf` and `show ip interface brief` can report
+the *same* interface in different abbreviated forms (e.g. `show vrf`'s
+Interfaces column showing `Gi0/0` while `show ip interface brief` shows
+`GigabitEthernet0/0`) -- a small, fixed lookup table expands known
+abbreviations to one canonical full name so the two commands' output can be
+matched up; an unrecognized prefix is left completely unchanged rather than
+guessed. This is a small, single-purpose SSOT, reused for both
+`show vrf`/`show ip interface brief` reconciliation and as the canonical
+key written into a device's `interfaces` mapping.
 
 **Management-address exclusion**: access-info is *how* MCP reaches a
 device; topology is *what the network looks like* -- an observed
@@ -1118,36 +1078,35 @@ topology L3 data (`_build_device_interface_fields()`), regardless of
 whether that interface also happens to be a link endpoint (the link
 itself, if any, is completely unaffected by this exclusion).
 
-**Fail-closed distinction, per device, per L3 source** (Section 15/38/39
-of the Step 3.7 task): IOS XR's single `show ipv4 interface brief` either
-parses (its own header recognized) or the device's L3 enrichment is
-skipped entirely; IOS XE/IOS require *both* `show vrf` and `show ip
-interface brief` to parse -- one failing skips L3 enrichment for that
-whole device rather than guessing every unlisted interface is `default`
-VRF. Either way this is captured as an `L3ParseError`, caught only in
-`discover_topology()`'s own per-device L3 loop -- it never escalates to a
-`DiscoveryError` (which would fail the *whole* run) and never touches
-that device's already-collected LLDP/CDP links. A transport-level failure
-specifically on one of the *optional* L3 commands (the prompt never
-returns) is tolerated the same way via `_run_command_tolerant()` (returns
-`""`, which then naturally fails L3 parsing, not the whole device) --
-contrast with LLDP/CDP/login/`terminal length 0`, which remain
-whole-device-fatal on a transport failure exactly as before Step 3.7.
+**Fail-closed distinction, per device, per L3 source**: IOS XR's single
+`show ipv4 interface brief` either parses (its own header recognized) or
+the device's L3 enrichment is skipped entirely; IOS XE/IOS require *both*
+`show vrf` and `show ip interface brief` to parse -- one failing skips L3
+enrichment for that whole device rather than guessing every unlisted
+interface is `default` VRF. Either way this is captured as an
+`L3ParseError`, caught only in `discover_topology()`'s own per-device L3
+loop -- it never escalates to a `DiscoveryError` (which would fail the
+*whole* run) and never touches that device's already-collected LLDP/CDP
+links. A transport-level failure specifically on one of the *optional* L3
+commands (the prompt never returns) is tolerated the same way via
+`_run_command_tolerant()` (returns `""`, which then naturally fails L3
+parsing, not the whole device) -- contrast with LLDP/CDP/login/`terminal
+length 0`, which remain whole-device-fatal on a transport failure.
 
-**Per-interface candidate merge, not a wholesale replace** (Section 40/41):
-this is the one field `build_topology_devices_and_links()` treats
-specially. Every other device field uses a plain `dict.update()` (last
-value wins) when merging a `DiscoveryResult` into an existing candidate --
-but doing that to `interfaces` would silently discard L3 data for any
-interface not re-observed this particular run (e.g. one whose device
-failed L3 enrichment just this once). Instead, `fields["interfaces"]`
-(when present at all -- a device with no L3 result this run has no such
-key, so its existing candidate interfaces are left completely untouched)
-is merged interface-by-interface: a dict value sets/overwrites that one
-interface, and a `None` value is an explicit removal signal (used only
-when an interface was *positively* re-observed as `unassigned`, or newly
-excluded as a management address) that drops just that one interface's
-stale entry -- `dict.pop(name, None)`, safe even if it was never present.
+**Per-interface candidate merge, not a wholesale replace**: this is the one
+field `build_topology_devices_and_links()` treats specially. Every other
+device field uses a plain `dict.update()` (last value wins) when merging a
+`DiscoveryResult` into an existing candidate -- but doing that to
+`interfaces` would silently discard L3 data for any interface not
+re-observed this particular run (e.g. one whose device failed L3
+enrichment just this once). Instead, `fields["interfaces"]` (when present
+at all -- a device with no L3 result this run has no such key, so its
+existing candidate interfaces are left completely untouched) is merged
+interface-by-interface: a dict value sets/overwrites that one interface,
+and a `None` value is an explicit removal signal (used only when an
+interface was *positively* re-observed as `unassigned`, or newly excluded
+as a management address) that drops just that one interface's stale entry
+-- `dict.pop(name, None)`, safe even if it was never present.
 
 ### Topology candidate merge is conservative
 
@@ -1168,19 +1127,60 @@ Topology's own schema validation (`lab.validate_topology_interfaces()`)
 keeps this bounded: only `ipv4_address` + `vrf`, both required non-empty
 strings when an interface entry exists at all, `ipv4_address` checked as
 a real IPv4 address (`ipaddress.IPv4Address`) -- no other field is
-accepted (a future prefix-length field, if ever added, needs its own
-validator update, deliberately not designed for in advance). Existing
-topology files with no `interfaces` key anywhere remain valid with zero
-migration. Because `lab.get_active_topology()` already returns the whole
-validated topology mapping verbatim (it never filters fields -- topology
-structurally cannot carry access-info's private fields at all, see
-`validate_topology_no_access_fields()`), committed L3 data appears
-through the exact same MCP-facing read Claude already uses with zero
-changes to `lab.py`'s `get_active_topology()` or `mcp_server.py`.
+accepted. Existing topology files with no `interfaces` key anywhere remain
+valid with zero migration. Because `lab.get_active_topology()` already
+returns the whole validated topology mapping verbatim (it never filters
+fields -- topology structurally cannot carry access-info's private fields
+at all, see `validate_topology_no_access_fields()`), committed L3 data
+appears through the exact same MCP-facing read Claude already uses with
+zero changes to `lab.py`'s `get_active_topology()` or `mcp_server.py`. The
+CLI's `render_topology_block()`/`render_topology_configuration_delta()`
+(in `cli/main.py`) render this same `interfaces` data for `show
+running-config topology`/`show configuration`/candidate review, following
+the same read-only-review precedent already used for `links` -- there is no
+structured CLI command to edit an interface's L3 fields directly (they are
+Discovery/external-editor-populated data, reviewed but not hand-typed).
 
-## Step 2 / 2.5: the human configuration/control plane
+### Parallel per-device collection
 
-The **Human Configuration / Control Interface** is an IOS XR-compatible CLI
+`_bootstrap_collect()` for each device runs on a bounded
+`concurrent.futures.ThreadPoolExecutor` (`DISCOVERY_MAX_WORKERS = 8`)
+instead of a plain sequential loop:
+
+```
+R1 collect -----|
+R2 collect -----|
+R3 collect -----| concurrent, bounded by DISCOVERY_MAX_WORKERS
+R4 collect -----|
+                |
+                v
+     every future finished (success or failure)
+                |
+                v
+     close every target's bootstrap session (unconditional cleanup,
+     one outer step closes all of them, exactly as a sequential loop's
+     own try/finally would)
+                |
+                v
+     aggregate results in original target order, never completion
+     order -- parsing/identity/reconciliation are unchanged and still
+     run only after every device's result (or first failure) is known
+```
+
+Parallelism is device-level only: within one device, `_bootstrap_collect()`
+/`_bootstrap_collect_iosxe()` themselves are strictly sequential (login,
+then each command in order, in that device's own worker); IOS XR and IOS
+XE targets are submitted to the *same* thread pool, just dispatched to
+their own collector function. Workers are value-oriented -- each returns its
+own collected dict; nothing here mutates a shared candidate, link list, or
+conflict list from more than one thread. Aggregation and error attribution
+are always by original target order, not by whichever thread happened to
+finish first, so scheduler order can never change which device's result
+lands where or which device's failure is the one reported.
+
+## CLI control plane
+
+The human configuration/control plane is an IOS XR-compatible CLI
 (`./run_cli.sh`, `network_lab_mcp.cli`) that a human operator uses to create
 and edit lab definitions and the running-config selection. It is a separate
 process from the MCP server and never speaks the MCP stdio protocol.
@@ -1208,14 +1208,10 @@ Network Lab MCP  ->  Claude Code
 The CLI is a configuration/control plane, not a network-engineering
 reasoning engine: it creates/edits *definitions* and the *running-config
 selection*, never operates on network devices itself, and never decides
-what Claude Code should do with a topology once committed.
+what Claude Code should do with a topology once committed. See
+[cli_reference.md](cli_reference.md) for the full command reference.
 
 ### Two independent candidate scopes
-
-Unlike Step 2's original design (where global `topology`/`scenario`/
-`reference <name>` directly mutated the active selection), the candidate
-model now has two scopes that are dirty, switched, and cleared
-independently:
 
 - **Running-config candidate** (`settings_candidate`): a snapshot of
   `lab/settings.yaml`, mutated only from `running` mode
@@ -1225,8 +1221,8 @@ independently:
   `definition_original` / `definition_candidate`): at most one of
   `topology`, `access_info`, `scenario`, or `reference` at a time. Opening a
   *different* definition while the current one is dirty is blocked
-  (`can_switch_definition()`), the same caution the original topology-switch
-  guard applied, generalized to all four kinds.
+  (`can_switch_definition()`), the same caution the topology-switch guard
+  originally applied, generalized to all four kinds.
 
 `commit()` validates both scopes, writes any dirty definition file(s)
 first, then `lab/settings.yaml` last — a running-config selection may name a
@@ -1248,17 +1244,7 @@ must never be read as "this is the only object in the candidate," and it
 is never commit's source of truth (commit reads `definition_candidate`
 directly, never a renderer's output).
 
-`show configuration`'s delta for access-info devices/jump-hosts is
-computed against both the committed and candidate maps: an object
-present in committed but absent from the candidate (removed via `no
-device <name>` / `no jump-host <name>`) renders as a single ` no device
-<name>` / ` no jump-host <name>` line, not just silently absent — see
-cli_reference.md's "Uncommitted-changes-only `show configuration`" for
-the full rendering rules, including the access-info-only standalone `!`
-paste round-trip behavior (cli_reference.md's "Multi-line configuration
-paste").
-
-### Symmetric definition deletion (Step C topology, generalized in Step D)
+### Symmetric definition deletion
 
 `no <kind> <name>` (global configuration only; `<kind>` is
 `access-info`/`topology`/`scenario`/`reference`) extends the single
@@ -1267,16 +1253,14 @@ representation, rather than adding a second, independent
 "deletion set" data structure: `definition_kind`/`definition_name`/
 `definition_original` stay set to the real committed definition being
 removed, while `definition_candidate` itself becomes `None`
-(`CliSession.remove_definition(kind, name)`, added for topology in Step
-C and generalized to every kind in Step D behind the same one method --
-`remove_topology_definition()` is now a one-line wrapper kept for its
-existing callers/tests). `definition_dirty()` treats this as always
-dirty (a real committed original always differs from eventual absence).
-Since all four kinds already shared this one candidate slot before Step
-C ever existed, this was already a stronger invariant than "one topology
-candidate" -- at most one dirty *definition of any kind* per configure
-session -- and deletion of any kind participates in exactly that same
-existing rule with no widening.
+(`CliSession.remove_definition(kind, name)`, behind one method shared by
+all four kinds — `remove_topology_definition()` is now a one-line wrapper
+kept for its existing callers/tests). `definition_dirty()` treats this as
+always dirty (a real committed original always differs from eventual
+absence). All four kinds already shared this one candidate slot, so this
+was already a stronger invariant than "one topology candidate" -- at most
+one dirty *definition of any kind* per configure session -- and deletion of
+any kind participates in exactly that same existing rule with no widening.
 
 This minimal representation change means every existing mechanism
 already does the right thing with no further changes:
@@ -1303,25 +1287,23 @@ already does the right thing with no further changes:
   case `clear()` already handles for a never-committed definition),
   since there is nothing real to mark absent.
 
-`_render_configuration_delta()` (cli/main.py) is the one place that
-needed an explicit new branch: a `None` candidate alongside a non-`None`
-`original` renders as a single `no <kind> <name>` line (never the
-per-field diff the other renderers produce -- for access-info,
-deliberately never re-rendering that definition's own stored
-credentials), and `commit()` (cli/config.py) needed a parallel deletion
-path per kind: skip the normal per-kind validator (there is nothing to
-validate), reject the commit if the definition being deleted is still
-*effectively* (candidate, not already-committed) referenced by
-running-config -- `active_access_info` (optional), `active_topology`
-(mandatory), `active_scenario` (mandatory), or present in
-`active_references` (a list) -- so a combined commit that also switches
-the active selection to something else in the same transaction is
-correctly allowed, generalized behind one small `_existence_error()`
-closure rather than four hand-written checks. Deletion itself dispatches
-through `_DEFINITION_DELETERS[kind]` (`lab.delete_topology` /
-`delete_access_info` / `delete_scenario` / `delete_reference`), each
-requiring an exact match against that kind's own `list_*_names()` and a
-non-symlink, path-confined regular file
+`_render_configuration_delta()` (cli/main.py) renders a `None` candidate
+alongside a non-`None` `original` as a single `no <kind> <name>` line
+(never the per-field diff the other renderers produce -- for access-info,
+deliberately never re-rendering that definition's own stored credentials),
+and `commit()` (cli/config.py) has a parallel deletion path per kind: skip
+the normal per-kind validator (there is nothing to validate), reject the
+commit if the definition being deleted is still *effectively* (candidate,
+not already-committed) referenced by running-config -- `active_access_info`
+(optional), `active_topology` (mandatory), `active_scenario` (mandatory),
+or present in `active_references` (a list) -- so a combined commit that
+also switches the active selection to something else in the same
+transaction is correctly allowed, generalized behind one small
+`_existence_error()` closure rather than four hand-written checks.
+Deletion itself dispatches through `_DEFINITION_DELETERS[kind]`
+(`lab.delete_topology` / `delete_access_info` / `delete_scenario` /
+`delete_reference`), each requiring an exact match against that kind's own
+`list_*_names()` and a non-symlink, path-confined regular file
 (`lab._stored_definition_is_deletable()`, one small shared primitive
 behind four still-distinct named functions -- not a generic definition
 framework), mirroring the discipline already used for terminal log
@@ -1329,32 +1311,15 @@ deletion (`terminal.py`). No cascade: no other definition, running-config
 field, terminal session, or Discovery state is ever touched by a
 definition deletion.
 
-Investigation for this task found no real cross-definition reference to
-an access-info, scenario, or reference definition by name anywhere else
-in the schema either (scenario/reference are open-ended YAML documents
-with no fixed cross-reference fields; access-info is keyed by device
-name, never by another definition's name) -- the only real references
-anywhere are running-config's own four selection fields, handled above.
-It also confirmed `config-running` mode has no `no topology` command at
-all (only `no access-info` and `no reference <name>`), since
-`active_topology` (like `active_scenario`) is a mandatory field with no
-safe "unset" value -- so there is no actual naming collision with the
-global-configuration `no <kind> <name>` commands to resolve, only a
-documentation clarification (see cli_reference.md). Separately, Step D
-found that `config-running# topology <name>` (and `access-info`/
-`scenario`) used a plain, non-enumerating identifier argument -- Tab
-completion already worked (the same provider `topology <name>` editing
-uses), but bare `?` only ever showed a generic `<name>` placeholder
-instead of the actual selectable names. Fixed by giving each
-running-config selector its own `enumerate_when_empty` provider
-(`provide_running_*_names()` / `CliContext.running_*_names`) reading a
-*separate*, candidate-aware field from the one global editing uses --
-one that excludes a definition currently pending deletion in the
-definition-editing candidate scope, since selecting it here would let
-running-config reference a definition about to become absent. Global
-`topology <name>` editing deliberately keeps reading the unfiltered
-`topology_names` field instead, since offering the pending-deleted name
-back there is exactly how its own deletion gets cancelled.
+There is no real cross-definition reference to an access-info, scenario,
+or reference definition by name anywhere else in the schema (scenario/
+reference are open-ended YAML documents with no fixed cross-reference
+fields; access-info is keyed by device name, never by another
+definition's name) -- the only real references anywhere are
+running-config's own four selection fields, handled above. `config-running`
+mode has no `no topology` command at all (only `no access-info` and `no
+reference <name>`), since `active_topology` (like `active_scenario`) is a
+mandatory field with no safe "unset" value.
 
 ### Command grammar as the single source of truth
 
@@ -1402,9 +1367,9 @@ is a narrow check — case-only equality, nothing fuzzier — that, when
 triggered, requires explicit `yes`/`no` confirmation before a distinct
 topology candidate is created. Declining is a true no-op; confirming
 preserves the exact entered case. This is a CLI-side creation-safety check,
-not a replacement for the Step 1 topology validator below.
+not a replacement for the schema validator below.
 
-### Step 1 validator reuse
+### Validator reuse
 
 `cli/config.py` does not maintain its own topology/access-info/device-type
 validation rules. `network_lab_mcp.lab.validate_topology_data()` (built on
@@ -1428,10 +1393,10 @@ between modes is `root` (jump straight to global configuration mode from
 any nested submode, preserving candidate state, driven by
 `CliSession.go_to_global()`), `exit` (exactly one level up, via the
 `_EXIT_PARENT_MODE` table below), and `end` (a guarded jump to EXEC,
-`overall_dirty`-gated, unchanged from earlier Step 2 behavior) — none of
-which ever commits or clears. `cli/config._EXIT_PARENT_MODE` is the single
-source of truth for "exit"'s per-mode destination; `cli/main.py`'s generic
-`h_exit()` handler reads it instead of hard-coding one function per mode.
+`overall_dirty`-gated) — none of which ever commits or clears.
+`cli/config._EXIT_PARENT_MODE` is the single source of truth for "exit"'s
+per-mode destination; `cli/main.py`'s generic `h_exit()` handler reads it
+instead of hard-coding one function per mode.
 
 ### External YAML editor (topology / scenario / reference)
 
@@ -1446,9 +1411,11 @@ installing it as the new candidate through the same
 uses. A non-zero editor exit, invalid YAML, or a non-mapping root leaves the
 candidate untouched and reports a safe error (no raw editor content, no
 credentials). The temporary file is always removed, on every path including
-exceptions. access-info does not offer `edit` in this phase — its private,
-private fields stay on the structured CLI path (see README.md's
-"Password display policy" for how those fields are rendered).
+exceptions. access-info does not offer `edit` — its private fields stay on
+the structured CLI path (see README.md's "Password display policy" for how
+those fields are rendered).
+
+## Security boundaries
 
 ### Committed-only MCP boundary
 
@@ -1459,28 +1426,93 @@ successful `commit()` writes to. `terminal_open()` additionally reads
 `lab/access-info/*.yaml`, but only ever the committed files, never a
 candidate. There is no shared in-memory state, cache, temp file, or extra
 MCP tool bridging the CLI process and the MCP server process; the boundary
-is the committed YAML on disk, and Step 1's existing reload-on-every-call
-policy means a successful commit is visible to Claude Code on the very next
-tool call, with no MCP server restart.
+is the committed YAML on disk, and the reload-on-every-call policy above
+means a successful commit is visible to Claude Code on the very next tool
+call, with no MCP server restart.
+
+### Credential boundary summary
+
+The full detail lives in README.md's ["Security model"](../README.md#security-model)
+and in "Device access resolution"/"Managed-terminal private authentication"
+above; in one place, the properties that hold everywhere in this project:
+
+- access-info (credentials) is never returned by any MCP tool.
+- A credential is never placed in any process's command-line arguments —
+  `_send_secret_text()` uses a tmux buffer over stdin, never `send-keys -l`.
+- A credential never appears in a log line, exception, or `%`-prefixed
+  error message, with one deliberate, narrow exception: the human CLI's own
+  explicit local `show`/`show configuration`/`show running-config` display
+  of an access-info device/jump host shows `password` in clear text (this
+  is a lab tool, not a secret manager) — never reachable through MCP, Tab/`?`
+  completion, or command history.
+- Discovery's private bootstrap sessions and managed `terminal_open()`
+  sessions share one credential-sending primitive and one password-prompt
+  attribution function (see above), rather than two independently written
+  paths that could drift apart.
+
+### Managed sessions vs. the active topology
+
+See [MCP interface](#managed-sessions-vs-the-active-topology) above — this
+is the one place `terminal_send()`/`terminal_read()` enforce a boundary
+that `terminal_list()`/`terminal_close()` deliberately do not.
+
+## Persistence and lifecycle
+
+### Installation model and lab root ownership
+
+Network Lab MCP supports exactly one installation model: a local repository
+checkout installed with `pip install -e .`. The repository checkout **owns**
+the `lab/` directory. `network_lab_mcp.lab.find_lab_root()` resolves this
+directory relative to the installed package's own source location (its
+`__file__`), never relative to the current working directory of the process
+that launched the MCP server — Claude Code is normally started from an
+unrelated task workspace, so depending on its working directory would be
+incorrect.
+
+Non-editable or wheel installation (`pip install .`, a built wheel, or a
+package-index install) is **not a supported configuration**: such an
+install has no `lab/` directory to find, since lab data is repository-local
+operational data rather than a packaged resource. Supporting that would
+require packaging work (e.g. `importlib.resources`, an external writable
+config directory, or an environment-variable-based lab-root override) that
+is out of scope for this project's current design.
+
+### tmux persistence
+
+Terminal sessions live in tmux, independent of the MCP server process. The
+server does not create a session registry of its own, and it never destroys
+a tmux session on exit. A restarted MCP server rediscovers and reuses any
+existing managed session instead of creating a duplicate — including one
+already sitting at a login prompt from before the restart, which the next
+`terminal_open()` may safely resume and complete authentication for.
+
+### Test isolation
+
+The test suite never touches the real, production `network-lab-mcp` tmux
+socket: a session-scoped autouse fixture redirects `terminal.TMUX_SOCKET_NAME`
+to a per-test-run socket name for the duration of the suite, and tears that
+socket's server down afterward. Tests that must exercise the real production
+socket name directly (proving it is left untouched) do so explicitly via a
+dedicated fixture, never by accident. This means an engineer's own real,
+already-open managed sessions are never listed, read, or closed by an
+ordinary `pytest` run.
 
 ## Not implemented yet
 
 To keep the MCP layer thin and the scope tight, this repository still
 deliberately excludes:
 
-- CDP discovery, IOS XE/NX-OS discovery, SNMP/NETCONF/RESTCONF discovery,
-  and a generic discovery/plugin framework -- Step 3 implements only IOS
-  XR + LLDP (see "Step 3: IOS XR + LLDP topology discovery" below).
+- NX-OS discovery, SNMP/NETCONF/RESTCONF discovery, and a generic
+  discovery/plugin framework — Discovery implements only IOS XR/IOS XE
+  (LLDP + CDP) and classic IOS (CDP only).
 - Automatic stale topology-link pruning, `discover topology` automatically
   committing or selecting `active_topology`, and a discovery-history
-  subsystem (`show discover`/a discovery database) -- none of these are
-  in scope even for the implemented Step 3.
+  subsystem (`show discover`/a discovery database).
 - An HTTP MCP server, containerization, or an MCP-owned runtime/session
   database.
 - A public local-shell transport (local processes are used only inside the
   internal validation helpers described above).
-- External-editor support for access-info (structured CLI editing only in
-  this phase).
+- External-editor support for access-info (structured CLI editing only).
 - Multi-hop SSH jump chains: a jump host cannot itself reference another
   jump host; single-hop OpenSSH ProxyJump only.
 - A shell-hop automation/state machine for ProxyJump: OpenSSH's own `-J`
@@ -1494,5 +1526,5 @@ deliberately excludes:
   exit paths (`root`, `exit`, `end`, `clear`, Ctrl-D) never lose a candidate
   unexpectedly; that guarantee does not extend to a killed process.
 
-These are candidates for later steps, not for this repository's current
+These are candidates for future work, not for this repository's current
 scope.

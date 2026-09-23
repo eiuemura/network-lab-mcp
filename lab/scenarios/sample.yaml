@@ -1,7 +1,7 @@
 # Scenario: what must be accomplished for the current task.
 #
-# The scenario format is intentionally minimal and experimental in Step 1;
-# see docs/scenario_format.md.
+# The scenario format is intentionally minimal and experimental; see
+# docs/scenario_format.md.
 
 name: sample
 

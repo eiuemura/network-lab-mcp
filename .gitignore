@@ -21,7 +21,18 @@ lab/topologies/*.yaml
 lab/access-info/*.yaml
 !lab/access-info/sample.yaml
 
+# Scenario/reference content can describe private task or customer
+# context. Only the fictional samples are tracked.
+lab/scenarios/*.yaml
+!lab/scenarios/sample.yaml
+lab/references/*.yaml
+!lab/references/sample.yaml
+
 # Persistent terminal session transcripts (logs/terminal/<device-id>/*.log)
 # are runtime artifacts, potentially containing full device output --
 # never committed.
 logs/
+
+# Local-only development history: detailed engineering notes that are not
+# meant for the public repository.
+docs/development_history.md

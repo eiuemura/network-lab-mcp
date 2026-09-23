@@ -8,14 +8,13 @@ reload their inputs from disk on every call (see
 [architecture.md](architecture.md#lab-yaml-reload-policy)). Tool results are
 returned as structured JSON.
 
-**Committed-state boundary (Step 2 / 2.5)**: these tools only ever read
-*committed* `lab/settings.yaml`, `lab/topologies/*.yaml`, and (for
-`terminal_open()` only) `lab/access-info/*.yaml` — the same files the Step 2
-human CLI (`./run_cli.sh`) writes on a successful `commit`. Uncommitted
-candidate configuration in a CLI session is never visible here; a
-successful commit becomes visible on the very next call to any of these
-tools, with no MCP server restart required. See
-[architecture.md](architecture.md#committed-only-mcp-boundary) and
+**Committed-state boundary**: these tools only ever read *committed*
+`lab/settings.yaml`, `lab/topologies/*.yaml`, and (for `terminal_open()`
+only) `lab/access-info/*.yaml` — the same files the human CLI (`./run_cli.sh`)
+writes on a successful `commit`. Uncommitted candidate configuration in a CLI
+session is never visible here; a successful commit becomes visible on the
+very next call to any of these tools, with no MCP server restart required.
+See [architecture.md](architecture.md#committed-only-mcp-boundary) and
 [cli_reference.md](cli_reference.md).
 
 **Private access-info boundary**: `lab/access-info/*.yaml` (device
@@ -24,6 +23,15 @@ below. `get_active_topology()` returns only the safe logical topology;
 `terminal_open()` resolves access-info internally to open a session, but
 returns only the device name, session name, reuse flag, and transport —
 never the address, username, or password.
+
+**Active-topology membership**: `terminal_open()`, `terminal_send()`, and
+`terminal_read()` all require the device to currently be present in the
+active topology (reloaded from disk on every call). `terminal_list()` and
+`terminal_close()` are deliberately unrestricted — a managed session left
+over from before the active topology changed to no longer include that
+device stays visible and closeable, even though `terminal_send()`/
+`terminal_read()` will refuse to operate on it. See "Managed sessions vs.
+the active topology" below.
 
 ## get_active_topology()
 
@@ -46,12 +54,14 @@ topology.
 }
 ```
 
-Note that a device entry here never includes `address`, `transport`,
-`port`, `username`, or `password` — topology only ever holds safe logical
-data (`type` plus whatever future safe fields it grows). Private connection
-data lives in a separate access-info definition that this tool never reads
-or returns; see `terminal_open()` below for how that gets resolved when a
-session is actually opened.
+A device entry may also carry an `interfaces` mapping (interface name ->
+`{ "ipv4_address": "...", "vrf": "..." }`) when Layer-3 enrichment data has
+been committed for it — see ["Topology discovery"](architecture.md#topology-discovery)
+in the architecture doc. A device entry never includes `address`,
+`transport`, `port`, `username`, or `password` — topology only ever holds
+safe logical data. Private connection data lives in a separate access-info
+definition that this tool never reads or returns; see `terminal_open()`
+below for how that gets resolved when a session is actually opened.
 
 **Usage example**: call this first, before touching any device, to learn
 which devices and links exist in the active topology.
@@ -97,9 +107,8 @@ corresponding file does not exist or is not valid YAML.
 
 ## terminal_open()
 
-**Purpose**: open a terminal session for a device in the active topology,
-launching `ssh` or `telnet` inside the dedicated tmux environment. Reuses an
-existing session for that device instead of creating a duplicate.
+**Purpose**: open (or reuse) a terminal session for a device in the active
+topology, launching `ssh` or `telnet` inside the dedicated tmux environment.
 
 **Arguments**:
 
@@ -118,7 +127,8 @@ existing session for that device instead of creating a duplicate.
 ```
 
 **Usage example**: `terminal_open(device="R1")`, then use `terminal_read()`
-to see the login prompt.
+to see the login prompt (or, if authentication already completed
+automatically, the device's own exec prompt).
 
 **Important behavior**: the active topology is reloaded from disk before
 opening the session, so a device added to `lab/topologies/<active>.yaml` (or
@@ -134,15 +144,28 @@ references a `jump_host` (within that same access-info definition),
 Network Lab MCP connects via native OpenSSH ProxyJump instead of directly
 — see [architecture.md](architecture.md#single-hop-openssh-proxyjump) —
 transparently to Claude, which still only ever sees the one resulting
-terminal session. This tool does not parse or automate login: password
-prompts, host key confirmations, and any other interactive prompt are left
-for the caller to observe via `terminal_read()` and respond to via
-`terminal_send()`. This active-topology-membership restriction is
-unchanged by Step 3: `discover topology`'s private bootstrap connectivity
-(automated login, only for its own temporary sessions) is a completely
-separate internal code path in a structurally distinct tmux namespace,
-never reachable through this tool and never weakening it — see
-[architecture.md](architecture.md#a-third-session-namespace-discovery-bootstrap).
+terminal session.
+
+Once the session exists, this tool also **completes target authentication
+automatically** using the resolved access-info's own private credentials,
+for either transport: an SSH password prompt from the target device itself
+(never a jump host's own prompt — that hop must use non-interactive
+key/agent authentication), or a classic-IOS-style Telnet `Username:`/
+`Password:` sequence. Key/agent SSH authentication that succeeds without
+ever showing a password prompt is unaffected. A host-key confirmation
+prompt, or any other interactive step this cannot safely resolve on its own,
+is still left for `terminal_read()`/`terminal_send()` to handle. No
+credential value is ever returned by this tool or any other, and this
+automated authentication is fully idempotent — calling `terminal_open()`
+again against an already-authenticated session sends nothing further. See
+["Managed-terminal private authentication"](architecture.md#managed-terminal-private-authentication)
+for the full design.
+
+This active-topology-membership restriction is a separate code path from
+Discovery: `discover topology`'s private bootstrap connectivity (which does
+automate login, only for its own temporary sessions) never requires
+active-topology membership and is never reachable through this tool — see
+[architecture.md](architecture.md#discovery-bootstrap-session-namespace).
 
 **Error behavior**: raises a tool error (fail closed, never a silent guess)
 when:
@@ -160,6 +183,7 @@ when:
   topology and access information.`);
 - the device references a `jump_host` that does not exist in the same
   access-info definition;
+- authentication definitively fails or is rejected (either transport);
 - the device's transport is unsupported, the required `ssh`/`telnet` binary
   is unavailable, or the device name cannot be mapped to a valid session
   name.
@@ -211,9 +235,15 @@ Examples:
 `text` may contain credentials (e.g. a password prompt response). It is
 never logged, never persisted, and never echoed back in the tool's response.
 
-**Error behavior**: raises a tool error when the device's session does not
-exist (call `terminal_open()` first) or an unsupported key name is given in
-`keys`.
+**Important behavior — active-topology membership**: the device must still
+be present in the active topology, reloaded from disk on every call. An
+already-open session does not stay usable if the active topology changes to
+no longer include this device — use `terminal_close()` and reopen it (or
+switch the active topology back) instead.
+
+**Error behavior**: raises a tool error when the device is not present in
+the active topology, the device's session does not exist (call
+`terminal_open()` first), or an unsupported key name is given in `keys`.
 
 ## terminal_read()
 
@@ -243,13 +273,16 @@ content and leaves interpretation to the caller. The underlying tmux session
 retains a much larger scrollback buffer than the default `lines`, so a
 larger `lines` value can be requested when needed without losing history.
 
-**Error behavior**: raises a tool error when the device's session does not
-exist.
+**Important behavior — active-topology membership**: same rule as
+`terminal_send()` above — the device must still be present in the active
+topology, reloaded from disk on every call.
+
+**Error behavior**: raises a tool error when the device is not present in
+the active topology, or the device's session does not exist.
 
 ## terminal_list()
 
-**Purpose**: list managed production terminal sessions for active-topology
-devices.
+**Purpose**: list every currently managed production terminal session.
 
 **Arguments**: none.
 
@@ -264,15 +297,20 @@ devices.
 ```
 
 **Usage example**: call this to see which devices already have an open
-session before deciding whether to call `terminal_open()` again.
+session before deciding whether to call `terminal_open()` again, or to find
+a stale session that needs to be closed with `terminal_close()`.
 
-**Important behavior**: only sessions in the `network-lab-device-*`
-namespace are ever returned. Local validation sessions
-(`network-lab-validation-*`) are never exposed as topology devices by this
-tool, regardless of what a device happens to be named — classification is by
-structural namespace prefix, not by searching for the substring
-`"validation"`. A legitimate device named `validation-router` (session
-`network-lab-device-validation-router`) is listed normally.
+**Important behavior**: this tool lists **every** managed production
+session, regardless of whether each device is still present in the active
+topology — including a stale session left over from before the active
+topology changed. That session remains visible and closeable via
+`terminal_close()` even though `terminal_send()`/`terminal_read()` will
+refuse to use it (see "Active-topology membership" above). Local validation
+sessions (`network-lab-validation-*`) are never exposed as topology devices
+by this tool, regardless of what a device happens to be named —
+classification is by structural namespace prefix, not by searching for the
+substring `"validation"`. A legitimate device named `validation-router`
+(session `network-lab-device-validation-router`) is listed normally.
 
 **Error behavior**: does not raise on an empty session list; returns
 `{"sessions": []}`.
@@ -294,13 +332,35 @@ structural namespace prefix, not by searching for the substring
 `closed` is `false` (not an error) if there was no session to close.
 
 **Usage example**: `terminal_close(device="R1")` once a task involving that
-device is finished.
+device is finished, or to clean up a stale session for a device no longer in
+the active topology.
 
 **Important behavior**: this tool always derives a production session name
 (`network-lab-device-<device>`) and can never target a validation-only
 session, even if a caller-supplied name happens to look similar to a
-validation identifier.
+validation identifier. Deliberately does **not** require the device to
+still be present in the active topology, so a stale session left over from
+before the active topology changed can always be closed.
 
 **Error behavior**: raises a tool error only when the device name itself
 cannot be mapped to a valid session name; a missing session is reported as
 `closed: false`, not as an error.
+
+## Managed sessions vs. the active topology
+
+| Tool | Requires active-topology membership? |
+|---|---|
+| `terminal_open()` | Yes |
+| `terminal_send()` | Yes |
+| `terminal_read()` | Yes |
+| `terminal_list()` | No — lists every managed session |
+| `terminal_close()` | No — can always close a stale session |
+
+Managed sessions are persistent (they live in tmux, independent of the MCP
+server process) and survive a running-config change that removes a device
+from the active topology. `terminal_open()`, `terminal_send()`, and
+`terminal_read()` all re-verify active-topology membership on every call so
+a stale session cannot silently continue being driven after the topology
+changed out from under it. `terminal_list()`/`terminal_close()` stay
+unrestricted on purpose: a stale session must remain discoverable and
+closeable, or it could never be cleaned up.

@@ -1,12 +1,12 @@
 # CLI Reference
 
-This is the reference for the Step 2 / 2.5 human-facing Network Lab CLI,
-launched with `./run_cli.sh`. It is a human configuration/control plane for
+This is the reference for the human-facing Network Lab CLI, launched with
+`./run_cli.sh`. It is a human configuration/control plane for
 running-config (`lab/settings.yaml`) and topology/access-info/scenario/
 reference *definitions*, edited through a candidate/commit model with IOS
 XR-compatible interaction. It does not speak the MCP stdio protocol and is a
 separate process from `network-lab-mcp` — see
-[architecture.md](architecture.md#step-2--25-the-human-configurationcontrol-plane).
+[architecture.md](architecture.md#cli-control-plane).
 
 The command grammar (`src/network_lab_mcp/cli/grammar.py`) is the single
 source of truth for everything in this document: parsing, abbreviation,
@@ -19,10 +19,6 @@ completion, `?` help, and error reporting all walk the same trie.
 - **topology** / **access-info** / **scenario** / **reference** (global
   mode's `topology`/`access-info`/`scenario`/`reference <name>`): create or
   edit a *definition*. Never changes the running-config selection.
-
-This replaces the original Step 2 model, where global `topology`/
-`scenario`/`reference <name>` directly changed the active selection. That
-selector semantics no longer exists anywhere in this CLI.
 
 ## Modes and prompts
 
@@ -49,15 +45,14 @@ selector semantics no longer exists anywhere in this CLI.
 | `root` | Jump straight to global configuration mode from any nested submode. Candidate state is preserved; never commits, never clears. Not offered at global configuration mode itself (already the configuration root) or in EXEC. |
 | `exit` | Move exactly **one** configuration level up (device/jump-host -> its parent definition; a definition or `running` -> global). No dirty guard — still the same overall configure session. At global configuration mode, `exit` is guarded (see `end`). |
 | `end` | Return to EXEC from anywhere in configuration mode. Blocked (with a warning) while any candidate scope is dirty. Never an implicit commit or clear. |
-| `clear` | Discard the entire uncommitted configure-session state (running-config candidate and any open definition candidate). Stays in the current mode, or the nearest still-valid parent if the current submode's target no longer exists. Never writes disk, never returns to EXEC. Replaces the original Step 2 `abort`, which no longer exists. |
+| `clear` | Discard the entire uncommitted configure-session state (running-config candidate and any open definition candidate). Stays in the current mode, or the nearest still-valid parent if the current submode's target no longer exists. Never writes disk, never returns to EXEC. |
 
 None of `root`/`exit`/`end`/`clear` ever commits, and `commit` never
-navigates — the two concerns are fully independent, unlike the original
-Step 2 model where `commit`/`abort` both returned to EXEC.
+navigates — the two concerns are fully independent.
 
 ## `?` vs. `help`: syntax help vs. Quick Start/usage help
 
-These two are deliberately different, and neither one replaced the other:
+These two are deliberately different, and neither one replaces the other:
 
 - **`?`** — IOS XR-style **context-sensitive command syntax help**: "what
   can I type here?" Unaffected by anything in this section; see
@@ -241,12 +236,9 @@ scrollback. Durable historical evidence remains the job of the existing
 
 ### `show logging`
 
-Bare `show logging` lists every device's persistent logs newest-first
-(unchanged since Step B); `show logging summary` is the explicit,
-separate per-device eligible-log-count view (added in Step B.1, briefly
-the behavior of *bare* `show logging` in that one release, then split
-back out in Step B.1a once it was clear the two views serve different
-purposes and shouldn't share one command):
+Bare `show logging` lists every device's persistent logs newest-first;
+`show logging summary` is a separate, explicit per-device eligible-log-count
+view:
 
 ```
 network-lab# show logging
@@ -280,13 +272,12 @@ remains a meaningful `delete logging <device-id> directory` target —
 plus a Total row (the sum of eligible logs, never a directory count). A
 symlink is never a valid device logging directory and never appears in
 either view; an unknown/non-log file inside a device directory is never
-counted. `show logging <device-id>` and `show logging <device-id>
-<log-file>` are unchanged from Step B. No logs/no valid device logging
-directories at all prints `No terminal logs found.` for either bare
-`show logging` or `show logging summary` (never a traceback, never
-creates `logs/terminal/`). `show logging` (in any of its four forms) is
-EXEC-only, like `show version` — configuration mode `show` semantics
-remain exactly `show`/`show configuration`/`show running-config`.
+counted. No logs/no valid device logging directories at all prints `No
+terminal logs found.` for either bare `show logging` or `show logging
+summary` (never a traceback, never creates `logs/terminal/`). `show
+logging` (in any of its four forms) is EXEC-only, like `show version` —
+configuration mode `show` semantics remain exactly `show`/`show
+configuration`/`show running-config`.
 
 ### `delete logging`
 
@@ -363,9 +354,11 @@ Safety, in order of how the implementation actually enforces it:
   device-level, not file-level: if **either** a production or a Discovery
   session currently exists for a device, **none** of that device's logs
   or its directory can be deleted, regardless of tmux session-namespace
-  classification. This is a deliberate, documented limitation, not
-  finer-grained protection than the architecture can actually prove. An
-  active device is rejected *before* any confirmation prompt is shown.
+  classification (`Cannot delete logging directory for '<device>' while a
+  managed terminal session is still open.`). This is a deliberate,
+  documented limitation, not finer-grained protection than the
+  architecture can actually prove. An active device is rejected *before*
+  any confirmation prompt is shown.
 - **Bulk operations fail closed.** `delete logging all`/`all directory`
   and `delete logging <device-id> all`/`directory` preflight the *entire*
   target set before ever asking for confirmation: if any device targeted
@@ -412,7 +405,7 @@ other than the one resolved name.
 
 ```
 network-lab# show running-config access-info
-access-info test_lab
+access-info sample
  device R1
   type iosxr
   address 192.0.2.11
@@ -479,7 +472,7 @@ access-info) — it does not change what MCP tools, logs, or errors expose.
 | Command | Effect |
 |---------|--------|
 | `running-config` | Enter running-config selection mode (`network-lab(config-running)#`). |
-| `discover topology` | Run Step 3 IOS XR/IOS XE/IOS LLDP+CDP discovery (plus optional L3 interface enrichment, Step 3.7) against the committed `active_access_info` and apply the result as a topology candidate (new or merged into an existing one) — see README.md's "Step 3: IOS XR + LLDP topology discovery". Enters topology definition mode on success. Never commits, never selects `active_topology`. Blocked (like opening any other definition) if a *different* definition is currently open and dirty. |
+| `discover topology` | Run IOS XR/IOS XE/IOS LLDP+CDP discovery (plus optional L3 interface enrichment) against the committed `active_access_info` and apply the result as a topology candidate (new or merged into an existing one) — see [architecture.md](architecture.md#topology-discovery). Enters topology definition mode on success. Never commits, never selects `active_topology`. Blocked (like opening any other definition) if a *different* definition is currently open and dirty. |
 | `access-info <name>` | Create or edit an access-info definition; `<name>` existing loads it, otherwise starts a new one. Enters access-info definition mode. |
 | `topology <name>` | Create or edit a topology definition (see "Case-only topology-name collision safeguard" below). Enters topology definition mode. |
 | `scenario <name>` | Create or edit a scenario definition. Enters scenario definition mode. |
@@ -494,8 +487,7 @@ access-info) — it does not change what MCP tools, logs, or errors expose.
 | `help` / `help <topic>` / `?` | As in EXEC mode — see above. |
 
 Opening a *different* definition (of any kind) while the current one is
-dirty is blocked, the same way switching topologies was guarded in the
-original Step 2 model — see "Definition switching guard" below.
+dirty is blocked — see "Definition switching guard" below.
 
 `help` and `help <topic>` behave identically in every mode (see above); the
 per-mode tables below omit them for brevity and list only what differs from
@@ -597,7 +589,7 @@ missing value there is left exactly as before (not papered over).
 | `device <name>` | Create or edit a device's *safe* metadata (case-sensitive); enters topology device mode. |
 | `edit` | Open the topology candidate in an external YAML editor (see "External YAML editor" below). |
 | `show running-config` | This topology's own **full committed** state, re-read fresh from disk — empty if it has never been committed. **Not** the MCP running-config selection. |
-| `show` / `show configuration` | This topology's **uncommitted changes only** (field-level for `description`/device `type`; falls back to the whole candidate block if something the structured CLI does not model, such as `links`, changed — see "`show running-config` vs. `show configuration`" below). |
+| `show` / `show configuration` | This topology's **uncommitted changes only** (field-level for `description`/device `type`; falls back to the whole candidate block if something the structured CLI does not model, such as `links` or a device's `interfaces`, changed — see "`show running-config` vs. `show configuration`" below). |
 | `commit` | Validate and persist; stays in topology definition mode. |
 | `root` | Jump to global configuration mode, candidate preserved. |
 | `clear` | As above (topology-scoped edits are part of the same overall candidate). |
@@ -609,7 +601,7 @@ missing value there is left exactly as before (not papered over).
 
 | Command | Effect |
 |---------|--------|
-| `type <iosxr\|iosxe\|ios\|nxos\|host>` | Device type. See "Device type enum" below. |
+| `type <iosxr\|iosxe\|ios\|nxos\|host>` | Device type. See README.md's ["Supported device types & Discovery scope"](../README.md#supported-device-types--discovery-scope). |
 | `show running-config` | Just *this device's* full committed block from the topology above — empty if this device (or the whole topology) has never been committed. |
 | `show` / `show configuration` | Just this device's uncommitted field(s) (only `type` is modeled here). |
 | `commit` | Validate and persist; stays in this device's mode. |
@@ -620,14 +612,18 @@ missing value there is left exactly as before (not papered over).
 Topology device mode intentionally has **no** `address`/`transport`/`port`/
 `username`/`password` — those private connection fields live under
 access-info device mode instead, since topology is exposed to Claude via
-`get_active_topology()` and must never carry them.
+`get_active_topology()` and must never carry them. A device's `interfaces`
+(Layer-3 enrichment — ipv4_address/vrf per interface) is likewise not a
+structured CLI field: it is populated by `discover topology` or the
+external `edit` command, and displayed as read-only review information by
+`show`/`show configuration`/`show running-config`.
 
 ## Access-info definition mode commands
 
 | Command | Effect |
 |---------|--------|
 | `device <name>` | Create or edit a device's private connection data (case-sensitive); enters access-info device mode. |
-| `jump-host <name>` | Create or edit a reusable single-hop OpenSSH ProxyJump endpoint (case-sensitive); enters access-info jump-host mode. See ["Single-hop SSH jump hosts"](../README.md#single-hop-ssh-jump-hosts-proxyjump). |
+| `jump-host <name>` | Create or edit a reusable single-hop OpenSSH ProxyJump endpoint (case-sensitive); enters access-info jump-host mode. See README.md's ["Single-hop SSH jump hosts"](../README.md#single-hop-ssh-jump-hosts-proxyjump). |
 | `no device <name>` | Remove a device entirely from the candidate (Tab/`?` complete only names present in the *current candidate*, including ones created but not yet committed in this same session). Does not touch committed YAML until `commit`; does not cascade to topology or any other definition. Removing a nonexistent name is a clear error, not a silent no-op. |
 | `no jump-host <name>` | Remove a jump host entirely from the candidate, the same way. Does not cascade: a device still referencing the removed jump host is left as-is, and `commit` will then fail with a dangling-reference error until the reference is fixed or cleared (`no jump-host` inside that device's own mode) or the jump host is restored. |
 | `show running-config` | This access-info definition's own **full committed** state, re-read fresh from disk — empty if it has never been committed. **Not** the MCP running-config selection. Passwords in **clear text** (see "Password display policy" below). |
@@ -637,19 +633,19 @@ access-info device mode instead, since topology is exposed to Claude via
 | `clear` / `end` / `help` | As above. |
 | `exit` | Return one level up, to global configuration mode. |
 
-access-info has no `edit` command in this phase — see
-["Why access-info has no external editor yet"](#why-access-info-has-no-external-editor-yet).
+access-info has no `edit` command — see
+["Why access-info has no external editor"](#why-access-info-has-no-external-editor).
 
 ## Access-info device mode commands (private connection fields)
 
 | Command | Effect |
 |---------|--------|
-| `type <iosxr\|iosxe\|ios\|nxos\|host>` | Device type. See "Device type enum" below; validated against the same SSOT as topology device mode. |
+| `type <iosxr\|iosxe\|ios\|nxos\|host>` | Device type. Validated against the same SSOT as topology device mode. |
 | `address <value>` | Device management address. |
 | `transport <ssh\|telnet>` | Device transport. Validated immediately (invalid input is rejected with a caret, not accepted into the candidate). |
 | `port <1-65535>` | Device port. Validated immediately. |
 | `username <value>` | Device username. |
-| `password <value>` | Device password. Stored in plain text like Step 1 (this is a lab tool, not a secret manager); never completed or retained in history (see "Password safety" below) — but shown in **clear text** by this mode's own `show`/`show configuration`/`show running-config` (see "Password display policy"). |
+| `password <value>` | Device password. Stored in plain text (this is a lab tool, not a secret manager); never completed or retained in history (see "Password safety" below) — but shown in **clear text** by this mode's own `show`/`show configuration`/`show running-config` (see "Password display policy"). |
 | `jump-host <name>` | Reference a jump host (by name, within this same access-info definition) for a single-hop OpenSSH ProxyJump connection. Tab/`?` complete existing jump-host names in this definition; the name is validated to exist, and this device's `transport` to be `ssh`, at commit time. |
 | `no type` / `no address` / `no transport` / `no username` / `no password` / `no port` / `no jump-host` | Clear the corresponding field from the candidate only. Every settable field has a matching `no` command (see "Candidate may be temporarily incomplete" below). |
 | `show running-config` | Just *this device's* full committed block from the access-info definition above — empty if this device (or the whole definition) has never been committed. |
@@ -691,8 +687,8 @@ candidate with the same rules as always (`network_lab_mcp.lab`'s existing
 validators), so a device that violates one of those rules still fails to
 commit. Note that today's validators do not themselves require
 `type`/`address`/`transport` to be present (a missing `type`, in
-particular, has been explicitly allowed since Step 1); this document
-describes that existing, unchanged policy rather than a new one.
+particular, has always been allowed) — this document describes that
+existing policy rather than a new one.
 
 ## Scenario / reference definition mode commands
 
@@ -700,7 +696,7 @@ describes that existing, unchanged policy rather than a new one.
 |---------|--------|
 | `edit` | Open the candidate in an external YAML editor (see below). |
 | `show running-config` | This definition's own **full committed** YAML, re-read fresh from disk — empty if it has never been committed. **Not** the MCP running-config selection. |
-| `show` / `show configuration` | This definition's **uncommitted changes only**: schema is intentionally not fixed yet (see [scenario_format.md](scenario_format.md)), so the whole (small) candidate document is shown when anything in it changed, and nothing at all when it hasn't. |
+| `show` / `show configuration` | This definition's **uncommitted changes only**: schema is intentionally not fixed (see [scenario_format.md](scenario_format.md)), so the whole (small) candidate document is shown when anything in it changed, and nothing at all when it hasn't. |
 | `commit` | Validate and persist; stays in this definition's mode. |
 | `root` | Jump to global configuration mode, candidate preserved. |
 | `clear` / `end` / `help` | As above. |
@@ -1041,7 +1037,7 @@ network-lab# show running-config
   as `running-config` mode's `topology <name>`) when nothing has been typed
   yet, matching dynamic candidates once a prefix has been typed for an
   identifier argument, the full small enum list (e.g. `ssh`/`telnet` for
-  `transport`, or the four `device.type` values) even with nothing typed, or
+  `transport`, or the five `device.type` values) even with nothing typed, or
   — for a **"select or create"** identifier such as global mode's
   `topology`/`access-info`/`scenario`/`reference <name>`, or `device <name>`
   under topology/access-info — every existing name *plus* a creation hint,
@@ -1282,9 +1278,9 @@ switched away from.
 
 Discards **every** uncommitted change in the current configure session —
 the running-config candidate and the open definition candidate together —
-restoring committed state. It never writes disk and, unlike the original
-Step 2 `abort` it replaces, it **does not return to EXEC** and does not
-navigate at all beyond the nearest-valid-parent fallback below:
+restoring committed state. It never writes disk and does not return to
+EXEC, and does not navigate at all beyond the nearest-valid-parent
+fallback below:
 
 - A brand-new (never-committed) definition candidate is discarded entirely,
   not reset to an empty version of itself.
@@ -1474,11 +1470,16 @@ mathematically minimal generic recursive diff:
   gets) — e.g. removing a committed `R4` shows `no device R4`, while a
   device that never existed in committed state and was removed again in
   the same session (or removed and then recreated identically) shows no
-  diff at all, since the net effect against committed is nothing.
+  diff at all, since the net effect against committed is nothing. A
+  topology device's `interfaces` follows the same set/`no` shape at the
+  interface level: an added or changed interface shows its changed fields
+  (`ipv4_address`/`vrf`), a removed interface shows `no interface <name>`,
+  and a device with only an L3-only change (its own `type` unchanged)
+  still appears in the diff rather than disappearing.
 
 - **Open/complex structures** without a direct CLI representation below
   the whole-document level (scenario/reference content — schema
-  intentionally not fixed yet — or a topology field like `links` that the
+  intentionally not fixed — or a topology field like `links` that the
   structured CLI never edits) fall back to showing the smallest practical
   enclosing changed object as a whole (the entire scenario/reference
   document, or the entire topology block) rather than attempting an exact
@@ -1498,11 +1499,11 @@ instead.
 ## Password safety
 
 Device and jump-host `password` values (entered in access-info's device/
-jump-host submodes) are stored in plain text in access-info YAML, exactly
-like Step 1 (this is a lab tool, not a secret manager). A password is never
-offered as a Tab/`?` candidate or value, and never retained in the CLI's
-in-memory command history — see "Command history" and "Tab / Ctrl-I
-completion" above. Topology never contains `password` at all (rejected by
+jump-host submodes) are stored in plain text in access-info YAML (this is a
+lab tool, not a secret manager). A password is never offered as a Tab/`?`
+candidate or value, and never retained in the CLI's in-memory command
+history — see "Command history" and "Tab / Ctrl-I completion" above.
+Topology never contains `password` at all (rejected by
 `lab.validate_topology_data()`), and no MCP tool response, log line, or
 error message ever includes one — see "Password display policy" below for
 the one deliberate exception (explicit local CLI display).
@@ -1564,33 +1565,33 @@ committed definition -> candidate data -> secure temp .yaml file
   `definition_candidate == definition_original` equality check `clear`/
   `commit` already use).
 
-### Why access-info has no external editor yet
+### Why access-info has no external editor
 
 access-info's `password` field must never be offered as a Tab/`?`
 completion candidate and should not be casually written to an arbitrary
 external editor's temporary file; an editor round trip would put the
 plaintext value in a file outside the structured, retained-in-nothing
 path this CLI otherwise guarantees for it. Structured CLI editing keeps
-password entry on that one controlled path. This may be revisited later,
-but is out of scope for this phase.
+password entry on that one controlled path.
 
 ## Limitations
 
-- No `no topology <name>` (topology deletion).
-- No structured `link` editing command; `links` is only ever set by
-  `discover topology` or the external `edit` -- `show`/`show
-  configuration`/`show running-config` display it as read-only review
-  information, not as a re-typeable command line (see "`discover
-  topology`" below). Any other field the CLI does not directly edit is
-  likewise preserved untouched through a commit.
-- `discover topology` is IOS XR + LLDP only (see README.md's "Step 3: IOS
-  XR + LLDP topology discovery" for the full scope and limitations); no
-  CDP, no IOS XE/NX-OS discovery, no automatic commit or `active_topology`
-  selection, and no discovery-history command.
+- No structured `link`/`interfaces` editing command; `links` and a
+  device's `interfaces` are only ever set by `discover topology` or the
+  external `edit` -- `show`/`show configuration`/`show running-config`
+  display them as read-only review information, not as re-typeable
+  command lines (see "Topology device mode commands" above). Any other
+  field the CLI does not directly edit is likewise preserved untouched
+  through a commit.
+- `discover topology` supports IOS XR/IOS XE (LLDP + CDP) and classic IOS
+  (CDP only) — see README.md's ["Supported device types & Discovery
+  scope"](../README.md#supported-device-types--discovery-scope) for the
+  full scope and limitations; no NX-OS discovery, no automatic commit or
+  `active_topology` selection, and no discovery-history command.
 - `show logging` only lists/reads existing terminal logs; there is no
-  `clear logging`/deletion/rotation/search CLI yet.
+  `clear logging`/rotation/search CLI beyond `delete logging`.
 - Scenario and reference content has a schema that is intentionally not
-  fixed yet (see [scenario_format.md](scenario_format.md)) — only "valid
+  fixed (see [scenario_format.md](scenario_format.md)) — only "valid
   YAML, root is a mapping" is enforced.
 - `lab/principles.yaml` is not edited by the CLI.
 - The case-only collision safeguard is implemented for `topology <name>`
@@ -1598,7 +1599,7 @@ but is out of scope for this phase.
   access-info/scenario/reference names have no equivalent safeguard
   (identifiers remain fully case-sensitive, but a near-duplicate by case is
   not flagged).
-- access-info has no external-editor support in this phase (see above).
+- access-info has no external-editor support (see above).
 - Single-hop OpenSSH ProxyJump only: a jump host cannot itself reference
   another jump host (no jump chains), and only `type: host` /
   `transport: ssh` jump hosts are accepted — see README.md's

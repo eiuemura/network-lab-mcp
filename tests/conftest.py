@@ -1,4 +1,5 @@
-"""Shared pytest fixtures: an isolated lab/ directory tree per test.
+"""Shared pytest fixtures: an isolated lab/ directory tree per test, and an
+isolated tmux socket for the whole test session.
 
 Tests never touch the real repository lab/ directory; each test gets its own
 temporary lab root with the same layout (settings.yaml, principles.yaml,
@@ -7,10 +8,60 @@ topologies/, scenarios/, references/).
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+
+from network_lab_mcp import terminal
+
+# The production tmux socket managed sessions/Discovery/monitor use in real
+# operation. Tests must never list, read, send to, or close sessions on
+# this socket -- only the isolated one below.
+PRODUCTION_TMUX_SOCKET_NAME = terminal.TMUX_SOCKET_NAME
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_tmux_socket():
+    """Redirect every test in the suite onto its own, disposable tmux
+    server for the whole pytest run -- ordinary pytest must never be able
+    to list, read, send to, or close a real production managed session
+    (or a Discovery/validation session) on `network-lab-mcp`, the socket
+    real operation uses.
+
+    `terminal._tmux_base()` reads `terminal.TMUX_SOCKET_NAME` as a plain
+    module-global lookup at call time (not a frozen default parameter), so
+    reassigning the module attribute here is sufficient -- every existing
+    tmux invocation throughout terminal.py picks up the new socket name
+    with no further changes needed anywhere else.
+
+    Session-scoped (one shared test socket for the whole run, not one per
+    test): tests already rely on per-file/per-test cleanup fixtures to
+    avoid session-name collisions *within* a socket, and spinning up a
+    fresh tmux server per test would add real overhead across a suite
+    this size for no isolation benefit (pytest-xdist is not in use, so
+    tests never actually run concurrently against each other).
+
+    Real-lab-gated tests (`NETWORK_LAB_REAL_TESTS=1`) are unaffected in
+    substance: they still open real ssh/telnet sessions to real devices --
+    only the *local* tmux socket multiplexing those sessions is
+    redirected, which has no bearing on which remote device is reached."""
+    test_socket_name = f"network-lab-mcp-test-{os.getpid()}"
+    terminal.TMUX_SOCKET_NAME = test_socket_name
+    yield
+    terminal.TMUX_SOCKET_NAME = PRODUCTION_TMUX_SOCKET_NAME
+    subprocess.run(["tmux", "-L", test_socket_name, "kill-server"], capture_output=True)
+
+
+@pytest.fixture()
+def production_tmux_socket_name() -> str:
+    """The real production tmux socket name -- for the one test file
+    (test_tmux_socket_isolation.py) that must deliberately create a *fake*
+    session directly on it (bypassing terminal.py, via a raw `tmux`
+    invocation) to prove ordinary pytest never touches it."""
+    return PRODUCTION_TMUX_SOCKET_NAME
 
 
 def _write_yaml(path: Path, data) -> None:

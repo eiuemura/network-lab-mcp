@@ -1497,9 +1497,9 @@ dedicated fixture, never by accident. This means an engineer's own real,
 already-open managed sessions are never listed, read, or closed by an
 ordinary `pytest` run.
 
-## Not implemented yet
+## Current scope and deliberate exclusions
 
-To keep the MCP layer thin and the scope tight, this repository still
+To keep the MCP layer thin and the scope tight, this repository
 deliberately excludes:
 
 - NX-OS discovery, SNMP/NETCONF/RESTCONF discovery, and a generic
@@ -1526,5 +1526,8 @@ deliberately excludes:
   exit paths (`root`, `exit`, `end`, `clear`, Ctrl-D) never lose a candidate
   unexpectedly; that guarantee does not extend to a killed process.
 
-These are candidates for future work, not for this repository's current
-scope.
+These are deliberate boundaries, not unfinished work — each one keeps a
+specific part of the system narrow and easy to reason about (see the goals
+above). None of them is currently on a roadmap; if one is ever revisited,
+it will be because a concrete need justifies the added complexity, not
+because it was merely deferred.

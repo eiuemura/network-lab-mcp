@@ -6,11 +6,10 @@
 name: sample
 
 description: >
-  Inspect the selected lab topology and summarize the current
-  state of the available devices.
+  Verify basic connectivity between R1 and R2 and summarize the evidence.
 
 objectives:
   - obtain the active topology
-  - access available devices when appropriate
-  - inspect their current state
-  - summarize the findings
+  - open a terminal session on R1 and R2
+  - inspect their current state and confirm the link between them is up
+  - summarize the findings with the evidence gathered

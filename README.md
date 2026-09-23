@@ -139,6 +139,22 @@ for the full picture, including the device-access resolution flow.
 
 ## Quick Start
 
+### Prerequisites
+
+- Linux (developed and validated here). Likely compatible with macOS,
+  since it depends only on `tmux`/OpenSSH/a POSIX shell, but that has not
+  been formally validated in this project. Native Windows is not
+  supported — `tmux` has no native Windows build (WSL2, which provides a
+  real Linux environment, should work but has not been formally
+  validated either).
+- Python 3.10 or newer (see `pyproject.toml`'s `requires-python`).
+- `tmux` — the terminal session backbone; every managed session depends
+  on it.
+- An OpenSSH client (`ssh`) — required for any `transport: ssh` device.
+- A `telnet` client — only required if any device uses
+  `transport: telnet`.
+- An MCP-capable client, such as Claude Code.
+
 ```bash
 cd ~/work/network-lab-mcp
 
@@ -215,13 +231,28 @@ package resource, so a non-editable install has no lab directory to find.
 
 ## Example workflow
 
+The tracked `sample.yaml` files use RFC 5737 documentation-only addresses,
+which are not reachable — Discovery cannot actually connect to them. For
+real Discovery/terminal access, create your own private access-info first
+(never edit the tracked sample directly):
+
+```bash
+cp lab/access-info/sample.yaml lab/access-info/my_lab.yaml
+# edit lab/access-info/my_lab.yaml with your real device addresses and
+# credentials, then select it: running-config's `access-info my_lab`
+```
+
+The transcript below is illustrative output from a configured, reachable
+lab (not the tracked `sample` environment) — access-info name, target
+counts, and observation counts will differ for your own lab:
+
 ```
 network-lab# configure
 network-lab(config)# discover topology
-Discovering topology from access-info 'sample'...
+Discovering topology from access-info 'my_lab'...
 Discovery complete.
 
-  Access-info:          sample
+  Access-info:          my_lab
   IOS XR targets:       2
   IOS XE targets:       0
   IOS targets:          0
@@ -231,15 +262,15 @@ Discovery complete.
   Managed links:        2
   Unresolved neighbors: 0
   L3 enrichment:        2/2 devices, 2 interfaces
-  Topology candidate:   sample
+  Topology candidate:   my_lab
 
-network-lab(config-topology-sample)# show configuration
+network-lab(config-topology-my_lab)# show configuration
 ...
-network-lab(config-topology-sample)# commit
+network-lab(config-topology-my_lab)# commit
 Commit complete.
-network-lab(config-topology-sample)# root
+network-lab(config-topology-my_lab)# root
 network-lab(config)# running-config
-network-lab(config-running)# topology sample
+network-lab(config-running)# topology my_lab
 network-lab(config-running)# commit
 Commit complete.
 ```

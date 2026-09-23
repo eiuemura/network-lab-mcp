@@ -30,5 +30,5 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 markers = [
-    "real_lab: requires real IOS XR lab hardware; opt-in via NETWORK_LAB_REAL_TESTS=1 (skipped by default).",
+    "real_lab: requires real lab hardware (IOS XR/IOS XE/classic IOS); opt-in via NETWORK_LAB_REAL_TESTS=1 (skipped by default).",
 ]

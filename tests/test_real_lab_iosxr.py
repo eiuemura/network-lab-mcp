@@ -1,4 +1,5 @@
-"""Gated real-lab acceptance tests for Step 3 IOS XR + LLDP Discovery.
+"""Gated real-lab acceptance tests for IOS XR + IOS XE + classic IOS
+Discovery (LLDP for IOS XR/IOS XE, CDP for all three).
 
 Skipped by default -- `pytest` alone never touches real hardware. Run
 explicitly with:
@@ -7,9 +8,9 @@ explicitly with:
 
 These tests use the real, committed `lab/settings.yaml` /
 `lab/access-info/<selected>.yaml` exactly as-is (never write to either) and
-open real bootstrap SSH sessions against whatever IOS XR devices the
-currently selected access-info defines. They never print full
-`show running-config` output or any credential value."""
+open real bootstrap sessions against whatever devices the currently
+selected access-info defines. They never print full `show running-config`
+output or any credential value."""
 
 from __future__ import annotations
 
@@ -46,6 +47,10 @@ def _real_iosxe_targets() -> dict[str, dict]:
     return discovery._select_iosxe_targets(_real_access_data())
 
 
+def _real_ios_targets() -> dict[str, dict]:
+    return discovery._select_ios_targets(_real_access_data())
+
+
 @pytest.fixture(scope="module")
 def iosxr_targets() -> dict[str, dict]:
     targets = _real_iosxr_targets()
@@ -80,10 +85,10 @@ def test_real_device_login_and_required_commands(device_id, iosxr_targets):
 def test_real_end_to_end_discovery_run():
     result = discovery.discover_topology()
 
-    assert result.connected_count == result.iosxr_target_count + result.iosxe_target_count
+    assert result.connected_count == result.iosxr_target_count + result.iosxe_target_count + result.ios_target_count
     assert result.observation_count >= 0
     assert result.cdp_observation_count >= 0
-    assert all(device["type"] in ("iosxr", "iosxe") for device in result.devices.values())
+    assert all(device["type"] in ("iosxr", "iosxe", "ios") for device in result.devices.values())
     for device_id in result.devices:
         assert terminal.list_device_logs(device_id), f"{device_id}: no terminal log after discovery"
 
@@ -91,12 +96,11 @@ def test_real_end_to_end_discovery_run():
     # topology -- this call only ever returns an in-memory DiscoveryResult.
 
 
-@pytest.mark.parametrize("device_id", ["PAGENT"])
+@pytest.mark.parametrize("device_id", ["SW3"])
 def test_real_iosxe_device_login_and_cdp_collection(device_id):
     """Gated, optional: only meaningful if the selected access-info defines
-    an IOS XE target (e.g. PAGENT). Skips (does not fail) if absent, since
-    IOS XE targets are not a hard real-lab prerequisite the way IOS XR ones
-    are."""
+    an IOS XE target. Skips (does not fail) if absent, since IOS XE
+    targets are not a hard real-lab prerequisite the way IOS XR ones are."""
     targets = _real_iosxe_targets()
     if device_id not in targets:
         pytest.skip(f"Real lab: no IOS XE target '{device_id}' in the selected access-info.")
@@ -108,6 +112,28 @@ def test_real_iosxe_device_login_and_cdp_collection(device_id):
         terminal.close_bootstrap_terminal(device_id)
 
     assert info["hostname"], f"{device_id}: no hostname resolved from the IOS XE prompt"
+    assert info["show_version"].strip(), f"{device_id}: 'show version' returned empty output"
+    # 'show cdp neighbors' may legitimately report zero/disabled; the
+    # command having executed without raising (above) is what's asserted.
+
+
+@pytest.mark.parametrize("device_id", ["PAGENT"])
+def test_real_ios_device_login_and_cdp_collection(device_id):
+    """Gated, optional: only meaningful if the selected access-info defines
+    a classic IOS target (e.g. PAGENT). Skips (does not fail) if absent,
+    since classic IOS targets are not a hard real-lab prerequisite the way
+    IOS XR ones are. Classic IOS has no LLDP support -- CDP only."""
+    targets = _real_ios_targets()
+    if device_id not in targets:
+        pytest.skip(f"Real lab: no classic IOS target '{device_id}' in the selected access-info.")
+    device_config = targets[device_id]
+
+    try:
+        info = discovery._bootstrap_collect_ios(device_id, device_config)
+    finally:
+        terminal.close_bootstrap_terminal(device_id)
+
+    assert info["hostname"], f"{device_id}: no hostname resolved from the classic IOS prompt"
     assert info["show_version"].strip(), f"{device_id}: 'show version' returned empty output"
     # 'show cdp neighbors' may legitimately report zero/disabled; the
     # command having executed without raising (above) is what's asserted.

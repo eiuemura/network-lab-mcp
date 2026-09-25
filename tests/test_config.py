@@ -863,6 +863,52 @@ def test_edit_topology_end_to_end_with_fake_editor(lab_root, monkeypatch, fake_e
     assert lab.load_topology("sample_lab", lab_root)["description"] == "edited via fake editor"
 
 
+def test_edit_topology_unicode_survives_commit_and_reopen(lab_root, monkeypatch, fake_editor):
+    """Step 4.0: Japanese entered through `edit` must survive validation and
+    commit, the persisted YAML must be human-readable UTF-8 (not \\uXXXX
+    escaped), and reopening with `edit` must show it as readable Unicode
+    again."""
+    script = fake_editor(
+        "import yaml\n"
+        "data = yaml.safe_load(open(path, encoding='utf-8'))\n"
+        "data['description'] = '20フローによるトラフィック経路確認'\n"
+        "with open(path, 'w', encoding='utf-8') as handle:\n"
+        "    yaml.safe_dump(data, handle, allow_unicode=True)\n"
+    )
+    monkeypatch.setenv("EDITOR", f"python3 {script}")
+    session = cfgmod.CliSession(lab_root)
+    session.enter_configure()
+    session.apply_topology_definition_plan(session.plan_topology_definition("sample_lab"))
+    climain.h_edit(session, {})
+    assert session.definition_candidate["description"] == "20フローによるトラフィック経路確認"
+    session.commit()
+
+    raw_text = (lab_root / "topologies" / "sample_lab.yaml").read_text(encoding="utf-8")
+    assert "20フローによるトラフィック経路確認" in raw_text
+    assert "\\u30D5" not in raw_text
+    assert lab.load_topology("sample_lab", lab_root)["description"] == "20フローによるトラフィック経路確認"
+
+    # Reopen with `edit`: the fake editor below inspects the temp file
+    # exactly as a real vim session would see it on open.
+    reopen_script = fake_editor(
+        "raw = open(path, encoding='utf-8').read()\n"
+        "assert '20フローによるトラフィック経路確認' in raw, raw\n"
+        "assert '\\\\u30D5' not in raw, raw\n"
+    )
+    monkeypatch.setenv("EDITOR", f"python3 {reopen_script}")
+    session2 = cfgmod.CliSession(lab_root)
+    session2.enter_configure()
+    session2.apply_topology_definition_plan(session2.plan_topology_definition("sample_lab"))
+    climain.h_edit(session2, {})
+    assert session2.definition_candidate["description"] == "20フローによるトラフィック経路確認"
+
+
+def test_render_generic_definition_uses_readable_unicode():
+    text = climain.render_generic_definition({"name": "n", "description": "日本語テスト café 🚀"})
+    assert "日本語テスト café 🚀" in text
+    assert "\\u" not in text
+
+
 def test_edit_scenario_end_to_end_with_fake_editor(lab_root, monkeypatch, fake_editor):
     script = fake_editor(
         "import yaml\n"

@@ -124,3 +124,32 @@ def test_temp_file_cleaned_up_after_success(monkeypatch, fake_editor, tmp_path):
     monkeypatch.setenv("EDITOR", f"python3 {script}")
     editor.edit_yaml_candidate({"name": "original"})
     assert list(tmp_path.glob("network-lab-mcp-*.yaml")) == []
+
+
+# ---- Unicode readability (Step 4.0) ----
+
+
+def test_existing_unicode_is_readable_before_editor_opens(monkeypatch, fake_editor):
+    # The fake editor script inspects the raw temp file exactly as a real
+    # vim session would see it, before making any change.
+    script = fake_editor(
+        "raw = open(path, encoding='utf-8').read()\n"
+        "assert '20フローによるトラフィック経路確認' in raw, raw\n"
+        "assert '\\\\u30D5' not in raw, raw\n"
+    )
+    monkeypatch.setenv("EDITOR", f"python3 {script}")
+    result = editor.edit_yaml_candidate({"name": "original", "description": "20フローによるトラフィック経路確認"})
+    assert result == {"name": "original", "description": "20フローによるトラフィック経路確認"}
+
+
+def test_unicode_entered_in_editor_survives_validation(monkeypatch, fake_editor):
+    script = fake_editor(
+        "import yaml\n"
+        "data = yaml.safe_load(open(path, encoding='utf-8'))\n"
+        "data['description'] = '日本語テスト café 🚀'\n"
+        "with open(path, 'w', encoding='utf-8') as handle:\n"
+        "    yaml.safe_dump(data, handle, allow_unicode=True)\n"
+    )
+    monkeypatch.setenv("EDITOR", f"python3 {script}")
+    result = editor.edit_yaml_candidate({"name": "original", "description": ""})
+    assert result == {"name": "original", "description": "日本語テスト café 🚀"}

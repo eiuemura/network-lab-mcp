@@ -826,7 +826,7 @@ def _atomic_write_yaml(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(path.name + ".tmp")
     with tmp_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(data, handle, sort_keys=False, default_flow_style=False)
+        yaml.safe_dump(data, handle, sort_keys=False, default_flow_style=False, allow_unicode=True)
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(tmp_path, path)

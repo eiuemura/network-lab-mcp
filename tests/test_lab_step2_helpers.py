@@ -63,3 +63,70 @@ def test_write_access_info_creates_new_file(lab_root):
     data = {"name": "lab_devices", "devices": {"R1": {"type": "iosxr", "address": "192.0.2.1"}}}
     lab.write_access_info("lab_devices", data, lab_root)
     assert lab.load_access_info("lab_devices", lab_root) == data
+
+
+# ---- Unicode readability (Step 4.0) ----
+#
+# Network Lab MCP's persisted YAML is meant to be read and edited directly
+# by network engineers, so the atomic writer must serialize non-ASCII text
+# as literal UTF-8, not as \uXXXX escapes. PyYAML's default is escaped
+# output; _atomic_write_yaml() must pass allow_unicode=True.
+
+UNICODE_MATRIX = [
+    "フロー",
+    "トラフィック経路確認",
+    "日本語テスト",
+    "20フローによるトラフィック経路確認",
+    "café",
+    "🚀",
+]
+
+
+def test_write_topology_persists_readable_unicode(lab_root):
+    data = {
+        "name": "unicode_lab",
+        "description": "20フローによるトラフィック経路確認",
+        "devices": {},
+        "links": [],
+    }
+    lab.write_topology("unicode_lab", data, lab_root)
+    raw_text = (lab_root / "topologies" / "unicode_lab.yaml").read_text(encoding="utf-8")
+    assert "20フローによるトラフィック経路確認" in raw_text
+    assert "\\u30D5" not in raw_text
+    assert "\\u" not in raw_text
+
+
+def test_write_topology_unicode_roundtrip(lab_root):
+    for text in UNICODE_MATRIX:
+        data = {"name": "unicode_rt", "description": text, "devices": {}, "links": []}
+        lab.write_topology("unicode_rt", data, lab_root)
+        assert lab.load_topology("unicode_rt", lab_root) == data
+
+
+def test_write_scenario_unicode_roundtrip(lab_root):
+    data = {"name": "unicode_scenario", "description": "日本語テスト café 🚀", "objectives": ["フロー"]}
+    lab.write_scenario("unicode_scenario", data, lab_root)
+    raw_text = (lab_root / "scenarios" / "unicode_scenario.yaml").read_text(encoding="utf-8")
+    assert "日本語テスト café 🚀" in raw_text
+    assert "\\u" not in raw_text
+    assert lab.load_scenario("unicode_scenario", lab_root) == data
+
+
+def test_legacy_escaped_unicode_yaml_is_resaved_as_readable(lab_root):
+    """Existing valid YAML may already contain \\uXXXX-escaped Unicode
+    (e.g. hand-written before this fix, or from another tool). Network Lab
+    MCP must keep loading it correctly, and re-saving through its own
+    writer must normalize it to human-readable UTF-8 (migration-by-save)."""
+    legacy_path = lab_root / "scenarios" / "legacy_escaped.yaml"
+    legacy_path.write_text(
+        'name: legacy_escaped\ndescription: "\\u30D5\\u30ED\\u30FC"\nobjectives: []\n',
+        encoding="utf-8",
+    )
+    loaded = lab.load_scenario("legacy_escaped", lab_root)
+    assert loaded["description"] == "フロー"
+
+    lab.write_scenario("legacy_escaped", loaded, lab_root)
+    raw_text = legacy_path.read_text(encoding="utf-8")
+    assert "フロー" in raw_text
+    assert "\\u30D5" not in raw_text
+    assert lab.load_scenario("legacy_escaped", lab_root) == loaded

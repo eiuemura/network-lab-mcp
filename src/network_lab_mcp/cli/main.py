@@ -402,7 +402,7 @@ def render_access_info_block(data: dict) -> list[str]:
 def render_generic_definition(data: dict) -> str:
     """Scenario/reference: schema is intentionally not fixed yet (see
     docs/scenario_format.md), so the candidate mapping is shown as YAML."""
-    return yaml.safe_dump(data, sort_keys=False, default_flow_style=False).rstrip("\n")
+    return yaml.safe_dump(data, sort_keys=False, default_flow_style=False, allow_unicode=True).rstrip("\n")
 
 
 _NONE_DISPLAY = "<none>"

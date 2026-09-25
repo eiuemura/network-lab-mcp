@@ -59,7 +59,7 @@ def edit_yaml_candidate(data: Any) -> dict:
     path = Path(path_str)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            yaml.safe_dump(data, handle, sort_keys=False, default_flow_style=False)
+            yaml.safe_dump(data, handle, sort_keys=False, default_flow_style=False, allow_unicode=True)
 
         try:
             result = subprocess.run([*command, str(path)])

@@ -100,7 +100,7 @@ def production_tmux_socket_name() -> str:
 def _write_yaml(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(data, handle, sort_keys=False)
+        yaml.safe_dump(data, handle, sort_keys=False, allow_unicode=True)
 
 
 @pytest.fixture()

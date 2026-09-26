@@ -65,7 +65,7 @@ def test_write_access_info_creates_new_file(lab_root):
     assert lab.load_access_info("lab_devices", lab_root) == data
 
 
-# ---- Unicode readability (Step 4.0) ----
+# ---- Unicode readability ----
 #
 # Network Lab MCP's persisted YAML is meant to be read and edited directly
 # by network engineers, so the atomic writer must serialize non-ASCII text

@@ -126,7 +126,7 @@ def test_temp_file_cleaned_up_after_success(monkeypatch, fake_editor, tmp_path):
     assert list(tmp_path.glob("network-lab-mcp-*.yaml")) == []
 
 
-# ---- Unicode readability (Step 4.0) ----
+# ---- Unicode readability ----
 
 
 def test_existing_unicode_is_readable_before_editor_opens(monkeypatch, fake_editor):

@@ -864,10 +864,9 @@ def test_edit_topology_end_to_end_with_fake_editor(lab_root, monkeypatch, fake_e
 
 
 def test_edit_topology_unicode_survives_commit_and_reopen(lab_root, monkeypatch, fake_editor):
-    """Step 4.0: Japanese entered through `edit` must survive validation and
-    commit, the persisted YAML must be human-readable UTF-8 (not \\uXXXX
-    escaped), and reopening with `edit` must show it as readable Unicode
-    again."""
+    """Japanese entered through `edit` must survive validation and commit,
+    the persisted YAML must be human-readable UTF-8 (not \\uXXXX escaped),
+    and reopening with `edit` must show it as readable Unicode again."""
     script = fake_editor(
         "import yaml\n"
         "data = yaml.safe_load(open(path, encoding='utf-8'))\n"

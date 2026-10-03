@@ -1514,12 +1514,18 @@ def help(mode: str, text_before_cursor: str, ctx: CliContext) -> HelpResult:
             # instant it exactly matches one of the argument's own known
             # candidates -- not merely a matching prefix (`ios?`) and not
             # a value the provider doesn't recognize at all (an inactive
-            # stored reference). `creatable` identifiers are deliberately
-            # excluded here: a not-yet-existing name is *also* a valid
-            # complete command for them (it would create one), which this
-            # narrower, provider-driven check cannot decide either way,
-            # so their existing (unimproved) behavior is left unchanged.
-            if not argument.creatable and partial in argument.provider(ctx, "", tuple(committed)):
+            # stored reference). A `creatable` identifier (topology/
+            # access-info/scenario/reference/device/jump-host name) never
+            # needs that existence check at all: `creatable` itself already
+            # means "any syntactically valid value here is also a complete
+            # command" (it would create one) -- exactly what parse() does
+            # (validate_freeform accepts any token, and every creatable
+            # argument's own node is already terminal), so whatever partial
+            # token is currently typed is Enter-able right now regardless
+            # of whether it happens to match an existing name. This is a
+            # property of the `creatable` flag, not of any one command --
+            # no topology/access-info/scenario/reference-specific check.
+            if argument.creatable or partial in argument.provider(ctx, "", tuple(committed)):
                 show_cr = node.argument_child.command is not None
                 return HelpResult(lines, show_cr, partial)
         else:

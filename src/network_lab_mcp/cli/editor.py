@@ -1,9 +1,15 @@
 """External YAML editor support for topology/scenario/reference definitions.
 
 Resolution order: $VISUAL, then $EDITOR, then a `vim` fallback. Network Lab
-MCP never adds vim-specific options when the operator explicitly chose an
-editor via $VISUAL/$EDITOR -- the syntax-highlighting flags below apply only
-to the fallback it selects itself.
+MCP never adds vim-specific *decorative* options (syntax highlighting /
+filetype) when the operator explicitly chose an editor via $VISUAL/$EDITOR
+-- those apply only to the fallback it selects itself. Paste mode is the
+one exception: whichever editor is resolved (explicit or fallback), if its
+executable is positively confirmed to be real Vim (see
+`_is_confirmed_vim()`), `-c "set paste"` is appended so a multi-line YAML
+paste into the editor never triggers Vim's autoindent-amplification on
+every newline. This is a per-invocation Vim startup command, not a change
+to any vimrc -- it affects only the one editor session this module launches.
 
 The candidate flow is: committed definition -> candidate data -> a secure,
 unique `.yaml` temporary file -> external editor -> (editor exits) -> read
@@ -17,6 +23,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -29,11 +36,66 @@ class EditorError(Exception):
     """A clear, user-facing error from launching or reading the external editor."""
 
 
+# Real Vim's own binary names -- never Neovim (`nvim`) and never bare `vi`
+# on its own, since `vi` alone could be BusyBox vi, BSD/SysV vi, or any
+# other vi-compatible editor that doesn't understand Vim's `-c` startup
+# commands the same way (or at all).
+_CONFIRMED_VIM_BASENAMES = frozenset({"vim", "vim.basic", "vim.tiny"})
+
+
+def _is_confirmed_vim(executable: str) -> bool:
+    """True only when `executable` can be positively confirmed to be real
+    Vim without running it -- a fail-safe, positive-detection check, never
+    a name-based guess. A direct basename match (`vim`, `vim.basic`,
+    `vim.tiny` -- e.g. an explicit `VISUAL=vim` or `VISUAL=/usr/bin/vim`)
+    is always confirmed. `nvim` is never treated as Vim: current Neovim
+    already handles terminal paste correctly, and its own `paste` option
+    is a deprecated compatibility shim -- there is nothing to fix there.
+    Any other name, including plain `vi` (which many systems alias or
+    symlink to Vim, e.g. Debian's `/usr/bin/vi` -> `/etc/alternatives/vi`
+    -> `/usr/bin/vim.basic`, but which may just as easily be BusyBox/BSD/
+    SysV vi instead), is resolved via `shutil.which()` + `os.path.realpath()`
+    -- plain filesystem/PATH lookups, never a subprocess probe like
+    `vi --version` -- to see whether it ultimately points at one of the
+    confirmed Vim binaries. Unresolvable or non-matching names are left
+    unconfirmed; the caller must leave those editors completely alone."""
+    basename = os.path.basename(executable)
+    if basename in _CONFIRMED_VIM_BASENAMES:
+        return True
+    if basename == "nvim":
+        return False
+    resolved = shutil.which(executable) or executable
+    try:
+        real = os.path.realpath(resolved)
+    except OSError:
+        return False
+    return os.path.basename(real) in _CONFIRMED_VIM_BASENAMES
+
+
+def _with_vim_paste_mode(command: list[str]) -> list[str]:
+    """Append `-c "set paste"` to `command` when (and only when) its
+    resolved executable is confirmed Vim (see `_is_confirmed_vim()`) --
+    otherwise returns `command` unchanged, including for Neovim, an
+    unconfirmed `vi`, and every non-Vim editor. Vim accepts any number of
+    `-c` startup commands, so this never removes or reorders an existing
+    one (whether supplied by the operator via $VISUAL/$EDITOR, e.g.
+    `VISUAL="vim -c 'set number'"`, or this module's own fallback
+    syntax/filetype options below) -- it is purely additive, appended
+    last so it always takes effect regardless of what an earlier `-c` set."""
+    if not command or not _is_confirmed_vim(command[0]):
+        return command
+    if command[-2:] == ["-c", "set paste"]:
+        return command  # already present verbatim -- never duplicate it
+    return [*command, "-c", "set paste"]
+
+
 def resolve_editor_command() -> list[str]:
     """Return the argv prefix for the external editor: $VISUAL, then
     $EDITOR (each parsed with shlex.split() since it may embed arguments;
     `shell=True` is never used), then a `vim` fallback with just enough
-    options to make an unfamiliar YAML temp file legible."""
+    options to make an unfamiliar YAML temp file legible. Whichever one is
+    resolved, `_with_vim_paste_mode()` additionally appends Vim's paste
+    mode when (and only when) that resolved executable is confirmed Vim."""
     for var in ("VISUAL", "EDITOR"):
         value = os.environ.get(var)
         if not value:
@@ -43,8 +105,8 @@ def resolve_editor_command() -> list[str]:
         except ValueError as exc:
             raise EditorError(f"Could not parse ${var}: {exc}") from exc
         if parts:
-            return parts
-    return ["vim", "-c", "syntax on", "-c", "set filetype=yaml"]
+            return _with_vim_paste_mode(parts)
+    return _with_vim_paste_mode(["vim", "-c", "syntax on", "-c", "set filetype=yaml"])
 
 
 def edit_yaml_candidate(data: Any) -> dict:

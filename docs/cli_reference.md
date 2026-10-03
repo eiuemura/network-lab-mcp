@@ -1547,9 +1547,22 @@ committed definition -> candidate data -> secure temp .yaml file
 
 - **Resolution order**: `$VISUAL`, then `$EDITOR` (each split with
   `shlex.split()` since it may embed arguments; `shell=True` is never
-  used), then a `vim` fallback. Network Lab MCP only adds `-c "syntax on"
-  -c "set filetype=yaml"` when it chose `vim` itself — never when the
-  operator explicitly set `$VISUAL`/`$EDITOR` to `vim`.
+  used), then a `vim` fallback. Network Lab MCP only adds the decorative
+  `-c "syntax on" -c "set filetype=yaml"` options when it chose `vim`
+  itself — never when the operator explicitly set `$VISUAL`/`$EDITOR` to
+  `vim`.
+- **Vim paste mode**: whichever editor is resolved, if its executable is
+  positively confirmed to be real Vim (`vim`/`vim.basic`/`vim.tiny`, or a
+  `vi` that resolves — via `shutil.which()` + `os.path.realpath()`, no
+  subprocess probe — to one of those through a symlink/alternatives chain),
+  Network Lab MCP appends `-c "set paste"` so pasting multi-line YAML into
+  the editor never triggers Vim's autoindent-amplification on every
+  newline. This applies even when the operator chose `vim` explicitly via
+  `$VISUAL`/`$EDITOR` (unlike the decorative syntax/filetype options
+  above), coexists with any `-c` option the operator already supplied, and
+  is scoped to that one editor invocation only — no vimrc is touched.
+  Neovim (`nvim`) and any `vi` that can't be positively confirmed as real
+  Vim are left completely alone.
 - **Temp file**: a securely created, uniquely named `.yaml` file (never a
   predictable fixed name), removed after the editor exits — on every path,
   including an error.

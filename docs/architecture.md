@@ -1402,7 +1402,13 @@ instead of hard-coding one function per mode.
 
 `cli/editor.py` resolves an external editor ($VISUAL, then $EDITOR, then a
 `vim` fallback with just enough options to make an unfamiliar YAML file
-legible — never added when the operator chose their own editor), opens the
+legible — those decorative options are never added when the operator chose
+their own editor). Separately, whichever editor is resolved gets Vim's
+paste mode (`-c "set paste"`) appended if, and only if, its executable is
+positively confirmed to be real Vim (never guessed from a `vim`/`vi`/`nvim`
+name alone, never added to Neovim, and coexisting with any `-c` option the
+operator already supplied) — see `editor._is_confirmed_vim()`'s own
+docstring for the exact, subprocess-free detection rule. It then opens the
 current definition candidate in a secure, unique `.yaml` temporary file
 (never the committed file itself), and on a clean editor exit parses and
 minimally validates the result (valid YAML, root is a mapping) before

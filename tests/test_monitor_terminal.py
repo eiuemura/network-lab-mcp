@@ -1,4 +1,4 @@
-"""`monitor terminal <device-id>` -- read-only
+"""`terminal monitor <device-id>` -- read-only
 observation backend, incremental streaming, and monitor UI lifecycle.
 
 Three layers are tested largely independently:

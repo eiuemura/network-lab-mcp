@@ -1325,7 +1325,7 @@ def close_device_terminal(device_name: str) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Read-only human observation (`monitor terminal <device-id>`)
+# Read-only human observation (`terminal monitor <device-id>`)
 #
 # Deliberately separate from terminal_read()/read_device(): that is an MCP
 # *operation* (part of the interactive AI terminal contract); this is a
@@ -1345,7 +1345,7 @@ def close_device_terminal(device_name: str) -> dict:
 # Holding the per-device lock here would additionally serialize a
 # continuously-polling human monitor against the AI's own interactive
 # terminal_send()/terminal_read() for that device for no correctness
-# benefit -- and since `monitor terminal` normally runs in a separate
+# benefit -- and since `terminal monitor` normally runs in a separate
 # `./run_cli.sh` process with its own empty, process-local lock registry
 # (these locks are in-memory, not cross-process), taking the lock
 # here could not provide real cross-process exclusion even if it were
@@ -1403,7 +1403,7 @@ def _observe_named_session(session_name: str, lines: int) -> tuple[str, str] | N
 
 def capture_device_terminal_view(device_name: str, lines: int = DEFAULT_READ_LINES) -> TerminalMonitorSnapshot:
     """Observe the currently preferred terminal activity for a device, for
-    `monitor terminal`. Never creates, closes, or sends
+    `terminal monitor`. Never creates, closes, or sends
     anything -- see the module section docstring above.
 
     Source priority, re-evaluated fresh on every call (so a managed
@@ -1446,7 +1446,7 @@ def discovery_device_name(session_name: str) -> str:
 
 def list_discovery_device_ids() -> list[str]:
     """Device IDs that currently have an active Discovery bootstrap
-    session. `monitor terminal` target-eligibility use only
+    session. `terminal monitor` target-eligibility use only
     (a device being discovered for the first time may not yet be in the
     committed active topology at all) -- never a public MCP/terminal_*
     surface, and this enumeration itself never creates, closes, or

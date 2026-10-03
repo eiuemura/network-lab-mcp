@@ -434,7 +434,7 @@ still fails the whole operation with zero candidate mutation.
                            +------+
                                   |
                                   v
-                         monitor terminal R1
+                         terminal monitor R1
                                   |
                                   +----> read-only observation
                                   |            |
@@ -455,7 +455,7 @@ still fails the whole operation with zero candidate mutation.
                     Discovery engine
 ```
 
-`monitor terminal <device-id>` (EXEC only) gives a human a live view of
+`terminal monitor <device-id>` (EXEC only) gives a human a live view of
 whichever Network Lab MCP terminal session currently has priority for that
 device, without ever becoming a second writer to it. It is device-oriented,
 not tmux-session-oriented: source priority is
@@ -546,7 +546,7 @@ Multiple monitors -- of the same or different devices, from separate CLI
 processes -- are fully independent: tmux remains the only session state,
 so there is no monitor registry, daemon, or IPC layer to keep in sync, and
 each monitor's `_MonitorStreamCursor` is local to its own process/run.
-`monitor terminal <device-id>`'s target eligibility (the committed active
+`terminal monitor <device-id>`'s target eligibility (the committed active
 topology's devices, union'd with devices that already have an existing
 managed *or* Discovery session) is likewise read fresh each time, so a
 device being discovered for the first time -- not yet in any committed

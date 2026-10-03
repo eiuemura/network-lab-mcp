@@ -95,7 +95,7 @@ class CliContext:
     running_access_info_names: tuple[str, ...] = ()
     running_scenario_names: tuple[str, ...] = ()
     running_reference_names: tuple[str, ...] = ()
-    # `monitor terminal <device-id>` (EXEC only): every
+    # `terminal monitor <device-id>` (EXEC only): every
     # device eligible to be monitored right now -- the committed active
     # topology's own devices, union'd with any device that already has an
     # existing production terminal session (so a session the AI opened
@@ -641,7 +641,7 @@ def _build_exec_root() -> Node:
     )
     _add_delete_subtree(root)
 
-    # `monitor terminal <device-id>` (EXEC only): a read-only
+    # `terminal monitor <device-id>` (EXEC only): a read-only
     # human observation view of the same production tmux session
     # terminal_open()/terminal_send()/terminal_read() use -- never
     # creatable (observing never creates a session), dynamically
@@ -649,9 +649,13 @@ def _build_exec_root() -> Node:
     # (see CliContext.monitor_terminal_device_ids's own docstring).
     # Execution (cli/main.py's h_monitor_terminal) re-derives and
     # re-validates that same set independently at run time; this
-    # provider only ever drives Tab/`?`.
-    monitor_node = root.add_literal("monitor", "Monitor a live terminal session")
-    monitor_terminal_node = monitor_node.add_literal("terminal", "Monitor a device's live terminal session")
+    # provider only ever drives Tab/`?`. Cisco IOS/IOS XE/IOS XR word
+    # order -- `terminal <subcommand>` -- rather than `monitor terminal`;
+    # the top-level `terminal` node is distinct from `configure`'s own
+    # `terminal` child (the `configure terminal` alias) a few lines above,
+    # since each literal lives in its own parent node's namespace.
+    terminal_node = root.add_literal("terminal", "Monitor a live terminal session")
+    monitor_terminal_node = terminal_node.add_literal("monitor", "Monitor a device's live terminal session")
     monitor_terminal_arg = Argument(
         "device_id",
         "Device to monitor",

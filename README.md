@@ -119,7 +119,7 @@ for the full picture, including the device-access resolution flow.
   drive one: read the pane, decide what to send, send it. Nothing here
   parses device prompts or maintains a device-CLI state machine — Claude
   Code does that reasoning itself. A human can watch the exact same session
-  live with `monitor terminal <device>`.
+  live with `terminal monitor <device>`.
 - **Private access-info, never exposed to Claude.** Device addresses,
   usernames, and passwords live in a separate `access-info` definition that
   no MCP tool ever returns. `terminal_open(device)` receives only a logical
@@ -292,7 +292,7 @@ Because every session lives in a dedicated tmux environment, an engineer
 can watch exactly what the AI is doing, live, without interfering with it:
 
 ```
-network-lab# monitor terminal R1
+network-lab# terminal monitor R1
 RP/0/RP0/CPU0:R1#show version
 ...
 RP/0/RP0/CPU0:R1#
@@ -302,7 +302,7 @@ Monitoring terminal R1 | Read-only | Source: managed | Status: active | q: quit
 --------------------------------------------------------------------------------
 ```
 
-`monitor terminal <device-id>` (EXEC-only, strictly read-only) streams the
+`terminal monitor <device-id>` (EXEC-only, strictly read-only) streams the
 currently preferred terminal session's activity into the local terminal
 while keeping a live status bar at the bottom — everything it prints stays
 in the terminal emulator's own scrollback, exactly like ordinary command
@@ -310,7 +310,7 @@ output. It prefers a normal managed session, falling back to an active
 Discovery bootstrap session when no managed session exists yet, and several
 independent monitors (of the same or different devices) can run at once
 from separate `./run_cli.sh` windows. See
-["`monitor terminal`"](docs/cli_reference.md#monitor-terminal) in the CLI
+["`terminal monitor`"](docs/cli_reference.md#terminal-monitor) in the CLI
 reference for the full behavior.
 
 Historical evidence does not depend on the monitor being open: every device

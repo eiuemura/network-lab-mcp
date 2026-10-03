@@ -155,13 +155,13 @@ network-lab(config)# show version
 | `delete logging <device-id> all` | Delete every eligible stored terminal log for one device, leaving its directory in place. Requires confirmation. |
 | `delete logging <device-id> directory` | Delete a device's eligible logs, then remove its now-empty logging directory. Requires confirmation. |
 | `delete logging <device-id> <log-file>` | Delete exactly one eligible stored terminal log, by its exact filename (same completion/eligibility rules as `show logging`). Requires confirmation. |
-| `monitor terminal <device-id>` | Stream the current Network Lab MCP terminal activity for a device into the local terminal, with a live read-only status bar at the bottom — see "`monitor terminal`" below. `<device-id>` Tab/`?`-completes from the committed active topology's devices, union'd with any device that already has an existing managed or Discovery session. |
+| `terminal monitor <device-id>` | Stream the current Network Lab MCP terminal activity for a device into the local terminal, with a live read-only status bar at the bottom — see "`terminal monitor`" below. `<device-id>` Tab/`?`-completes from the committed active topology's devices, union'd with any device that already has an existing managed or Discovery session. |
 | `help` / `help <topic>` | Network Lab MCP Quick Start/usage help — see "`?` vs. `help`" above. Not the same as bare `?`. |
 | `exit` / `quit` | Terminate the CLI process. Only reachable in EXEC mode, where by construction no candidate configuration exists. |
 
-### `monitor terminal`
+### `terminal monitor`
 
-`monitor terminal <device-id>` streams the current Network Lab MCP terminal
+`terminal monitor <device-id>` streams the current Network Lab MCP terminal
 activity for a device — the same terminal an AI/MCP client (or Discovery) is
 driving — into the local terminal, with a small live status bar kept at the
 bottom. It is EXEC-only and strictly observational:

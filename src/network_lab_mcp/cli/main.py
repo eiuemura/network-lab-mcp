@@ -228,7 +228,7 @@ def _running_selectable_names(
 
 
 def _monitor_terminal_target_names(session: cfgmod.CliSession) -> tuple[str, ...]:
-    """`monitor terminal <device-id>`: every device eligible
+    """`terminal monitor <device-id>`: every device eligible
     to be monitored right now -- see grammar.CliContext.monitor_terminal_
     device_ids's docstring for the exact rule. Used both to build that
     completion field and, independently, by h_monitor_terminal() to
@@ -1171,7 +1171,7 @@ def h_show_version(session: cfgmod.CliSession, args: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# `monitor terminal <device-id>` (EXEC only) -- a live,
+# `terminal monitor <device-id>` (EXEC only) -- a live,
 # read-only human view of whichever Network Lab MCP terminal session
 # currently has priority for a device (managed > discovery > waiting; see
 # terminal.capture_device_terminal_view()'s own docstring). Passive

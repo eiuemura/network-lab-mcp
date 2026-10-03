@@ -110,16 +110,19 @@ def test_render_version_info_contains_all_required_fields():
     assert "Version:" in text
     assert "Release date:" in text
     assert "Git commit:" in text
+    assert "Git branch:" in text
     assert "Author:" in text
     assert "License:" in text
     assert "Python:" in text
+    assert "Platform:" in text
+    assert "MCP SDK:" in text
 
 
 def test_version_matches_expected_release_metadata():
     import network_lab_mcp
 
-    assert network_lab_mcp.__version__ == "0.1.0"
-    assert network_lab_mcp.__release_date__ == "2026-09-23"
+    assert network_lab_mcp.__version__ == "0.2.0"
+    assert network_lab_mcp.__release_date__ == "2026-10-03"
     assert network_lab_mcp.__author__ == "Eitaro Uemura"
     assert network_lab_mcp.__license__ == "GNU General Public License v3.0"
 
@@ -164,10 +167,74 @@ def test_git_commit_unavailable_on_timeout(monkeypatch):
     assert climain._resolve_git_commit() == "unavailable"
 
 
+def test_git_branch_resolves_dynamically_when_available(monkeypatch):
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout="main\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert climain._resolve_git_branch() == "main"
+
+
+def test_git_branch_is_literal_head_when_detached(monkeypatch):
+    # `git rev-parse --abbrev-ref HEAD` prints the literal "HEAD" in a
+    # detached-HEAD checkout -- a true, non-raising answer, distinct from
+    # "unavailable" (reserved for "no git"/"not a repository").
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout="HEAD\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert climain._resolve_git_branch() == "HEAD"
+
+
+def test_git_branch_unavailable_when_git_binary_missing(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("git not found")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert climain._resolve_git_branch() == "unavailable"
+
+
+def test_git_branch_unavailable_on_nonzero_exit(monkeypatch):
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 128, stdout="", stderr="fatal: not a git repository")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert climain._resolve_git_branch() == "unavailable"
+
+
+def test_git_branch_unavailable_on_timeout(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="git", timeout=2)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert climain._resolve_git_branch() == "unavailable"
+
+
+def test_platform_is_dynamic_not_hardcoded():
+    import platform
+
+    text = climain.render_version_info()
+    assert f"Platform:      {platform.system()}" in text
+
+
+def test_mcp_sdk_version_matches_installed_package():
+    from importlib.metadata import version as package_version
+
+    text = climain.render_version_info()
+    assert f"MCP SDK:       {package_version('mcp')}" in text
+
+
+def test_mcp_sdk_version_unavailable_when_package_missing(monkeypatch):
+    monkeypatch.setattr("network_lab_mcp.__mcp_sdk_version__", "unavailable")
+    text = climain.render_version_info()
+    assert "MCP SDK:       unavailable" in text
+
+
 def test_show_version_does_not_raise_when_metadata_missing(monkeypatch):
     monkeypatch.setattr("network_lab_mcp.__version__", "unavailable")
     monkeypatch.setattr("network_lab_mcp.__author__", "unavailable")
     monkeypatch.setattr("network_lab_mcp.__license__", "unavailable")
+    monkeypatch.setattr("network_lab_mcp.__mcp_sdk_version__", "unavailable")
     text = climain.render_version_info()
     assert "unavailable" in text
 
@@ -207,7 +274,7 @@ def test_pyproject_declares_expected_version_author_license():
     # this project supports >=3.10); a plain text check is enough here.
     with open("pyproject.toml", encoding="utf-8") as handle:
         text = handle.read()
-    assert 'version = "0.1.0"' in text
+    assert 'version = "0.2.0"' in text
     assert 'name = "Eitaro Uemura"' in text
     assert 'text = "GNU General Public License v3.0"' in text
 

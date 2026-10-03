@@ -103,12 +103,15 @@ exist at that grammar position:
 network-lab# show version
 Network Lab MCP
 
-  Version:       0.1.0
-  Release date:  2026-09-20
+  Version:       0.2.0
+  Release date:  2026-10-03
   Git commit:    abc1234
+  Git branch:    main
   Author:        Eitaro Uemura
   License:       GNU General Public License v3.0
   Python:        3.12.3
+  Platform:      Linux
+  MCP SDK:       2.2.0
 network-lab#
 ```
 
@@ -125,14 +128,22 @@ network-lab(config)# show version
   (`__release_date__`), since standard packaging metadata has no field for
   it; it is a separate concept from **Version** (a release date is not a
   version identifier).
-- **Git commit** is resolved dynamically (`git rev-parse --short HEAD`
-  against the repository checkout) every time the command runs — it is
-  never hard-coded to whatever revision happened to be current when a
+- **Git commit** and **Git branch** are both resolved dynamically
+  (`git rev-parse --short HEAD` / `git rev-parse --abbrev-ref HEAD` against
+  the repository checkout) every time the command runs — neither is ever
+  hard-coded to whatever revision/branch happened to be current when a
   feature was written. If `git` is unavailable, the checkout is not a git
-  repository, or resolution fails for any other reason, this prints
+  repository, or resolution fails for any other reason, each prints
   `unavailable` instead of failing the command or leaking a raw git error.
+  A detached-HEAD checkout prints the literal `HEAD` for **Git branch**
+  instead — a true answer, not an error.
 - **Python** is `platform.python_version()` of the interpreter actually
-  running the CLI — never a hard-coded version string.
+  running the CLI, and **Platform** is `platform.system()` (`Linux`/
+  `Darwin`/`Windows`) — never hard-coded version/OS strings.
+- **MCP SDK** is the installed `mcp` package's own version (via
+  `importlib.metadata`, the same mechanism **Version**/**Author**/
+  **License** use) — it is a required runtime dependency, so this is
+  reliable whenever Network Lab MCP itself runs at all.
 
 ## EXEC mode commands
 

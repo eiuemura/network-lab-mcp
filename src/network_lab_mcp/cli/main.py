@@ -943,14 +943,14 @@ def h_show_configuration(session: cfgmod.CliSession, args: dict) -> None:
         print(text)
 
 
-def _resolve_git_commit() -> str:
-    """Best-effort short commit hash for the checkout `show version` is
-    running from. Never raises and never surfaces a raw git error: missing
+def _run_git(*args: str) -> str:
+    """Shared best-effort `git` invocation for `show version`'s checkout
+    metadata. Never raises and never surfaces a raw git error: missing
     `git`, a non-repository checkout, or any other failure all collapse to
     "unavailable"."""
     try:
         result = subprocess.run(
-            ["git", "-C", str(_REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            ["git", "-C", str(_REPO_ROOT), *args],
             capture_output=True,
             text=True,
             timeout=2,
@@ -960,6 +960,21 @@ def _resolve_git_commit() -> str:
     if result.returncode != 0:
         return "unavailable"
     return result.stdout.strip() or "unavailable"
+
+
+def _resolve_git_commit() -> str:
+    """Best-effort short commit hash for the checkout `show version` is
+    running from."""
+    return _run_git("rev-parse", "--short", "HEAD")
+
+
+def _resolve_git_branch() -> str:
+    """Best-effort current branch name for the same checkout. Detached
+    HEAD (e.g. mid-rebase, or a CI checkout of a bare commit) prints the
+    literal "HEAD" -- a true, non-raising answer -- rather than being
+    collapsed into "unavailable", which is reserved for "no git" or "not a
+    repository" instead."""
+    return _run_git("rev-parse", "--abbrev-ref", "HEAD")
 
 
 def render_version_info() -> str:
@@ -972,9 +987,12 @@ def render_version_info() -> str:
             f"  Version:       {network_lab_mcp.__version__}",
             f"  Release date:  {network_lab_mcp.__release_date__}",
             f"  Git commit:    {_resolve_git_commit()}",
+            f"  Git branch:    {_resolve_git_branch()}",
             f"  Author:        {network_lab_mcp.__author__}",
             f"  License:       {network_lab_mcp.__license__}",
             f"  Python:        {platform.python_version()}",
+            f"  Platform:      {platform.system()}",
+            f"  MCP SDK:       {network_lab_mcp.__mcp_sdk_version__}",
         ]
     )
 

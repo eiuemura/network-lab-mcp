@@ -31,4 +31,14 @@ __license__ = _metadata_field("License")
 # Not a standard packaging metadata field, so pyproject.toml has nowhere to
 # put it; this constant is the single source of truth for it instead of a
 # second copy living in cli/main.py.
-__release_date__ = "2026-09-23"
+__release_date__ = "2026-10-03"
+
+try:
+    # The MCP SDK is a required (never optional) runtime dependency -- see
+    # pyproject.toml's `dependencies` list -- so this is read the same
+    # never-raising way as __version__ itself, not hard-coded: `show
+    # version` reports whatever SDK is actually installed, not whatever
+    # version happened to be current when this was written.
+    __mcp_sdk_version__ = _package_version("mcp")
+except PackageNotFoundError:
+    __mcp_sdk_version__ = "unavailable"

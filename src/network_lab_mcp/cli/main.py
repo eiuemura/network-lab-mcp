@@ -2172,10 +2172,22 @@ def _make_key_bindings(session: cfgmod.CliSession) -> KeyBindings:
             else:
                 event.app.output.bell()
         elif len(result.candidates) > 1:
+            # Cisco-style staged Tab: as long as the longest common prefix
+            # still extends past what's typed, each Tab press only grows
+            # the buffer that far -- the ambiguous candidate list is never
+            # shown while there's still unambiguous ground to cover. Only
+            # once the buffer already *is* the full common prefix (LCP
+            # can't extend it any further) does Tab fall through to
+            # listing every candidate. Purely a function of the current
+            # buffer and this one completion lookup -- no persistent
+            # "already listed once" state, so a Tab pressed again with the
+            # buffer unchanged lists again, and a Backspace in between
+            # re-evaluates from scratch next Tab.
             extension = _tab_multi_candidate_extension(result)
             if extension is not None:
                 buffer.delete_before_cursor(len(result.replace_prefix))
                 buffer.insert_text(extension)
+                return
 
             def _show() -> None:
                 print()

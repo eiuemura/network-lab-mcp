@@ -2091,6 +2091,43 @@ for _mode in (
 # --------------------------------------------------------------------------
 
 
+def _longest_common_prefix(candidates: list[str]) -> str:
+    """Pure longest-common-prefix helper for the `tab` key binding's
+    multiple-candidate case (e.g. "pagent_pkts"/"pagent_tgn" -> "pagent_").
+    Character-by-character, case-sensitive (matching every dynamic-argument
+    identifier's own case sensitivity) -- never a path-aware comparison.
+    Empty input (never actually reached, since the caller only calls this
+    when `len(candidates) > 1`) returns ""."""
+    if not candidates:
+        return ""
+    prefix = candidates[0]
+    for candidate in candidates[1:]:
+        limit = min(len(prefix), len(candidate))
+        i = 0
+        while i < limit and prefix[i] == candidate[i]:
+            i += 1
+        prefix = prefix[:i]
+        if not prefix:
+            break
+    return prefix
+
+
+def _tab_multi_candidate_extension(result: grammar.CompletionResult) -> Optional[str]:
+    """Pure decision for the `tab` key binding's multiple-candidate branch:
+    the text (if any) that should replace the already-typed
+    `result.replace_prefix` -- the longest common prefix across every
+    candidate, but only when that is strictly longer than what is already
+    typed. Returns None when there is nothing further to extend to (the
+    typed text is already the full common prefix), which the caller must
+    not treat as a completion. Never returns a value ending in a trailing
+    space: an ambiguous multi-candidate match is never marked syntactically
+    complete, even when the common prefix happens to equal one whole
+    candidate that is itself also a prefix of another (e.g.
+    "multi_flow_path_validation")."""
+    common_prefix = _longest_common_prefix(result.candidates)
+    return common_prefix if len(common_prefix) > len(result.replace_prefix) else None
+
+
 def _make_key_bindings(session: cfgmod.CliSession) -> KeyBindings:
     kb = KeyBindings()
 
@@ -2135,6 +2172,11 @@ def _make_key_bindings(session: cfgmod.CliSession) -> KeyBindings:
             else:
                 event.app.output.bell()
         elif len(result.candidates) > 1:
+            extension = _tab_multi_candidate_extension(result)
+            if extension is not None:
+                buffer.delete_before_cursor(len(result.replace_prefix))
+                buffer.insert_text(extension)
+
             def _show() -> None:
                 print()
                 for candidate in result.candidates:

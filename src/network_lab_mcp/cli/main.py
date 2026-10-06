@@ -381,6 +381,9 @@ def render_access_info_block(data: dict) -> list[str]:
     policy") -- MCP tool results, logs, errors, `?`, completion, and
     history never go through this function and remain password-free."""
     lines = [f"access-info {data.get('name', '')}"]
+    description = data.get("description")
+    if description:
+        lines.append(f" description {description}")
     for jump_host_name, jump_host in (data.get("jump_hosts") or {}).items():
         lines.append(f" jump-host {jump_host_name}")
         for field_name in cfgmod.JUMP_HOST_FIELD_ORDER:
@@ -408,7 +411,19 @@ def render_generic_definition(data: dict) -> str:
 _NONE_DISPLAY = "<none>"
 
 
-def _running_config_lines(settings: dict) -> str:
+def _selected_description(loader: Callable, name: str, lab_root: Optional[Path]) -> Optional[str]:
+    """Committed definition-level description of a selected CLI-managed
+    definition, for the global running-config. Best effort: a missing or
+    unreadable definition simply shows no description (this view never
+    fails on definition content)."""
+    try:
+        description = loader(name, lab_root).get("description")
+    except Exception:
+        return None
+    return description if isinstance(description, str) and description else None
+
+
+def _running_config_lines(settings: dict, lab_root: Optional[Path] = None) -> str:
     """`show running-config` selection summary (EXEC/global/running --
     one shared renderer). The `access-info` and `reference`
     sections always appear, even when empty, showing the display-only
@@ -425,11 +440,20 @@ def _running_config_lines(settings: dict) -> str:
     for them; a missing mandatory value is not a state this renderer
     tries to make presentable, it is left exactly as before."""
     sections: list[tuple[str, list[str]]] = []
+
+    def with_description(loader: Callable, name: str) -> list[str]:
+        # access-info / topology only: CLI-managed descriptions. scenario /
+        # reference descriptions live in YAML and are never duplicated here.
+        description = _selected_description(loader, name, lab_root) if lab_root is not None else None
+        return [name, f" description {description}"] if description else [name]
+
     access_info_name = settings.get("active_access_info")
-    sections.append(("access-info", [access_info_name] if access_info_name else [_NONE_DISPLAY]))
+    sections.append(
+        ("access-info", with_description(lab.load_access_info, access_info_name) if access_info_name else [_NONE_DISPLAY])
+    )
     topology_name = settings.get("active_topology")
     if topology_name:
-        sections.append(("topology", [topology_name]))
+        sections.append(("topology", with_description(lab.load_topology, topology_name)))
     scenario_name = settings.get("active_scenario")
     if scenario_name:
         sections.append(("scenario", [scenario_name]))
@@ -451,7 +475,7 @@ def render_committed_running_config(session: cfgmod.CliSession) -> str:
     once a topology/access-info/scenario/reference (or its device/jump-host
     submode) is the current context; see render_committed_definition() for
     that."""
-    return _running_config_lines(lab.read_settings(session.lab_root))
+    return _running_config_lines(lab.read_settings(session.lab_root), session.lab_root)
 
 
 # Nested submodes ("device" under topology, "access_device"/
@@ -626,7 +650,12 @@ def _named_objects_delta(keyword: str, original_map: dict, candidate_map: dict, 
 
 def render_access_info_configuration_delta(name: str, original: Optional[dict], candidate: dict) -> str:
     original = original or {}
-    body = _named_objects_delta("jump-host", original.get("jump_hosts") or {}, candidate.get("jump_hosts") or {}, cfgmod.JUMP_HOST_FIELD_ORDER)
+    body = []
+    old_description = original.get("description")
+    new_description = candidate.get("description")
+    if (old_description or None) != (new_description or None):
+        body.append(f" description {new_description}" if new_description else " no description")
+    body += _named_objects_delta("jump-host", original.get("jump_hosts") or {}, candidate.get("jump_hosts") or {}, cfgmod.JUMP_HOST_FIELD_ORDER)
     body += _named_objects_delta("device", original.get("devices") or {}, candidate.get("devices") or {}, cfgmod.DEVICE_FIELD_ORDER)
     if not body:
         return ""
@@ -1848,7 +1877,11 @@ def h_running_reference_remove(session: cfgmod.CliSession, args: dict) -> None:
 
 
 def h_topology_description(session: cfgmod.CliSession, args: dict) -> None:
-    session.set_topology_description(args["text"])
+    session.set_definition_description(args["text"])
+
+
+def h_topology_clear_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_definition_description()
 
 
 def h_topology_device(session: cfgmod.CliSession, args: dict) -> None:
@@ -1863,6 +1896,14 @@ def h_device_set_type(session: cfgmod.CliSession, args: dict) -> None:
 
 
 # ---- access-info definition mode ----
+
+
+def h_access_info_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_definition_description(args["text"])
+
+
+def h_access_info_clear_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_definition_description()
 
 
 def h_access_info_device(session: cfgmod.CliSession, args: dict) -> None:
@@ -2032,6 +2073,9 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "running.reference_add": h_running_reference_add,
     "running.reference_remove": h_running_reference_remove,
     "topology.description": h_topology_description,
+    "topology.clear_description": h_topology_clear_description,
+    "access_info.description": h_access_info_description,
+    "access_info.clear_description": h_access_info_clear_description,
     "topology.device": h_topology_device,
     "topology.edit": h_edit,
     "device.set_type": h_device_set_type,

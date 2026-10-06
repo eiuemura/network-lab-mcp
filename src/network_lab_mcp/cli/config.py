@@ -426,7 +426,22 @@ class CliSession:
     # ---- topology-mode mutation ----
 
     def set_topology_description(self, text: str) -> None:
+        self.set_definition_description(text)
+
+    # ---- definition-level description (access-info / topology) ----
+
+    def set_definition_description(self, text: str) -> None:
         self.definition_candidate["description"] = text
+
+    def clear_definition_description(self) -> None:
+        """`no description`: omit the field. If the committed original
+        carries an empty placeholder (`description: ""`, as new topologies
+        are written), restore that exact value so a net-zero edit stays
+        clean under the generic candidate != original dirty check."""
+        self.definition_candidate.pop("description", None)
+        original = self.definition_original or {}
+        if "description" in original and not original["description"]:
+            self.definition_candidate["description"] = original["description"]
 
     # ---- navigation: `root` jumps straight to global config, preserving
     # candidate state (never commits, never clears) ----

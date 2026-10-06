@@ -343,6 +343,14 @@ def validate_topology_interfaces(topology_name: str, devices: dict) -> None:
                 ) from exc
 
 
+def validate_optional_description(context_label: str, data: dict) -> None:
+    """Definition-level `description` is optional human-readable metadata;
+    when present it must be a string (it never affects behavior)."""
+    description = data.get("description")
+    if description is not None and not isinstance(description, str):
+        raise LabConfigError(f"{context_label} has an invalid 'description'; expected a string.")
+
+
 def validate_topology_data(name: str, data: Any) -> None:
     """Validate an in-memory topology mapping using the same rules `load_topology()`
     applies to a freshly loaded file.
@@ -353,6 +361,7 @@ def validate_topology_data(name: str, data: Any) -> None:
     """
     if not isinstance(data, dict):
         raise LabConfigError(f"Topology '{name}' data must be a YAML mapping.")
+    validate_optional_description(f"Topology '{name}'", data)
     devices = data.get("devices") or {}
     validate_topology_device_names(name, devices)
     validate_topology_no_access_fields(name, devices)
@@ -504,6 +513,7 @@ def validate_access_info_data(name: str, data: Any) -> None:
     validate_device_jump_host_references())."""
     if not isinstance(data, dict):
         raise LabConfigError(f"Access information '{name}' data must be a YAML mapping.")
+    validate_optional_description(f"Access information '{name}'", data)
     devices = data.get("devices") or {}
     if not isinstance(devices, dict):
         raise LabConfigError(f"Access information '{name}' has an invalid 'devices' section; expected a mapping.")

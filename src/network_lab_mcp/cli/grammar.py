@@ -144,6 +144,15 @@ def validate_freeform(value: str) -> ValidationOutcome:
     return _ok(value)
 
 
+def validate_description(value: str) -> ValidationOutcome:
+    """Definition-level description text: required and non-empty after
+    stripping surrounding whitespace (human-readable metadata only)."""
+    text = value.strip()
+    if not text:
+        return _fail("Description must not be empty.")
+    return _ok(text)
+
+
 def validate_device_type(value: str) -> ValidationOutcome:
     """Reuses network_lab_mcp.lab.normalize_device_type() -- the single
     validation primitive for the fixed device-type enum, also applied to
@@ -893,18 +902,30 @@ def _build_running_root() -> Node:
     return root
 
 
-def _build_topology_root() -> Node:
-    root = Node()
-
+def _add_description_commands(root: Node, noun: str, action_prefix: str) -> None:
+    """`description <text>` / `no description` for a CLI-managed definition
+    (access-info, topology), shared so both modes stay identical. Reuses
+    the mode's existing `no` node when it already has one."""
     description_arg = Argument(
         "text",
-        "Free-form topology description",
+        f"Free-form {noun} description",
+        validate=validate_description,
         rest_of_line=True,
         hint="<text>",
     )
-    description_node = root.add_literal("description", "Set the topology description")
+    description_node = root.add_literal("description", f"Set the {noun} description")
     description_next = description_node.add_argument(description_arg)
-    description_next.set_command("topology.description", "Set the topology description")
+    description_next.set_command(f"{action_prefix}.description", f"Set the {noun} description")
+
+    no_node = root.literal_children.get("no") or root.add_literal("no", f"Negate a {noun} field")
+    clear_node = no_node.add_literal("description", f"Remove the {noun} description")
+    clear_node.set_command(f"{action_prefix}.clear_description", f"Remove the {noun} description")
+
+
+def _build_topology_root() -> Node:
+    root = Node()
+
+    _add_description_commands(root, "topology", "topology")
 
     device_arg = Argument(
         "name",
@@ -1024,6 +1045,8 @@ def _build_access_info_root() -> Node:
     no_jump_host_node = no_node.add_literal("jump-host", "Remove a jump host")
     no_jump_host_next = no_jump_host_node.add_argument(no_jump_host_arg)
     no_jump_host_next.set_command("access_info.remove_jump_host", "Remove a jump host")
+
+    _add_description_commands(root, "access-info", "access_info")
 
     _add_show_subtree(
         root,

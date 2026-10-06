@@ -644,6 +644,7 @@ def test_no_node_help_lists_device_and_jump_host():
     assert [(line.token, line.description) for line in result.lines] == [
         ("device", "Remove a device"),
         ("jump-host", "Remove a jump host"),
+        ("description", "Remove the access-info description"),
     ]
 
 

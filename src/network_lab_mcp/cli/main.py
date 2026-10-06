@@ -193,6 +193,9 @@ def prompt_text(session: cfgmod.CliSession) -> str:
         return f"network-lab(config-scenario-{session.definition_name})# "
     if session.mode == "reference":
         return f"network-lab(config-reference-{session.definition_name})# "
+    if session.mode in cfgmod.RUNNING_ENTRY_MODES:
+        kind = cfgmod.RUNNING_ENTRY_MODES[session.mode].replace("_", "-")
+        return f"network-lab(config-running-{kind}-{session.current_running_entry_name})# "
     raise AssertionError(f"Unknown CLI mode: {session.mode!r}")
 
 
@@ -773,7 +776,7 @@ def render_configuration_candidate(session: cfgmod.CliSession) -> str:
     definition mode (or its device/jump-host submode) shows only that
     object's delta, scoped to the current sub-object where applicable.
     Entering a new, still-empty object produces no output at all."""
-    if session.mode == "running":
+    if session.mode == "running" or session.mode in cfgmod.RUNNING_ENTRY_MODES:
         return "\n".join(_running_config_delta_lines(session.committed_settings or {}, session.settings_candidate or {}))
 
     if session.mode == "global":
@@ -899,7 +902,7 @@ def h_exec_exit(session: cfgmod.CliSession, args: dict) -> None:
 # only in these three modes; everywhere else it means the current
 # topology/access-info/scenario/reference (or device submode) definition's
 # own committed state instead (render_committed_definition()).
-_MCP_SELECTION_MODES = ("exec", "global", "running")
+_MCP_SELECTION_MODES = ("exec", "global", "running", *cfgmod.RUNNING_ENTRY_MODES)
 
 
 def h_show_running_config(session: cfgmod.CliSession, args: dict) -> None:
@@ -1693,6 +1696,7 @@ _LEAF_MODE_CURRENT_ATTR = {
     "device": "current_device_name",
     "access_device": "current_device_name",
     "access_jump_host": "current_jump_host_name",
+    **{mode: "current_running_entry_name" for mode in cfgmod.RUNNING_ENTRY_MODES},
 }
 
 
@@ -1854,6 +1858,7 @@ def h_global_no_reference(session: cfgmod.CliSession, args: dict) -> None:
 
 def h_running_access_info(session: cfgmod.CliSession, args: dict) -> None:
     session.select_access_info(args["name"])
+    session.enter_running_entry("access_info", args["name"])
 
 
 def h_running_access_info_remove(session: cfgmod.CliSession, args: dict) -> None:
@@ -1862,50 +1867,36 @@ def h_running_access_info_remove(session: cfgmod.CliSession, args: dict) -> None
 
 def h_running_topology(session: cfgmod.CliSession, args: dict) -> None:
     session.select_topology(args["name"])
+    session.enter_running_entry("topology", args["name"])
 
 
 def h_running_scenario(session: cfgmod.CliSession, args: dict) -> None:
     session.set_scenario(args["name"])
+    session.enter_running_entry("scenario", args["name"])
 
 
 def h_running_reference_add(session: cfgmod.CliSession, args: dict) -> None:
-    session.add_reference(args["name"])
+    # Selecting an already-active reference just (re-)enters its submode;
+    # activating a new one keeps the existing add_reference() validation.
+    if args["name"] not in (session.settings_candidate.get("active_references") or []):
+        session.add_reference(args["name"])
+    session.enter_running_entry("reference", args["name"])
 
 
 def h_running_reference_remove(session: cfgmod.CliSession, args: dict) -> None:
     session.remove_reference(args["name"])
 
 
-def h_running_access_info_description(session: cfgmod.CliSession, args: dict) -> None:
-    session.set_running_description("access_info", args["name"], args["text"])
+# Running-entry submodes (`config-running-<kind>-<name>`): the shared
+# metadata commands operate on the submode's own entry.
 
 
-def h_running_access_info_clear_description(session: cfgmod.CliSession, args: dict) -> None:
-    session.clear_running_description("access_info", args["name"])
+def h_running_entry_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_current_running_description(args["text"])
 
 
-def h_running_topology_description(session: cfgmod.CliSession, args: dict) -> None:
-    session.set_running_description("topology", args["name"], args["text"])
-
-
-def h_running_topology_clear_description(session: cfgmod.CliSession, args: dict) -> None:
-    session.clear_running_description("topology", args["name"])
-
-
-def h_running_scenario_description(session: cfgmod.CliSession, args: dict) -> None:
-    session.set_running_description("scenario", args["name"], args["text"])
-
-
-def h_running_scenario_clear_description(session: cfgmod.CliSession, args: dict) -> None:
-    session.clear_running_description("scenario", args["name"])
-
-
-def h_running_reference_description(session: cfgmod.CliSession, args: dict) -> None:
-    session.set_running_description("reference", args["name"], args["text"])
-
-
-def h_running_reference_clear_description(session: cfgmod.CliSession, args: dict) -> None:
-    session.clear_running_description("reference", args["name"])
+def h_running_entry_clear_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_current_running_description()
 
 
 # ---- topology definition mode ----
@@ -2095,14 +2086,14 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "running.scenario": h_running_scenario,
     "running.reference_add": h_running_reference_add,
     "running.reference_remove": h_running_reference_remove,
-    "running.access_info_description": h_running_access_info_description,
-    "running.access_info_clear_description": h_running_access_info_clear_description,
-    "running.topology_description": h_running_topology_description,
-    "running.topology_clear_description": h_running_topology_clear_description,
-    "running.scenario_description": h_running_scenario_description,
-    "running.scenario_clear_description": h_running_scenario_clear_description,
-    "running.reference_description": h_running_reference_description,
-    "running.reference_clear_description": h_running_reference_clear_description,
+    "running_access_info.description": h_running_entry_description,
+    "running_access_info.clear_description": h_running_entry_clear_description,
+    "running_topology.description": h_running_entry_description,
+    "running_topology.clear_description": h_running_entry_clear_description,
+    "running_scenario.description": h_running_entry_description,
+    "running_scenario.clear_description": h_running_entry_clear_description,
+    "running_reference.description": h_running_entry_description,
+    "running_reference.clear_description": h_running_entry_clear_description,
     "topology.description": h_topology_description,
     "topology.device": h_topology_device,
     "topology.edit": h_edit,
@@ -2159,6 +2150,7 @@ for _mode in (
     "access_jump_host",
     "scenario",
     "reference",
+    *cfgmod.RUNNING_ENTRY_MODES,
 ):
     HANDLERS[f"{_mode}.show_running_config"] = h_show_running_config
     HANDLERS[f"{_mode}.show_configuration"] = h_show_configuration

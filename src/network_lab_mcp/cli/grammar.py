@@ -882,41 +882,9 @@ def _build_running_root() -> Node:
     reference_next = reference_node.add_argument(reference_arg)
     reference_next.set_command("running.reference_add", "Activate reference for MCP")
 
-    # Running-config entry description (metadata of an ALREADY ACTIVE
-    # entry, never a selection): `<kind> <name> description <text>` and
-    # `no <kind> <name> description`. Execution fails closed when <name>
-    # is not active in the candidate running-config.
-    for kind_keyword, select_next in (
-        ("access-info", access_info_next),
-        ("topology", topology_next),
-        ("scenario", scenario_next),
-        ("reference", reference_next),
-    ):
-        action_kind = kind_keyword.replace("-", "_")
-        text_arg = Argument(
-            "text",
-            "Free-form running-config entry description",
-            validate=validate_description,
-            rest_of_line=True,
-            hint="<text>",
-        )
-        set_node = select_next.add_literal("description", "Set the running-config entry description")
-        set_node.add_argument(text_arg).set_command(
-            f"running.{action_kind}_description", "Set the running-config entry description"
-        )
-
     no_node = root.add_literal("no", "Negate a running configuration item")
     no_access_info_node = no_node.add_literal("access-info", "Remove the access information selection")
     no_access_info_node.set_command("running.access_info_remove", "Remove the access information selection")
-    no_entry_arg = Argument("name", "Active entry name", hint="<name>")
-    no_access_info_node.add_argument(no_entry_arg).add_literal(
-        "description", "Remove the running-config entry description"
-    ).set_command("running.access_info_clear_description", "Remove the running-config entry description")
-    for kind_keyword in ("topology", "scenario"):
-        kind_node = no_node.add_literal(kind_keyword, "Negate a running configuration item")
-        kind_node.add_argument(Argument("name", "Active entry name", hint="<name>")).add_literal(
-            "description", "Remove the running-config entry description"
-        ).set_command(f"running.{kind_keyword}_clear_description", "Remove the running-config entry description")
     no_reference_node = no_node.add_literal("reference", "Remove a reference used by MCP")
     no_reference_arg = Argument(
         "name",
@@ -926,9 +894,6 @@ def _build_running_root() -> Node:
     )
     no_reference_next = no_reference_node.add_argument(no_reference_arg)
     no_reference_next.set_command("running.reference_remove", "Remove a reference used by MCP")
-    no_reference_next.add_literal("description", "Remove the running-config entry description").set_command(
-        "running.reference_clear_description", "Remove the running-config entry description"
-    )
 
     _add_show_subtree(
         root,
@@ -940,6 +905,42 @@ def _build_running_root() -> Node:
         show_keyword_description="Show contents of configuration",
     )
     _add_common_subtree(root, "running")
+    return root
+
+
+def _build_running_entry_root(mode: str) -> Node:
+    """Active running-config entry submode (`config-running-<kind>-<name>`),
+    entered by selecting the entry from config-running. Edits metadata of
+    that one active entry only -- never the underlying definition, which is
+    the separate definition editor (`config-<kind>-<name>`). Like every
+    other submode root, parent-level commands (`access-info <name>` etc.)
+    are not visible here: `exit` back to config-running to switch."""
+    root = Node()
+    text_arg = Argument(
+        "text",
+        "Free-form running-config entry description",
+        validate=validate_description,
+        rest_of_line=True,
+        hint="<text>",
+    )
+    description_node = root.add_literal("description", "Set the running-config entry description")
+    description_node.add_argument(text_arg).set_command(f"{mode}.description", "Set the running-config entry description")
+
+    no_node = root.add_literal("no", "Negate a running configuration item")
+    no_node.add_literal("description", "Remove the running-config entry description").set_command(
+        f"{mode}.clear_description", "Remove the running-config entry description"
+    )
+
+    _add_show_subtree(
+        root,
+        mode,
+        running_config_description="Contents of running configuration",
+        include_configuration=True,
+        configuration_description="Contents of uncommitted configuration",
+        bare_show=True,
+        show_keyword_description="Show contents of configuration",
+    )
+    _add_common_subtree(root, mode)
     return root
 
 
@@ -1323,6 +1324,10 @@ MODE_ROOTS: dict[str, Node] = {
     "exec": _build_exec_root(),
     "global": _build_global_root(),
     "running": _build_running_root(),
+    "running_access_info": _build_running_entry_root("running_access_info"),
+    "running_topology": _build_running_entry_root("running_topology"),
+    "running_scenario": _build_running_entry_root("running_scenario"),
+    "running_reference": _build_running_entry_root("running_reference"),
     "topology": _build_topology_root(),
     "device": _build_device_root(),
     "access_info": _build_access_info_root(),

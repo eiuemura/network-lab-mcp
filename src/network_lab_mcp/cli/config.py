@@ -87,8 +87,19 @@ JUMP_HOST_FIELD_ORDER = ("type", "address", "transport", "port", "username", "pa
 
 # Which config mode "exit" moves up to. Only "global" is missing here --
 # its exit/end is a guarded jump straight to EXEC, handled separately.
+# Active running-config entry submodes (`config-running-<kind>-<name>`) ->
+# the running-config kind they edit. Entered by selecting an entry from
+# config-running; they edit metadata of that active entry only.
+RUNNING_ENTRY_MODES = {
+    "running_access_info": "access_info",
+    "running_topology": "topology",
+    "running_scenario": "scenario",
+    "running_reference": "reference",
+}
+
 _EXIT_PARENT_MODE = {
     "running": "global",
+    **{mode: "running" for mode in RUNNING_ENTRY_MODES},
     "topology": "global",
     "access_info": "global",
     "scenario": "global",
@@ -262,6 +273,7 @@ class CliSession:
         self.definition_candidate = None
         self.current_device_name = None
         self.current_jump_host_name = None
+        self.current_running_entry_name = None
         self.mode = "global"
 
     def reset_to_exec(self) -> None:
@@ -276,6 +288,7 @@ class CliSession:
         self.definition_candidate = None
         self.current_device_name = None
         self.current_jump_host_name = None
+        self.current_running_entry_name = None
 
     def clear(self) -> None:
         """Discard every uncommitted change in the current configure
@@ -307,6 +320,7 @@ class CliSession:
     def _reconcile_mode_after_clear(self) -> None:
         """After clear(), fall back to the nearest still-valid parent mode
         instead of lingering in a submode whose target no longer exists."""
+        self._reconcile_running_entry_mode()
         if self.definition_kind is None and self.mode in (
             "topology",
             "device",
@@ -324,6 +338,19 @@ class CliSession:
             self.mode = "topology" if self.mode == "device" else "access_info"
         if self.mode == "access_jump_host" and self.current_jump_host_name is None:
             self.mode = "access_info"
+
+    def _reconcile_running_entry_mode(self) -> None:
+        """A running-entry submode is valid only while its entry is active
+        in the candidate running-config; otherwise fall back to
+        config-running so a stale submode can never edit an inactive entry."""
+        kind = RUNNING_ENTRY_MODES.get(self.mode)
+        if kind is None:
+            return
+        if self.settings_candidate is None or self.current_running_entry_name not in active_running_entries(
+            self.settings_candidate
+        )[kind]:
+            self.mode = "running"
+            self.current_running_entry_name = None
 
     # ---- definition switching guard (shared by topology/access-info/scenario/reference) ----
 
@@ -474,6 +501,7 @@ class CliSession:
     # candidate state (never commits, never clears) ----
 
     def go_to_global(self) -> None:
+        self.current_running_entry_name = None
         self.current_device_name = None
         self.current_jump_host_name = None
         self.mode = "global"
@@ -606,6 +634,27 @@ class CliSession:
     def clear_running_description(self, kind: str, name: str) -> None:
         self._require_active_running_entry(kind, name)
         (self.settings_candidate.get(RUNNING_DESCRIPTIONS_KEY) or {}).get(kind, {}).pop(name, None)
+
+    def enter_running_entry(self, kind: str, name: str) -> None:
+        """Enter the submode of an entry that is active in the candidate
+        (callers select/activate it first)."""
+        self._require_active_running_entry(kind, name)
+        self.current_running_entry_name = name
+        self.mode = f"running_{kind}"
+
+    def set_current_running_description(self, text: str) -> None:
+        self._reconcile_running_entry_mode()
+        kind = RUNNING_ENTRY_MODES.get(self.mode)
+        if kind is None:
+            raise ConfigError("The running-config entry is no longer active.")
+        self.set_running_description(kind, self.current_running_entry_name, text)
+
+    def clear_current_running_description(self) -> None:
+        self._reconcile_running_entry_mode()
+        kind = RUNNING_ENTRY_MODES.get(self.mode)
+        if kind is None:
+            raise ConfigError("The running-config entry is no longer active.")
+        self.clear_running_description(kind, self.current_running_entry_name)
 
     # ---- commit ----
 

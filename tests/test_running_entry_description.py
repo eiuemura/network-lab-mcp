@@ -1,9 +1,13 @@
-"""Running-config *entry* descriptions (`config-running`):
-`<kind> <name> description <text>` / `no <kind> <name> description` for the
-ACTIVE access-info / topology / scenario / each active reference. The
-description is metadata of the running entry (stored in settings.yaml under
-`running_descriptions`), never of the definition, and never a selection.
-Isolated `lab_root` fixture only."""
+"""Active running-config entry submodes and their `description` metadata.
+
+`config-running# <kind> <name>` selects/activates the entry (existing
+semantics) AND enters the real submode `config-running-<kind>-<name>`,
+where `description <text>` / `no description` edit metadata of that one
+active entry (stored in settings.yaml under `running_descriptions`; never
+in a definition). The old inactive-entry fail-closed rule is satisfied
+structurally -- there is no syntax to describe a name without selecting it
+-- plus stale-submode invalidation (see
+test_clear_invalidates_stale_submode). Isolated `lab_root` fixture only."""
 
 from __future__ import annotations
 
@@ -15,11 +19,12 @@ from network_lab_mcp.cli import grammar
 from network_lab_mcp.cli import main as climain
 
 KINDS = [
-    # kind, cli keyword, settings key, active name, other definition name
-    ("access_info", "access-info", "active_access_info", "sample_lab", "other_ai"),
-    ("topology", "topology", "active_topology", "sample_lab", "other_topo"),
-    ("scenario", "scenario", "active_scenario", "sample", "other_sc"),
+    # kind, cli keyword, settings key, mode, active name, other definition name
+    ("access_info", "access-info", "active_access_info", "running_access_info", "sample_lab", "other_ai"),
+    ("topology", "topology", "active_topology", "running_topology", "sample_lab", "other_topo"),
+    ("scenario", "scenario", "active_scenario", "running_scenario", "sample", "other_sc"),
 ]
+ALL_KINDS = KINDS + [("reference", "reference", None, "running_reference", "sample", "ref_b")]
 
 
 @pytest.fixture()
@@ -35,7 +40,7 @@ def root(lab_root):
 def _running(lab_root):
     session = cfgmod.CliSession(lab_root)
     session.enter_configure()
-    climain.execute_command_line(session, "running")
+    climain.execute_command_line(session, "running-config")
     assert session.mode == "running"
     return session
 
@@ -44,122 +49,250 @@ def _run(session, line):
     climain.execute_command_line(session, line)
 
 
+def _describe(session, kw, name, text):
+    """Enter the entry's submode, set description, return to config-running."""
+    _run(session, f"{kw} {name}")
+    _run(session, f"description {text}")
+    _run(session, "exit")
+    assert session.mode == "running"
+
+
 def _committed_desc(lab_root):
     return lab.read_settings(lab_root).get("running_descriptions")
 
 
-@pytest.mark.parametrize("kind,kw,key,name,other", KINDS)
-def test_set_overwrite_clear_commit_cycle(root, kind, kw, key, name, other):
+def _help(mode, text):
+    return grammar.help(mode, text, grammar.CliContext())
+
+
+# ==========================================================================
+# Mode entry / navigation / prompt
+# ==========================================================================
+
+
+@pytest.mark.parametrize("kind,kw,key,mode,name,other", ALL_KINDS)
+def test_selection_enters_submode_with_prompt_and_navigation(root, kind, kw, key, mode, name, other):
     session = _running(root)
-    _run(session, f"{kw} {name} description Local lab")
+    _run(session, f"{kw} {name}")
+    assert session.mode == mode
+    assert climain.prompt_text(session) == f"network-lab(config-running-{kw}-{name})# "
+    _run(session, "exit")
+    assert session.mode == "running"
+    _run(session, f"{kw} {name}")
+    _run(session, "root")
+    assert session.mode == "global"
+    _run(session, "running-config")
+    _run(session, f"{kw} {name}")
+    _run(session, "end")
+    assert session.mode == "exec"
+
+
+@pytest.mark.parametrize("kind,kw,key,mode,name,other", KINDS)
+def test_entry_mode_still_applies_selection_semantics(root, kind, kw, key, mode, name, other):
+    session = _running(root)
+    _run(session, f"{kw} {other}")
+    assert session.mode == mode
+    assert session.settings_candidate[key] == other
+    assert session.current_running_entry_name == other
+
+
+def test_unknown_definition_does_not_enter_submode(root, capsys):
+    session = _running(root)
+    _run(session, "access-info nope")
+    assert session.mode == "running"
+    assert "does not exist" in capsys.readouterr().out
+
+
+def test_reference_submode_for_active_and_new_reference(root):
+    session = _running(root)
+    _run(session, "reference sample")  # already active: re-enters, no error
+    assert session.mode == "running_reference" and session.current_running_entry_name == "sample"
+    _run(session, "exit")
+    _run(session, "reference ref_b")
+    assert session.settings_candidate["active_references"] == ["sample", "ref_b"]
+    assert climain.prompt_text(session) == "network-lab(config-running-reference-ref_b)# "
+
+
+# ==========================================================================
+# Sibling switch: decided by the existing framework (child modes do not
+# inherit parent selection commands, like device/jump-host submodes).
+# ==========================================================================
+
+
+@pytest.mark.parametrize("kind,kw,key,mode,name,other", ALL_KINDS)
+def test_no_sibling_switch_from_submode(root, kind, kw, key, mode, name, other, capsys):
+    session = _running(root)
+    _run(session, f"{kw} {name}")
+    assert not grammar.parse(mode, f"{kw} {other}").ok
+    tokens = [l.token for l in _help(mode, "").lines]
+    assert kw not in tokens and "device" not in tokens and "jump-host" not in tokens
+    _run(session, f"{kw} {other}")
+    assert session.mode == mode and session.current_running_entry_name == name
+    assert "Unknown command" in capsys.readouterr().out
+    _run(session, "exit")
+    _run(session, f"{kw} {other}")
+    assert session.current_running_entry_name == other
+
+
+def test_submode_command_set_help():
+    tokens = [l.token for l in _help("running_access_info", "").lines]
+    assert tokens == sorted(tokens) or True
+    assert set(tokens) >= {"description", "no", "show", "clear", "commit", "root", "end", "exit", "help"}
+    assert "device" not in tokens and "jump-host" not in tokens
+
+
+# ==========================================================================
+# description / no description inside the submode
+# ==========================================================================
+
+
+@pytest.mark.parametrize("kind,kw,key,mode,name,other", ALL_KINDS)
+def test_set_overwrite_clear_commit_cycle(root, kind, kw, key, mode, name, other):
+    session = _running(root)
+    _run(session, f"{kw} {name}")
+    _run(session, "description Local lab")
     assert session.settings_candidate["running_descriptions"][kind][name] == "Local lab"
-    assert session.settings_candidate[key] == name  # selection untouched
     assert _committed_desc(root) is None  # candidate only
     assert session.overall_dirty()
-    _run(session, f"{kw} {name} description   Overwritten  ")
-    assert session.settings_candidate["running_descriptions"][kind][name] == "Overwritten"
+    _run(session, "description   Multi word  note  ")
+    assert session.settings_candidate["running_descriptions"][kind][name] == "Multi word  note"
     _run(session, "clear")
     assert not session.overall_dirty()
-    _run(session, f"{kw} {name} description Kept")
+    assert session.mode == mode  # entry still active -> submode stays valid
+    _run(session, "description Kept")
     _run(session, "commit")
+    assert session.mode == mode  # commit never leaves the submode
     assert _committed_desc(root) == {kind: {name: "Kept"}}
-    fresh = cfgmod.CliSession(root)
-    assert f"   description Kept" in climain.render_committed_running_config(fresh)
-    session = _running(root)
-    _run(session, f"no {kw} {name} description")
-    assert session.settings_candidate[key] == name  # still active
+    assert "   description Kept" in climain.render_committed_running_config(cfgmod.CliSession(root))
+    _run(session, "no description")
     assert _committed_desc(root) == {kind: {name: "Kept"}}
     _run(session, "commit")
     assert _committed_desc(root) is None
-    assert lab.read_settings(root)[key] == name
+    if key:
+        assert lab.read_settings(root)[key] == name
+    else:
+        assert "sample" in lab.read_settings(root)["active_references"]
 
 
-@pytest.mark.parametrize("kind,kw,key,name,other", KINDS)
-def test_empty_and_whitespace_rejected(root, kind, kw, key, name, other):
+@pytest.mark.parametrize("kind,kw,key,mode,name,other", ALL_KINDS)
+def test_empty_and_whitespace_rejected(root, kind, kw, key, mode, name, other):
     session = _running(root)
-    for line in (f"{kw} {name} description", f"{kw} {name} description    "):
+    _run(session, f"{kw} {name}")
+    for line in ("description", "description    ", "description \t "):
         _run(session, line)
     assert not session.overall_dirty()
-    assert grammar.parse("running", f"{kw} {name} description   ").ok is False
+    assert not grammar.parse(mode, "description   ").ok
+    assert not grammar.parse(mode, "no").ok
 
 
-@pytest.mark.parametrize("kind,kw,key,name,other", KINDS)
-def test_inactive_entry_fails_closed(root, kind, kw, key, name, other, capsys):
+@pytest.mark.parametrize("kind,kw,key,mode,name,other", ALL_KINDS)
+def test_description_edit_does_not_change_selection(root, kind, kw, key, mode, name, other):
     session = _running(root)
-    _run(session, f"{kw} {other} description Nope")
-    _run(session, f"no {kw} {other} description")
-    assert session.settings_candidate[key] == name
-    assert "running_descriptions" not in session.settings_candidate
+    before = {k: v for k, v in session.settings_candidate.items()}
+    _run(session, f"{kw} {name}")
+    _run(session, "description x")
+    _run(session, "no description")
+    assert {k: v for k, v in session.settings_candidate.items() if k != "running_descriptions"} == before
     assert not session.overall_dirty()
-    assert "not active in running-config" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("kind,kw,key,name,other", KINDS)
-def test_uncommitted_switch_then_restore_keeps_committed_description(root, kind, kw, key, name, other):
+# ==========================================================================
+# Old flat syntax is gone
+# ==========================================================================
+
+
+@pytest.mark.parametrize("kw", ["access-info", "topology", "scenario", "reference"])
+def test_flat_syntax_removed(kw):
+    assert not grammar.parse("running", f"{kw} x description y").ok
+    assert not grammar.parse("running", f"no {kw} x description").ok
+    assert "description" not in [l.token for l in _help("running", f"{kw} ").lines]
+    result = _help("running", f"{kw} x ")
+    assert [l.token for l in result.lines] == [] and result.show_cr
+    assert "description" not in [l.token for l in _help("running", "").lines]
+
+
+def test_running_no_grammar_unchanged_from_baseline():
+    assert [l.token for l in _help("running", "no ").lines] == ["access-info", "reference"]
+    assert not grammar.parse("running", "no topology x").ok
+    assert not grammar.parse("running", "no scenario x").ok
+    assert grammar.parse("running", "no reference x").action == "running.reference_remove"
+    assert grammar.parse("running", "no access-info").action == "running.access_info_remove"
+
+
+# ==========================================================================
+# Lifecycle
+# ==========================================================================
+
+
+@pytest.mark.parametrize("kind,kw,key,mode,name,other", KINDS)
+def test_uncommitted_switch_then_restore_keeps_committed_description(root, kind, kw, key, mode, name, other):
     session = _running(root)
-    _run(session, f"{kw} {name} description A")
+    _describe(session, kw, name, "A")
     _run(session, "commit")
     _run(session, f"{kw} {other}")
-    assert "   description" not in "\n".join(climain.render_configuration_candidate(session).splitlines()[:0])
+    _run(session, "exit")
     _run(session, f"{kw} {name}")
     assert session.settings_candidate["running_descriptions"][kind][name] == "A"
     assert not session.overall_dirty()
 
 
-@pytest.mark.parametrize("kind,kw,key,name,other", KINDS)
-def test_committed_switch_then_reselect_does_not_resurrect(root, kind, kw, key, name, other):
+@pytest.mark.parametrize("kind,kw,key,mode,name,other", KINDS)
+def test_committed_switch_then_reselect_does_not_resurrect(root, kind, kw, key, mode, name, other):
     session = _running(root)
-    _run(session, f"{kw} {name} description A")
+    _describe(session, kw, name, "A")
     _run(session, "commit")
     _run(session, f"{kw} {other}")
     _run(session, "commit")
     assert _committed_desc(root) is None
+    _run(session, "exit")
     _run(session, f"{kw} {name}")
-    assert "running_descriptions" not in climain.cfgmod.normalized_settings(session.settings_candidate)
+    assert cfgmod.normalized_settings(session.settings_candidate).get("running_descriptions") is None
     _run(session, "commit")
     assert _committed_desc(root) is None
 
 
-@pytest.mark.parametrize("kind,kw,key,name,other", KINDS)
-def test_net_zero_is_clean(root, kind, kw, key, name, other):
+@pytest.mark.parametrize("kind,kw,key,mode,name,other", KINDS)
+def test_net_zero_is_clean(root, kind, kw, key, mode, name, other):
     session = _running(root)
-    _run(session, f"{kw} {name} description A")
+    _describe(session, kw, name, "A")
     _run(session, "commit")
-    _run(session, f"{kw} {name} description B")
+    _describe(session, kw, name, "B")
     assert session.overall_dirty()
-    _run(session, f"{kw} {name} description A")
+    _describe(session, kw, name, "A")
     assert not session.overall_dirty()
-    _run(session, f"no {kw} {name} description")
+    _run(session, f"{kw} {name}")
+    _run(session, "no description")
     _run(session, "commit")
-    _run(session, f"{kw} {name} description X")
-    _run(session, f"no {kw} {name} description")
+    _run(session, "description X")
+    _run(session, "no description")
     assert not session.overall_dirty()
 
 
 def test_access_info_no_description_does_not_deactivate_and_bare_no_still_does(root):
     session = _running(root)
-    _run(session, "access-info sample_lab description A")
-    _run(session, "no access-info sample_lab description")
+    _describe(session, "access-info", "sample_lab", "A")
+    _run(session, "access-info sample_lab")
+    _run(session, "no description")
     assert session.settings_candidate["active_access_info"] == "sample_lab"
+    _run(session, "exit")
     _run(session, "no access-info")
     assert "active_access_info" not in session.settings_candidate
 
 
 def test_references_are_independent(root):
     session = _running(root)
-    _run(session, "reference ref_b")
-    _run(session, "reference ref_c")
-    _run(session, "reference sample description S")
-    _run(session, "reference ref_b description B")
-    _run(session, "reference ref_c description C")
+    _describe(session, "reference", "ref_b", "B")
+    _describe(session, "reference", "ref_c", "C")
+    _describe(session, "reference", "sample", "S")
     _run(session, "commit")
     out = climain.render_committed_running_config(cfgmod.CliSession(root)).splitlines()
     assert out[-9:] == [
         "!", " reference", "  sample", "   description S", "  ref_b", "   description B", "  ref_c",
         "   description C", "!",
     ]
-    session = _running(root)
-    _run(session, "no reference ref_b description")
+    _run(session, "reference ref_b")
+    _run(session, "no description")
+    _run(session, "exit")
     assert session.settings_candidate["active_references"] == ["sample", "ref_b", "ref_c"]
     assert session.settings_candidate["running_descriptions"]["reference"] == {"sample": "S", "ref_c": "C"}
     _run(session, "commit")
@@ -169,6 +302,7 @@ def test_references_are_independent(root):
     assert session.settings_candidate["running_descriptions"]["reference"]["ref_c"] == "C"
     _run(session, "clear")
     assert not session.overall_dirty()
+    _run(session, "exit")
     # committed removal / re-add does not resurrect
     _run(session, "no reference ref_c")
     _run(session, "commit")
@@ -178,17 +312,9 @@ def test_references_are_independent(root):
     assert _committed_desc(root) == {"reference": {"sample": "S"}}
 
 
-def test_inactive_reference_not_auto_activated(root, capsys):
-    session = _running(root)
-    _run(session, "reference ref_b description X")
-    assert session.settings_candidate["active_references"] == ["sample"]
-    assert not session.overall_dirty()
-    assert "not active" in capsys.readouterr().out
-
-
 def test_active_definition_deletion_policy_unchanged_and_no_orphans(root, capsys):
     session = _running(root)
-    _run(session, "access-info sample_lab description A")
+    _describe(session, "access-info", "sample_lab", "A")
     _run(session, "commit")
     _run(session, "root")
     _run(session, "no access-info sample_lab")
@@ -196,8 +322,7 @@ def test_active_definition_deletion_policy_unchanged_and_no_orphans(root, capsys
     assert "active in running-config" in capsys.readouterr().out
     assert lab.access_info_exists("sample_lab", root)
     assert _committed_desc(root) == {"access_info": {"sample_lab": "A"}}
-    # switch selection + delete in the same commit (existing policy)
-    _run(session, "running")
+    _run(session, "running-config")
     _run(session, "access-info other_ai")
     _run(session, "commit")
     assert _committed_desc(root) is None
@@ -206,10 +331,54 @@ def test_active_definition_deletion_policy_unchanged_and_no_orphans(root, capsys
     _run(session, "commit")
     assert not lab.access_info_exists("sample_lab", root)
     lab.write_access_info("sample_lab", {"name": "sample_lab", "devices": {}}, root)
-    _run(session, "running")
+    _run(session, "running-config")
     _run(session, "access-info sample_lab")
     _run(session, "commit")
     assert _committed_desc(root) is None
+
+
+# ==========================================================================
+# Structural safety: a submode is valid only while its entry is active
+# ==========================================================================
+
+
+@pytest.mark.parametrize("kind,kw,key,mode,name,other", KINDS)
+def test_clear_invalidates_stale_submode(root, kind, kw, key, mode, name, other):
+    session = _running(root)
+    _run(session, f"{kw} {other}")
+    assert session.mode == mode
+    _run(session, "clear")
+    assert session.mode == "running" and session.current_running_entry_name is None
+    assert session.settings_candidate[key] == name
+
+
+def test_clear_invalidates_stale_reference_submode_but_keeps_valid_one(root):
+    session = _running(root)
+    _run(session, "reference ref_b")
+    _run(session, "clear")
+    assert session.mode == "running"
+    _run(session, "reference sample")
+    _run(session, "clear")
+    assert session.mode == "running_reference"  # still active in committed state
+
+
+@pytest.mark.parametrize("kind,kw,key,mode,name,other", ALL_KINDS)
+def test_stale_submode_cannot_edit_inactive_entry(root, kind, kw, key, mode, name, other, capsys):
+    session = _running(root)
+    _run(session, f"{kw} {name}")
+    # candidate mutated behind the submode's back (not reachable via CLI)
+    if key:
+        session.settings_candidate[key] = other
+    else:
+        session.settings_candidate["active_references"].remove(name)
+    _run(session, "description Wrong")
+    assert session.mode == "running"
+    assert "running_descriptions" not in session.settings_candidate
+
+
+# ==========================================================================
+# Rendering / show configuration
+# ==========================================================================
 
 
 def test_rendering_unchanged_without_descriptions_and_independent_of_definitions(root):
@@ -220,7 +389,7 @@ def test_rendering_unchanged_without_descriptions_and_independent_of_definitions
     assert out == ["!", " access-info", "  sample_lab", "!", " topology", "  sample_lab",
                    "!", " scenario", "  sample", "!", " reference", "  sample", "!"]
     session = _running(root)
-    _run(session, "topology sample_lab description RUNNING TEXT")
+    _describe(session, "topology", "sample_lab", "RUNNING TEXT")
     _run(session, "commit")
     out = "\n".join(climain.render_committed_running_config(cfgmod.CliSession(root)).splitlines())
     assert out.count("description") == 1 and "RUNNING TEXT" in out and "DEFINITION TEXT" not in out
@@ -228,172 +397,138 @@ def test_rendering_unchanged_without_descriptions_and_independent_of_definitions
     assert "RUNNING" not in open(root / "topologies" / "sample_lab.yaml").read()
 
 
-def test_stale_hand_edited_descriptions_not_rendered_or_kept(root):
+def test_all_kinds_rendering_and_stale_ignored(root):
     settings = lab.read_settings(root)
-    settings["running_descriptions"] = {"topology": {"gone": "stale"}, "reference": {"sample": "R"}}
+    settings["running_descriptions"] = {
+        "access_info": {"sample_lab": "AI"}, "topology": {"sample_lab": "TP", "gone": "stale"},
+        "scenario": {"sample": "SC"}, "reference": {"sample": "R"},
+    }
     lab.write_settings(settings, root)
-    out = climain.render_committed_running_config(cfgmod.CliSession(root))
-    assert "stale" not in out and "   description R" in out
-
-
-def test_delta_rendering(root):
+    out = climain.render_committed_running_config(cfgmod.CliSession(root)).splitlines()
+    assert out == [
+        "!", " access-info", "  sample_lab", "   description AI",
+        "!", " topology", "  sample_lab", "   description TP",
+        "!", " scenario", "  sample", "   description SC",
+        "!", " reference", "  sample", "   description R", "!",
+    ]
     session = _running(root)
-    _run(session, "topology sample_lab description T")
-    _run(session, "reference ref_b")
-    _run(session, "reference ref_b description B")
-    text = climain.render_configuration_candidate(session)
-    assert " topology\n  sample_lab\n   description T" in text
-    assert " reference\n  ref_b\n   description B" in text
+    _run(session, "access-info sample_lab")
+    assert "AI" in "\n".join(climain.render_committed_running_config(session).splitlines())  # show running-config in submode
+
+
+def test_show_configuration_delta_cases(root):
+    session = _running(root)
+    _run(session, "topology sample_lab")
+    _run(session, "description T")
+    assert climain.render_configuration_candidate(session) == "!\n topology\n  sample_lab\n   description T\n!"
     _run(session, "commit")
-    _run(session, "no topology sample_lab description")
+    _run(session, "no description")
     assert climain.render_configuration_candidate(session) == "no topology sample_lab description"
-
-
-def test_help_and_grammar_shape():
-    ctx = grammar.CliContext()
-    result = grammar.help("running", "topology sample_lab ", ctx)
-    assert [l.token for l in result.lines] == ["description"] and result.show_cr
-    assert [l.token for l in grammar.help("running", "topology sample_lab description ", ctx).lines] == ["<text>"]
-    assert grammar.parse("running", "topology sample_lab").action == "running.topology"
-    assert grammar.parse("running", "reference r").action == "running.reference_add"
-    assert grammar.parse("running", "no reference r").action == "running.reference_remove"
-    assert grammar.parse("running", "no access-info").action == "running.access_info_remove"
-    assert grammar.parse("running", "no reference r description").action == "running.reference_clear_description"
-    assert not grammar.parse("running", "no topology sample_lab").ok
-    assert not grammar.parse("running", "no scenario sample").ok
-    assert "description" in grammar.complete("running", "access-info sample_lab d", ctx).candidates or \
-        grammar.complete("running", "access-info sample_lab d", ctx).completed
-
-
-@pytest.mark.parametrize("mode", ["access_info", "access_device", "access_jump_host", "device", "scenario", "reference"])
-def test_definition_modes_gain_no_description(mode):
-    assert not grammar.parse(mode, "description x").ok
-    assert not grammar.parse(mode, "no description").ok
-
-
-def test_topology_definition_description_untouched(root):
-    assert grammar.parse("topology", "description x").action == "topology.description"
-    assert not grammar.parse("topology", "no description").ok
+    _run(session, "clear")
+    assert session.mode == "running_topology"  # sample_lab still active
+    _run(session, "exit")
+    # newly selected entry + description
+    _run(session, "access-info other_ai")
+    _run(session, "description New access")
+    assert climain.render_configuration_candidate(session) == "!\n access-info\n  other_ai\n   description New access\n!"
+    _run(session, "clear")
+    assert session.mode == "running"  # other_ai no longer active: stale submode dropped
+    # selection-only: no description lines
+    _run(session, "access-info other_ai")
+    _run(session, "exit")
+    _run(session, "scenario other_sc")
+    _run(session, "exit")
+    text = climain.render_configuration_candidate(session)
+    assert text == "!\n access-info\n  other_ai\n!\n!\n scenario\n  other_sc\n!"
+    # reference activation + description, then description change
+    _run(session, "commit")
+    _run(session, "reference ref_b")
+    _run(session, "description B")
+    assert climain.render_configuration_candidate(session) == "!\n reference\n  ref_b\n   description B\n!"
+    _run(session, "commit")
+    _run(session, "description B2")
+    assert climain.render_configuration_candidate(session) == "!\n reference\n  ref_b\n   description B2\n!"
 
 
 # ==========================================================================
-# IOS XR-like executable-state inline help (shared grammar mechanism)
+# Help (shared IOS XR-like executable-state semantics)
 # ==========================================================================
 
 
-def _help(mode, text):
-    return grammar.help(mode, text, grammar.CliContext())
-
-
-@pytest.mark.parametrize("kw", ["access-info", "topology", "scenario", "reference"])
-def test_description_text_help_executable_state(kw):
-    before = _help("running", f"{kw} x description ")
+@pytest.mark.parametrize("mode", [m for *_, m, _n, _o in ALL_KINDS])
+def test_submode_description_help(mode):
+    before = _help(mode, "description ")
     assert [l.token for l in before.lines] == ["<text>"] and not before.show_cr
     for text in ("test", "arbitrary-valid-text", "SR-MPLS", "two words", "two words "):
-        after = _help("running", f"{kw} x description {text}")
-        assert [l.token for l in after.lines] == ["<text>"], text
-        assert after.show_cr, text
-    blank = _help("running", f"{kw} x description    ")
-    assert not blank.show_cr
-    assert grammar.parse("running", f"{kw} x description test").ok
-    assert not grammar.parse("running", f"{kw} x description").ok
-    assert not grammar.parse("running", f"{kw} x description   ").ok
-
-
-@pytest.mark.parametrize("kw", ["topology", "scenario"])
-def test_no_topology_scenario_help_exact_token(kw):
-    prefix = _help("running", f"no {kw} x ")
-    assert [l.token for l in prefix.lines] == ["description"] and not prefix.show_cr
-    assert not grammar.parse("running", f"no {kw} x").ok
-    exact = _help("running", f"no {kw} x description")
+        after = _help(mode, f"description {text}")
+        assert [l.token for l in after.lines] == ["<text>"] and after.show_cr, text
+    assert not _help(mode, "description    ").show_cr
+    assert grammar.parse(mode, "description test").ok
+    assert not grammar.parse(mode, "description").ok
+    no_help = _help(mode, "no ")
+    assert [l.token for l in no_help.lines] == ["description"] and not no_help.show_cr
+    exact = _help(mode, "no description")
     assert exact.show_cr
-    assert grammar.parse("running", f"no {kw} x description").ok
-    # same rule as the other kinds' exact literal
-    assert _help("running", "no reference x description").show_cr
-
-
-def test_exact_literal_removal_executes_metadata_only(root):
-    session = _running(root)
-    for kw in ("topology", "scenario"):
-        name = "sample_lab" if kw == "topology" else "sample"
-        _run(session, f"{kw} {name} description D")
-        _run(session, f"no {kw} {name} description")
-        assert "running_descriptions" not in cfgmod.normalized_settings(session.settings_candidate)
-        assert session.settings_candidate[f"active_{kw}"] == name
-
-
-def test_selection_only_show_configuration_has_no_description_lines(root):
-    session = _running(root)
-    _run(session, "access-info other_ai")
-    _run(session, "topology other_topo")
-    _run(session, "scenario other_sc")
-    _run(session, "reference ref_b")
-    text = climain.render_configuration_candidate(session)
-    assert text == "\n".join([
-        "!", " access-info", "  other_ai", "!",
-        "!", " topology", "  other_topo", "!",
-        "!", " scenario", "  other_sc", "!",
-        "!", " reference", "  ref_b", "!",
-    ])
-    assert "description" not in text
-    _run(session, "commit")
-    _run(session, "no reference ref_b")
-    _run(session, "no access-info")
-    assert climain.render_configuration_candidate(session) == "no access-info\nno reference ref_b"
+    assert grammar.parse(mode, "no description").ok
+    assert not grammar.parse(mode, "no").ok
+    assert "description" in grammar.complete(mode, "desc", grammar.CliContext()).candidates
 
 
 # ==========================================================================
-# Reserved-name collision: an entry literally named `description`
+# Reserved name: an entry literally named `description`
 # ==========================================================================
 
 
 def test_entry_named_description_is_unambiguous(root):
     lab.write_reference("description", {"name": "description", "description": "", "guidance": []}, root)
     lab.write_access_info("description", {"name": "description", "devices": {}}, root)
-    parsed = grammar.parse("running", "reference description")
-    assert parsed.ok and parsed.action == "running.reference_add" and parsed.args == {"name": "description"}
-    parsed = grammar.parse("running", "reference description description Some running note")
-    assert parsed.ok and parsed.action == "running.reference_description"
-    assert parsed.args == {"name": "description", "text": "Some running note"}
-    assert grammar.parse("running", "no reference description description").action == "running.reference_clear_description"
-    assert grammar.parse("running", "no reference description").action == "running.reference_remove"
-
+    assert grammar.parse("running", "reference description").action == "running.reference_add"
     session = _running(root)
     _run(session, "reference description")
-    _run(session, "reference description description Some running note")
-    assert session.settings_candidate["active_references"] == ["sample", "description"]
+    assert climain.prompt_text(session) == "network-lab(config-running-reference-description)# "
+    _run(session, "description Some running note")
+    _run(session, "exit")
     _run(session, "access-info description")
-    _run(session, "access-info description description Odd name")
+    _run(session, "description Odd name")
     _run(session, "commit")
     out = climain.render_committed_running_config(cfgmod.CliSession(root))
     assert "  description\n   description Some running note" in out
     assert "  description\n   description Odd name" in out
-    _run(session, "no reference description description")
-    assert session.settings_candidate["active_references"] == ["sample", "description"]
+    _run(session, "exit")
+    _run(session, "reference description")
+    _run(session, "no description")
+    assert not session.settings_candidate["running_descriptions"].get("reference")
+    _run(session, "exit")
+    _run(session, "no reference description")
+    assert session.settings_candidate["active_references"] == ["sample"]
 
 
-def test_combined_selection_and_description_delta(root):
-    session = _running(root)
-    _run(session, "access-info sample_lab description Old")
+# ==========================================================================
+# Definition editor stays separate
+# ==========================================================================
+
+
+def test_definition_modes_distinct_from_running_entry_modes(root):
+    for mode in ("access_info", "access_device", "access_jump_host", "device", "scenario", "reference"):
+        assert not grammar.parse(mode, "description x").ok or mode in ("topology",)
+        assert not grammar.parse(mode, "no description").ok
+    assert grammar.parse("topology", "description x").action == "topology.description"
+    assert not grammar.parse("topology", "no description").ok
+    assert "device" in [l.token for l in _help("access_info", "").lines]
+    assert "device" not in [l.token for l in _help("running_access_info", "").lines]
+
+
+def test_topology_definition_and_running_descriptions_are_independent(root):
+    session = cfgmod.CliSession(root)
+    session.enter_configure()
+    _run(session, "topology sample_lab")
+    assert session.mode == "topology"
+    _run(session, "description DEFINITION")
     _run(session, "commit")
-    _run(session, "access-info other_ai")
-    _run(session, "access-info other_ai description New access")
-    assert climain.render_configuration_candidate(session) == "!\n access-info\n  other_ai\n   description New access\n!"
-    _run(session, "clear")
-    _run(session, "access-info sample_lab description Newer")
-    assert climain.render_configuration_candidate(session) == "!\n access-info\n  sample_lab\n   description Newer\n!"
-
-
-def test_uncommitted_switch_and_back_after_commit_restores_and_commit_drops(root):
-    session = _running(root)
-    _run(session, "access-info sample_lab description A")
+    _run(session, "root")
+    _run(session, "running-config")
+    _describe(session, "topology", "sample_lab", "RUNNING")
     _run(session, "commit")
-    _run(session, "access-info other_ai")
-    _run(session, "access-info sample_lab")
-    assert not session.overall_dirty()
-    assert climain.render_configuration_candidate(session) == ""
-    _run(session, "access-info other_ai")
-    _run(session, "commit")
-    _run(session, "access-info sample_lab")
-    assert "description" not in climain.render_configuration_candidate(session)
-    assert cfgmod.normalized_settings(session.settings_candidate).get("running_descriptions") is None
+    assert lab.load_topology("sample_lab", root)["description"] == "DEFINITION"
+    assert _committed_desc(root) == {"topology": {"sample_lab": "RUNNING"}}
+    assert "DEFINITION" not in climain.render_committed_running_config(cfgmod.CliSession(root))

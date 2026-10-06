@@ -165,6 +165,46 @@ def load_committed_definition(kind: str, name: str, lab_root: Path) -> Optional[
     return load_fn(name, lab_root)
 
 
+# Running-config entry descriptions live in settings.yaml under the optional
+# `running_descriptions` mapping: {kind: {entry_name: text}}. They are
+# metadata of the *active* entries only; normalized_settings() is the one
+# place that drops entries that are no longer active, so a description can
+# never outlive its running entry (and is never resurrected on re-select).
+_RUNNING_DESCRIPTION_SINGLE_KEYS = {
+    "access_info": "active_access_info",
+    "topology": "active_topology",
+    "scenario": "active_scenario",
+}
+RUNNING_DESCRIPTIONS_KEY = "running_descriptions"
+
+
+def active_running_entries(settings: dict) -> dict[str, list[str]]:
+    entries = {kind: [settings.get(key)] if settings.get(key) else [] for kind, key in _RUNNING_DESCRIPTION_SINGLE_KEYS.items()}
+    entries["reference"] = list(settings.get("active_references") or [])
+    return entries
+
+
+def normalized_settings(settings: dict) -> dict:
+    """Deep copy of `settings` with running-entry descriptions restricted to
+    currently active entries (non-empty strings only); an empty
+    `running_descriptions` is omitted entirely."""
+    out = copy.deepcopy(settings)
+    raw = out.pop(RUNNING_DESCRIPTIONS_KEY, None)
+    if not isinstance(raw, dict):
+        return out
+    pruned: dict[str, dict[str, str]] = {}
+    for kind, names in active_running_entries(out).items():
+        entries = raw.get(kind)
+        if not isinstance(entries, dict):
+            continue
+        kept = {n: t for n, t in entries.items() if n in names and isinstance(t, str) and t.strip()}
+        if kept:
+            pruned[kind] = kept
+    if pruned:
+        out[RUNNING_DESCRIPTIONS_KEY] = pruned
+    return out
+
+
 class CliSession:
     """Mutable candidate-configuration state for one CLI process lifetime.
 
@@ -188,7 +228,9 @@ class CliSession:
     # ---- scoped dirty state ----
 
     def settings_dirty(self) -> bool:
-        return self.settings_candidate is not None and self.settings_candidate != self.committed_settings
+        return self.settings_candidate is not None and normalized_settings(self.settings_candidate) != normalized_settings(
+            self.committed_settings
+        )
 
     def definition_dirty(self) -> bool:
         if self.definition_kind is None:
@@ -548,6 +590,23 @@ class CliSession:
             raise ConfigError(f"Reference '{name}' is not currently selected.")
         refs.remove(name)
 
+    # ---- running-config entry descriptions (metadata of an ACTIVE entry;
+    # never a selection, never written to a definition) ----
+
+    def _require_active_running_entry(self, kind: str, name: str) -> None:
+        if name not in active_running_entries(self.settings_candidate)[kind]:
+            label = {"access_info": "Access-info", "topology": "Topology", "scenario": "Scenario", "reference": "Reference"}[kind]
+            raise ConfigError(f"{label} '{name}' is not active in running-config.")
+
+    def set_running_description(self, kind: str, name: str, text: str) -> None:
+        self._require_active_running_entry(kind, name)
+        descriptions = self.settings_candidate.setdefault(RUNNING_DESCRIPTIONS_KEY, {})
+        descriptions.setdefault(kind, {})[name] = text
+
+    def clear_running_description(self, kind: str, name: str) -> None:
+        self._require_active_running_entry(kind, name)
+        (self.settings_candidate.get(RUNNING_DESCRIPTIONS_KEY) or {}).get(kind, {}).pop(name, None)
+
     # ---- commit ----
 
     def commit(self) -> bool:
@@ -639,6 +698,7 @@ class CliSession:
                 self.definition_original = copy.deepcopy(self.definition_candidate)
 
         if self.settings_dirty():
+            self.settings_candidate = normalized_settings(self.settings_candidate)
             lab.write_settings(self.settings_candidate, self.lab_root)
             self.committed_settings = copy.deepcopy(self.settings_candidate)
 

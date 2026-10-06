@@ -424,23 +424,32 @@ def _running_config_lines(settings: dict) -> str:
     name is actually present) -- there is no `<none>`
     for them; a missing mandatory value is not a state this renderer
     tries to make presentable, it is left exactly as before."""
+    descriptions = cfgmod.normalized_settings(settings).get(cfgmod.RUNNING_DESCRIPTIONS_KEY) or {}
+
+    def entry_lines(kind: str, value: str) -> list[str]:
+        lines = [f"  {value}"]
+        description = (descriptions.get(kind) or {}).get(value)
+        if description:
+            lines.append(f"   description {description}")
+        return lines
+
     sections: list[tuple[str, list[str]]] = []
     access_info_name = settings.get("active_access_info")
-    sections.append(("access-info", [access_info_name] if access_info_name else [_NONE_DISPLAY]))
+    sections.append(("access-info", entry_lines("access_info", access_info_name) if access_info_name else [f"  {_NONE_DISPLAY}"]))
     topology_name = settings.get("active_topology")
     if topology_name:
-        sections.append(("topology", [topology_name]))
+        sections.append(("topology", entry_lines("topology", topology_name)))
     scenario_name = settings.get("active_scenario")
     if scenario_name:
-        sections.append(("scenario", [scenario_name]))
+        sections.append(("scenario", entry_lines("scenario", scenario_name)))
     references = settings.get("active_references") or []
-    sections.append(("reference", list(references) if references else [_NONE_DISPLAY]))
+    reference_lines = [line for ref in references for line in entry_lines("reference", ref)]
+    sections.append(("reference", reference_lines if references else [f"  {_NONE_DISPLAY}"]))
     lines: list[str] = []
-    for label, values in sections:
+    for label, body in sections:
         lines.append("!")
         lines.append(f" {label}")
-        for value in values:
-            lines.append(f"  {value}")
+        lines.extend(body)
     lines.append("!")
     return "\n".join(lines)
 
@@ -697,35 +706,58 @@ def _running_config_delta_lines(original: dict, candidate: dict) -> list[str]:
     """Field-level delta for the running-config selection: only the
     selection(s) that actually changed, using the existing set/`no`
     rendering conventions -- unrelated unchanged selections are never
-    repeated."""
+    repeated. Running-entry descriptions are compared on the normalized
+    (active-entries-only) view, so a stale description never shows up."""
+    original = cfgmod.normalized_settings(original)
+    candidate = cfgmod.normalized_settings(candidate)
+    old_desc = original.get(cfgmod.RUNNING_DESCRIPTIONS_KEY) or {}
+    new_desc = candidate.get(cfgmod.RUNNING_DESCRIPTIONS_KEY) or {}
+
+    def description_of(source: dict, kind: str, name: str) -> Optional[str]:
+        return (source.get(kind) or {}).get(name)
+
+    def entry_block(label: str, kind: str, names: list[str]) -> list[str]:
+        block = ["!", f" {label}"]
+        for name in names:
+            block.append(f"  {name}")
+            description = description_of(new_desc, kind, name)
+            if description:
+                block.append(f"   description {description}")
+        block.append("!")
+        return block
+
     lines: list[str] = []
-    for key, label in (
-        ("active_access_info", "access-info"),
-        ("active_topology", "topology"),
-        ("active_scenario", "scenario"),
+    for key, kind, label in (
+        ("active_access_info", "access_info", "access-info"),
+        ("active_topology", "topology", "topology"),
+        ("active_scenario", "scenario", "scenario"),
     ):
         old_value = original.get(key)
         new_value = candidate.get(key)
-        if old_value == new_value:
-            continue
-        if new_value:
-            lines.append("!")
-            lines.append(f" {label}")
-            lines.append(f"  {new_value}")
-            lines.append("!")
-        else:
-            lines.append(f"no {label}")
+        if old_value != new_value:
+            if new_value:
+                lines.extend(entry_block(label, kind, [new_value]))
+            else:
+                lines.append(f"no {label}")
+        elif new_value and description_of(old_desc, kind, new_value) != description_of(new_desc, kind, new_value):
+            if description_of(new_desc, kind, new_value):
+                lines.extend(entry_block(label, kind, [new_value]))
+            else:
+                lines.append(f"no {label} {new_value} description")
 
     old_refs = original.get("active_references") or []
     new_refs = candidate.get("active_references") or []
     added_refs = [r for r in new_refs if r not in old_refs]
     removed_refs = [r for r in old_refs if r not in new_refs]
-    if added_refs:
-        lines.append("!")
-        lines.append(" reference")
-        for reference in added_refs:
-            lines.append(f"  {reference}")
-        lines.append("!")
+    changed_refs = [
+        r for r in new_refs if r in old_refs and description_of(old_desc, "reference", r) != description_of(new_desc, "reference", r)
+    ]
+    with_text = added_refs + [r for r in changed_refs if description_of(new_desc, "reference", r)]
+    if with_text:
+        lines.extend(entry_block("reference", "reference", with_text))
+    for reference in changed_refs:
+        if not description_of(new_desc, "reference", reference):
+            lines.append(f"no reference {reference} description")
     for reference in removed_refs:
         lines.append(f"no reference {reference}")
     return lines
@@ -1844,6 +1876,38 @@ def h_running_reference_remove(session: cfgmod.CliSession, args: dict) -> None:
     session.remove_reference(args["name"])
 
 
+def h_running_access_info_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_running_description("access_info", args["name"], args["text"])
+
+
+def h_running_access_info_clear_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_running_description("access_info", args["name"])
+
+
+def h_running_topology_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_running_description("topology", args["name"], args["text"])
+
+
+def h_running_topology_clear_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_running_description("topology", args["name"])
+
+
+def h_running_scenario_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_running_description("scenario", args["name"], args["text"])
+
+
+def h_running_scenario_clear_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_running_description("scenario", args["name"])
+
+
+def h_running_reference_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.set_running_description("reference", args["name"], args["text"])
+
+
+def h_running_reference_clear_description(session: cfgmod.CliSession, args: dict) -> None:
+    session.clear_running_description("reference", args["name"])
+
+
 # ---- topology definition mode ----
 
 
@@ -2031,6 +2095,14 @@ HANDLERS: dict[str, Callable[[cfgmod.CliSession, dict], None]] = {
     "running.scenario": h_running_scenario,
     "running.reference_add": h_running_reference_add,
     "running.reference_remove": h_running_reference_remove,
+    "running.access_info_description": h_running_access_info_description,
+    "running.access_info_clear_description": h_running_access_info_clear_description,
+    "running.topology_description": h_running_topology_description,
+    "running.topology_clear_description": h_running_topology_clear_description,
+    "running.scenario_description": h_running_scenario_description,
+    "running.scenario_clear_description": h_running_scenario_clear_description,
+    "running.reference_description": h_running_reference_description,
+    "running.reference_clear_description": h_running_reference_clear_description,
     "topology.description": h_topology_description,
     "topology.device": h_topology_device,
     "topology.edit": h_edit,

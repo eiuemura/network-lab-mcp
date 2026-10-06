@@ -144,6 +144,15 @@ def validate_freeform(value: str) -> ValidationOutcome:
     return _ok(value)
 
 
+def validate_description(value: str) -> ValidationOutcome:
+    """Running-config entry description text: required and non-empty after
+    stripping surrounding whitespace (human-readable metadata only)."""
+    text = value.strip()
+    if not text:
+        return _fail("Description must not be empty.")
+    return _ok(text)
+
+
 def validate_device_type(value: str) -> ValidationOutcome:
     """Reuses network_lab_mcp.lab.normalize_device_type() -- the single
     validation primitive for the fixed device-type enum, also applied to
@@ -867,9 +876,41 @@ def _build_running_root() -> Node:
     reference_next = reference_node.add_argument(reference_arg)
     reference_next.set_command("running.reference_add", "Activate reference for MCP")
 
+    # Running-config entry description (metadata of an ALREADY ACTIVE
+    # entry, never a selection): `<kind> <name> description <text>` and
+    # `no <kind> <name> description`. Execution fails closed when <name>
+    # is not active in the candidate running-config.
+    for kind_keyword, select_next in (
+        ("access-info", access_info_next),
+        ("topology", topology_next),
+        ("scenario", scenario_next),
+        ("reference", reference_next),
+    ):
+        action_kind = kind_keyword.replace("-", "_")
+        text_arg = Argument(
+            "text",
+            "Free-form running-config entry description",
+            validate=validate_description,
+            rest_of_line=True,
+            hint="<text>",
+        )
+        set_node = select_next.add_literal("description", "Set the running-config entry description")
+        set_node.add_argument(text_arg).set_command(
+            f"running.{action_kind}_description", "Set the running-config entry description"
+        )
+
     no_node = root.add_literal("no", "Negate a running configuration item")
     no_access_info_node = no_node.add_literal("access-info", "Remove the access information selection")
     no_access_info_node.set_command("running.access_info_remove", "Remove the access information selection")
+    no_entry_arg = Argument("name", "Active entry name", hint="<name>")
+    no_access_info_node.add_argument(no_entry_arg).add_literal(
+        "description", "Remove the running-config entry description"
+    ).set_command("running.access_info_clear_description", "Remove the running-config entry description")
+    for kind_keyword in ("topology", "scenario"):
+        kind_node = no_node.add_literal(kind_keyword, "Negate a running configuration item")
+        kind_node.add_argument(Argument("name", "Active entry name", hint="<name>")).add_literal(
+            "description", "Remove the running-config entry description"
+        ).set_command(f"running.{kind_keyword}_clear_description", "Remove the running-config entry description")
     no_reference_node = no_node.add_literal("reference", "Remove a reference used by MCP")
     no_reference_arg = Argument(
         "name",
@@ -879,6 +920,9 @@ def _build_running_root() -> Node:
     )
     no_reference_next = no_reference_node.add_argument(no_reference_arg)
     no_reference_next.set_command("running.reference_remove", "Remove a reference used by MCP")
+    no_reference_next.add_literal("description", "Remove the running-config entry description").set_command(
+        "running.reference_clear_description", "Remove the running-config entry description"
+    )
 
     _add_show_subtree(
         root,

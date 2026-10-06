@@ -18,12 +18,10 @@ neither change alters those semantics, only how they are *displayed* or
 
 2. `config-running# no ?` (the spaced form only) gets an additional
    explanatory footer describing all four kinds' selection model,
-   explaining that topology/scenario cannot be unset. (Later,
-   `no topology|scenario <name> description` was added for running-entry
-   description removal, so those tokens now appear in `no ?` help, but
-   `no topology <name>` / `no scenario <name>` alone remain invalid.)
-   `no?` (attached, no space) and `no ?` in every other mode are
-   unaffected.
+   without adding "no topology"/"no scenario" as real grammar candidates
+   -- those two names appear only in the footer's prose, never as
+   parseable/completable tokens. `no?` (attached, no space) and `no ?`
+   in every other mode are unaffected.
 
 Uses the isolated `lab_root` fixture only; never the real repository's
 lab/ directory."""
@@ -281,19 +279,17 @@ def test_no_topology_and_no_scenario_still_rejected_in_running_mode():
     assert not grammar.parse("running", "no scenario sample").ok
 
 
-def test_running_no_help_lists_entries_that_can_be_unset_or_described():
-    # topology/scenario appear only for `no <kind> <name> description`
-    # (running-entry description removal); they still cannot be unset.
+def test_running_no_help_only_lists_access_info_and_reference():
     ctx = grammar.CliContext()
     result = grammar.help("running", "no ", ctx)
     tokens = [line.token for line in result.lines]
-    assert tokens == ["access-info", "topology", "scenario", "reference"]
+    assert tokens == ["access-info", "reference"]
 
 
-def test_running_no_tab_completion_lists_entries_that_can_be_unset_or_described():
+def test_running_no_tab_completion_only_lists_access_info_and_reference():
     ctx = grammar.CliContext()
     result = grammar.complete("running", "no ", ctx)
-    assert set(result.candidates) == {"access-info", "topology", "scenario", "reference"}
+    assert set(result.candidates) == {"access-info", "reference"}
 
 
 # ==========================================================================

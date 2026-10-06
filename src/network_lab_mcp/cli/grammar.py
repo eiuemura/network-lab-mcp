@@ -385,6 +385,10 @@ class Node:
     argument: Optional[Argument] = None
     argument_child: Optional["Node"] = None
     command: Optional[CommandSpec] = None
+    # Set on the node reached after a `rest_of_line` argument: every further
+    # token is still part of that free-form text, so help keeps showing the
+    # argument and the node's own command makes the line executable.
+    free_text_argument: Optional[Argument] = None
 
     def add_literal(self, keyword: str, description: str = "") -> "Node":
         key = keyword.lower()
@@ -399,6 +403,8 @@ class Node:
     def add_argument(self, argument: Argument) -> "Node":
         self.argument = argument
         node = Node()
+        if argument.rest_of_line:
+            node.free_text_argument = argument
         self.argument_child = node
         return node
 
@@ -1477,6 +1483,8 @@ def _walk_committed(mode: str, tokens: list[str]) -> Optional[Node]:
     to resolve (broken prefix -> no completion/help context)."""
     node = MODE_ROOTS[mode]
     for text in tokens:
+        if node.free_text_argument is not None:
+            continue  # further words of the free-form text
         if node.argument is not None and not node.literal_children:
             node = node.argument_child
             continue
@@ -1528,6 +1536,12 @@ def help(mode: str, text_before_cursor: str, ctx: CliContext) -> HelpResult:
     if node is None:
         return HelpResult([], False, partial)
 
+    if node.free_text_argument is not None:
+        # At least one word of free-form text is already entered, so the
+        # command is executable: argument help plus <cr>.
+        argument = node.free_text_argument
+        return HelpResult([HelpLine(argument.display_hint(), argument.description)], node.command is not None, partial)
+
     if node.argument is not None and not node.literal_children:
         argument = node.argument
         lines: list[HelpLine] = []
@@ -1574,6 +1588,9 @@ def help(mode: str, text_before_cursor: str, ctx: CliContext) -> HelpResult:
                 return HelpResult(lines, show_cr, partial)
         else:
             lines.append(HelpLine(argument.display_hint(), argument.description))
+            if argument.rest_of_line and partial != "" and argument.validate(partial).ok:
+                # `description test?`: valid free-form text typed, so executable.
+                return HelpResult(lines, node.argument_child.command is not None, partial)
         # True only for a node that is itself a complete command *and* takes
         # a further argument (currently just "help", e.g. `help ?` shows the
         # topic list plus <cr> since bare `help` is already valid); every

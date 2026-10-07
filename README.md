@@ -474,7 +474,9 @@ No MCP tool returns access-info.
 
 `terminal_open(device)` receives only a logical device name. Network Lab MCP resolves the selected private access-info internally and performs the connection.
 
-Passwords are not returned in MCP tool output, terminal-send responses, generated errors, or terminal logs.
+Passwords are not intentionally returned in MCP tool results, terminal-send responses, or generated errors, and are not placed on subprocess command lines.
+
+This is a credential boundary, not output sanitization. Terminal logs are raw transcripts: Network Lab MCP does not redact device output, and anything the remote side prints or echoes can appear in them. Treat terminal output and logs as potentially sensitive; Network Lab MCP does not guarantee they are free of secrets. See [SECURITY.md](SECURITY.md) for details.
 
 ### Important local CLI behavior
 

@@ -464,6 +464,8 @@ actually supports should be verified when practical.
 
 ## Security model
 
+See [SECURITY.md](SECURITY.md) for the full trust model, risks, and vulnerability-reporting guidance.
+
 ### Credentials stay private from the AI
 
 Real `access-info` definitions may contain management addresses, transport/port, usernames, passwords, and optional jump-host information.

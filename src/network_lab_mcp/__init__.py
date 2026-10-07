@@ -1,4 +1,4 @@
-"""Network Lab MCP: a lightweight AI Network Engineer Layer for Claude Code."""
+"""Network Lab MCP: an AI Network Engineer Workspace for real network labs."""
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import metadata as _package_metadata

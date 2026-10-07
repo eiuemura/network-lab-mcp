@@ -2,20 +2,21 @@
 
 ## Design goals
 
-Network Lab MCP provides a lightweight "AI Network Engineer Layer" designed to
+Network Lab MCP provides an "AI Network Engineer Workspace" designed to
 maximize the reasoning capabilities of AI in network lab environments.
 
 Network Lab MCP is **not** a network engineering reasoning engine. It is a
-thin layer that gives Claude Code (or any other MCP client) two things:
+thin layer that gives an MCP-capable AI client (for example Claude Code or
+Codex CLI) two things:
 
 1. **Lab knowledge** — where the work happens, how to behave, what to
    accomplish, and what reusable knowledge already exists.
 2. **Terminal access** — a real, general-purpose way to interact with lab
    devices, close to how a human operator would use a terminal, without
-   ever handing Claude the private connection details.
+   ever handing the AI client the private connection details.
 
 All actual network engineering judgment — what command to run next, how to
-interpret output, when a task is done — is left to Claude Code. This drives
+interpret output, when a task is done — is left to the AI client. This drives
 every other design choice in this document:
 
 - **Fail closed, never guess.** A missing selection, an unresolvable device,

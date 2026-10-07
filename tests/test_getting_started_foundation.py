@@ -21,11 +21,11 @@ REPO_LAB = Path(__file__).resolve().parent.parent / "lab"
 GUIDANCE_FIELDS = ["workflow", "scenario_guidance", "reference_guidance", "decision_rules", "knowledge_lifecycle"]
 FRESH_RUNNING_CONFIG = """!
  access-info
-  sample
+  sample_lab
    description Placeholder access information for the initial sample configuration
 !
  topology
-  sample
+  sample_lab
    description Placeholder topology; it can also be generated automatically from access-info and LLDP neighbor information using the discovery command
 !
  scenario
@@ -343,3 +343,27 @@ def test_getting_started_expresses_proposal_and_human_commit_boundary():
     rules = " ".join(data["decision_rules"]).lower()
     assert "reuse" in rules and "propose" in rules and "cli" in rules and "human" in rules
     assert "persist" in rules  # explicitly: the AI does not persist
+
+
+def test_persisted_generic_sample_selection_is_not_migrated(tmp_path):
+    root = tmp_path / "lab"
+    root.mkdir()
+    legacy = {"active_access_info": "sample", "active_topology": "sample", "active_scenario": "s", "active_references": []}
+    (root / "settings.yaml").write_text(yaml.safe_dump(legacy), encoding="utf-8")
+    assert lab.read_settings(root) == legacy
+    assert "sample_lab" not in _running_text(root)
+
+
+def test_fresh_default_sample_lab_submodes_and_completion(fresh_root):
+    session = cfgmod.CliSession(fresh_root)
+    session.enter_configure()
+    climain.execute_command_line(session, "running-config")
+    climain.execute_command_line(session, "access-info sample_lab")
+    assert session.mode == "running_access_info"
+    climain.execute_command_line(session, "exit")
+    climain.execute_command_line(session, "topology sample_lab")
+    assert session.mode == "running_topology"
+    assert "sample_lab" in lab.list_access_info_names(fresh_root)
+    assert "sample_lab" in lab.list_topology_names(fresh_root)
+    assert "sample" not in lab.list_access_info_names(fresh_root)
+    assert "sample" not in lab.list_topology_names(fresh_root)

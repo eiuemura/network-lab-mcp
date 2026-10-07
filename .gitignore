@@ -22,14 +22,14 @@ lab/settings.yaml
 # Real topology data is private lab information by default.
 # Only the fictional sample topology is tracked.
 lab/topologies/*.yaml
-!lab/topologies/sample.yaml
+!lab/topologies/sample_lab.yaml
 
 # access-info holds private device connection data (address/username/
 # password) and is never exposed by MCP. Only the fictional sample is
 # tracked; every other access-info file (including any real lab data a
 # user creates locally, e.g. via the CLI) stays untracked and ignored.
 lab/access-info/*.yaml
-!lab/access-info/sample.yaml
+!lab/access-info/sample_lab.yaml
 
 # Scenario/reference content can describe private task or customer
 # context. Only the default onboarding scenario/reference are tracked.

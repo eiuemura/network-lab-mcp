@@ -12,8 +12,8 @@
 # it simply means no access-info is selected, and terminal_open() fails
 # closed until one is.
 
-active_access_info: sample
-active_topology: sample
+active_access_info: sample_lab
+active_topology: sample_lab
 active_scenario: getting_started
 
 active_references:
@@ -23,9 +23,9 @@ active_references:
 # never part of a definition file.
 running_descriptions:
   access_info:
-    sample: Placeholder access information for the initial sample configuration
+    sample_lab: Placeholder access information for the initial sample configuration
   topology:
-    sample: Placeholder topology; it can also be generated automatically from access-info and LLDP neighbor information using the discovery command
+    sample_lab: Placeholder topology; it can also be generated automatically from access-info and LLDP neighbor information using the discovery command
   scenario:
     getting_started: Default onboarding scenario for Network Lab MCP
   reference:

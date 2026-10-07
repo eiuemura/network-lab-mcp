@@ -416,7 +416,7 @@ other than the one resolved name.
 
 ```
 network-lab# show running-config access-info
-access-info sample
+access-info sample_lab
  device R1
   type iosxr
   address 192.0.2.11
@@ -424,7 +424,7 @@ access-info sample
 !
 
 network-lab# show running-config topology
-topology sample
+topology sample_lab
  device R1
   type iosxr
  !
@@ -1474,7 +1474,7 @@ mathematically minimal generic recursive diff:
   # committed: type iosxr / address 192.0.2.11 / port 22
   # candidate change: port only
   network-lab(config-access-device-R1)# show
-  access-info sample
+  access-info sample_lab
    device R1
     port 2222
    !

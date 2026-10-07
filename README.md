@@ -63,12 +63,17 @@ read-only), reuses existing knowledge, and when it is incomplete or missing
 *proposes* a refined or new Scenario/Reference. Definition changes are
 reviewed and committed through the CLI; the AI never writes them directly.
 
-A fresh installation (copying `lab/settings.example.yaml`) starts with
-`getting_started` as the default onboarding Scenario and `network_lab_basics`
-as the default supporting Reference. Existing `lab/settings.yaml` files are
-never rewritten: your current selections and descriptions stay as they are.
-See [docs/scenario_format.md](docs/scenario_format.md) for the Scenario /
-Reference boundary.
+A fresh installation (`cp lab/settings.example.yaml lab/settings.yaml`) starts with:
+
+- access-info: `sample_lab` — how the system connects to the fictional public sample lab
+- topology: `sample_lab` — what network/environment that sample lab contains
+- scenario: `getting_started` — what the AI should accomplish; the default onboarding Scenario
+- reference: `network_lab_basics` — reusable engineering knowledge; the default supporting Reference
+
+These are fresh-install defaults only. Existing `lab/settings.yaml` files are
+never rewritten or migrated: your current selections and descriptions stay as
+they are. See [docs/scenario_format.md](docs/scenario_format.md) for the
+Scenario / Reference boundary.
 
 ## Core design
 
@@ -298,7 +303,7 @@ The tracked sample files use documentation-only addresses and cannot connect to 
 Create your own private access-info definition:
 
 ```bash
-cp lab/access-info/sample.yaml lab/access-info/my_lab.yaml
+cp lab/access-info/sample_lab.yaml lab/access-info/my_lab.yaml
 ```
 
 A typical topology-discovery flow looks like this:
@@ -468,7 +473,7 @@ network-lab-mcp/
 
 Real lab files can contain sensitive information.
 
-The repository's `.gitignore` deliberately excludes local operational files by default while preserving tracked fictional `sample.yaml` files.
+The repository's `.gitignore` deliberately excludes local operational files by default while preserving tracked fictional sample definitions.
 
 This reduces the risk of accidentally committing real lab data, but it is **not** a complete security boundary. Always review changes before pushing to a public repository.
 

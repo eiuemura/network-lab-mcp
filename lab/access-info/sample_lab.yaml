@@ -1,4 +1,5 @@
-# Sample access-info definition used to validate Network Lab MCP.
+# Public sample access-info definition (`sample_lab`): how to connect to the
+# fictional sample lab described by the topology of the same name.
 #
 # access-info holds private device connection data. It is never exposed by
 # any MCP tool -- only get_active_topology()'s safe logical topology is.
@@ -19,7 +20,7 @@
 # is not a real credential -- create your own private access-info file
 # for a real lab; only this one fictional sample is tracked in git.
 
-name: sample
+name: sample_lab
 
 jump_hosts:
   jump1:

@@ -26,30 +26,40 @@ def _load(path: Path) -> dict:
 
 
 def test_canonical_sample_files_exist():
-    assert (LAB_ROOT / "access-info" / "sample.yaml").is_file()
-    assert (LAB_ROOT / "topologies" / "sample.yaml").is_file()
+    assert (LAB_ROOT / "access-info" / "sample_lab.yaml").is_file()
+    assert (LAB_ROOT / "topologies" / "sample_lab.yaml").is_file()
     assert (LAB_ROOT / "scenarios" / "getting_started.yaml").is_file()
     assert (LAB_ROOT / "references" / "network_lab_basics.yaml").is_file()
 
 
+def test_old_generic_sample_definitions_are_absent():
+    import subprocess
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "lab"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout.split()
+    assert "lab/access-info/sample.yaml" not in tracked
+    assert "lab/topologies/sample.yaml" not in tracked
+
+
 def test_canonical_definition_names_match_files():
-    assert _load(LAB_ROOT / "access-info" / "sample.yaml")["name"] == "sample"
-    assert _load(LAB_ROOT / "topologies" / "sample.yaml")["name"] == "sample"
+    assert _load(LAB_ROOT / "access-info" / "sample_lab.yaml")["name"] == "sample_lab"
+    assert _load(LAB_ROOT / "topologies" / "sample_lab.yaml")["name"] == "sample_lab"
     assert _load(LAB_ROOT / "scenarios" / "getting_started.yaml")["name"] == "getting_started"
     assert _load(LAB_ROOT / "references" / "network_lab_basics.yaml")["name"] == "network_lab_basics"
 
 
 def test_settings_example_selects_defaults_for_every_definition_type():
     settings = _load(LAB_ROOT / "settings.example.yaml")
-    assert settings["active_access_info"] == "sample"
-    assert settings["active_topology"] == "sample"
+    assert settings["active_access_info"] == "sample_lab"
+    assert settings["active_topology"] == "sample_lab"
     assert settings["active_scenario"] == "getting_started"
     assert settings["active_references"] == ["network_lab_basics"]
 
 
 def test_canonical_sample_r1_is_coherent_between_access_info_and_topology():
-    access_info = _load(LAB_ROOT / "access-info" / "sample.yaml")
-    topology = _load(LAB_ROOT / "topologies" / "sample.yaml")
+    access_info = _load(LAB_ROOT / "access-info" / "sample_lab.yaml")
+    topology = _load(LAB_ROOT / "topologies" / "sample_lab.yaml")
 
     access_device = access_info["devices"]["R1"]
     topology_device = topology["devices"]["R1"]
@@ -60,7 +70,7 @@ def test_canonical_sample_r1_is_coherent_between_access_info_and_topology():
 
 
 def test_canonical_access_info_only_holds_connection_data_not_copied_into_topology():
-    topology_device = _load(LAB_ROOT / "topologies" / "sample.yaml")["devices"]["R1"]
+    topology_device = _load(LAB_ROOT / "topologies" / "sample_lab.yaml")["devices"]["R1"]
     assert "address" not in topology_device
     assert "username" not in topology_device
     assert "password" not in topology_device

@@ -44,9 +44,9 @@ topology.
 
 ```json
 {
-  "active_topology": "sample",
+  "active_topology": "sample_lab",
   "topology": {
-    "name": "sample",
+    "name": "sample_lab",
     "description": "...",
     "devices": { "R1": { "type": "iosxr" } },
     "links": []

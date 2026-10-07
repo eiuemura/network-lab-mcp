@@ -11,7 +11,7 @@ conventions rather than a contract the loader enforces field-by-field.
   Claude reads at the start of a task.
 - **Principles** (`lab/principles.yaml`) define scenario-independent
   operating rules that apply regardless of which scenario is active.
-- **References** (`lab/references/`) provide reusable, validated knowledge
+- **References** (`lab/references/`) provide reusable engineering knowledge
   that scenarios can draw on instead of repeating the same operational
   know-how in every scenario file.
 - **Topology** defines where the task is performed — which devices and links

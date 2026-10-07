@@ -174,7 +174,7 @@ The configuration model deliberately separates five kinds of information:
 | `access-info` | Private connection information: address, transport, port, username, password | **Never** |
 | `topology` | Logical devices and connectivity | Yes |
 | `scenario` | What should be accomplished for the current task | Yes |
-| `reference` | Reusable validated knowledge and operational guidance | Yes |
+| `reference` | Reusable engineering knowledge and operational guidance | Yes |
 
 In short:
 

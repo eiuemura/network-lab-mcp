@@ -41,6 +41,32 @@ The AI decides what command to run next, how to interpret the output, and when t
 
 The repository also includes an independent IOS XR-style human CLI (`./run_cli.sh`) for selecting the active lab context, editing lab definitions, discovering topology, using candidate/commit configuration semantics, and monitoring AI terminal activity live.
 
+## Getting started
+
+You do not need to author YAML first. Start with your intent:
+
+> Tell me what you want to build, investigate, or validate.
+
+Network Lab MCP organizes work with four running-config concepts:
+
+| Concept | Meaning |
+|---|---|
+| `access-info` | how to connect |
+| `topology` | what network/environment exists |
+| `scenario` | what the AI should accomplish |
+| `reference` | reusable engineering knowledge |
+
+Scenario and reference knowledge evolves by **reuse → refine → create**: the
+AI reuses existing knowledge, refines it when incomplete, and creates new
+knowledge only when nothing suitable exists.
+
+A fresh installation (copying `lab/settings.example.yaml`) starts with
+`getting_started` as the default onboarding Scenario and `network_lab_basics`
+as the default supporting Reference. Existing `lab/settings.yaml` files are
+never rewritten: your current selections and descriptions stay as they are.
+See [docs/scenario_format.md](docs/scenario_format.md) for the Scenario /
+Reference boundary.
+
 ## Core design
 
 ```text

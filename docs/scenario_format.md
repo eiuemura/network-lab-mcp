@@ -17,10 +17,29 @@ conventions rather than a contract the loader enforces field-by-field.
 - **Topology** defines where the task is performed — which devices and links
   are available to work with, returned separately by `get_active_topology()`.
 
-`lab/scenarios/sample.yaml` is a simple example used to validate that
-`get_execution_instructions()` can load a scenario and return it alongside
-principles and references. It is not a template to copy literally for every
-future use case.
+`lab/scenarios/getting_started.yaml` is the default onboarding scenario for
+a fresh installation (see below). It is not a template to copy literally for
+every future use case.
+
+## Scenario vs. Reference
+
+- **Scenario**: task intent — *what* the user is trying to accomplish, *why*,
+  and the expected outcome.
+- **Reference**: reusable engineering knowledge — *how* to operate, measure,
+  interpret, or troubleshoot. A reference supports multiple scenarios.
+
+A scenario may point at the references it needs but should not duplicate
+their content. Knowledge evolves **reuse → refine → create**: reuse an
+existing scenario/reference, refine it if incomplete, and create a new one
+only when nothing suitable exists. Unverified assumptions are not promoted
+into references.
+
+A **Reference** (`lab/references/`) is reusable engineering knowledge:
+operational procedures, measurement methods, interpretation rules,
+troubleshooting procedures, protocol/device/tool knowledge, and reusable
+safety guidance. Its shape is as loose as a scenario's. The default fresh
+reference is `network_lab_basics` (vendor-neutral concepts: access-info,
+topology, scenario, reference).
 
 ## Validation
 
@@ -32,7 +51,7 @@ load successfully.
 
 ## Conventional fields
 
-There is no fixed schema, but the sample scenario and the CLI's `edit`
+There is no fixed schema, but the getting_started scenario and the CLI's `edit`
 workflow follow this loose convention:
 
 ```yaml
@@ -51,14 +70,37 @@ objectives:
 
 - `name`: a human-readable label (not necessarily the same as the file's own
   definition name used for selection).
-- `description`: free text describing the task.
+- `description`: free text describing what the scenario is.
+- `message` (optional): a concise starting message tied to the scenario.
+  Existing scenarios without `message` remain valid and behave unchanged.
+  It is preserved as ordinary scenario content and delivered to the AI in
+  `get_execution_instructions()`; nothing prints it automatically.
 - `objectives`: an ordered list of what should be accomplished.
+
+### Structured guidance (getting_started)
+
+`getting_started.yaml` additionally carries machine-readable guidance for the
+AI, all optional and all returned in the scenario `content`:
+
+- `message`: the short intent-first message ("Tell me what you want to build,
+  investigate, or validate. You do not need to know the YAML format.").
+- `workflow`: ordered task-level steps.
+- `scenario_guidance` / `reference_guidance`: `purpose`, `create_when`,
+  `refine_when`, `include`, `avoid` for each kind of knowledge.
+- `decision_rules`: rules for choosing between reuse, refine and create, and
+  for keeping scenario and reference content separate.
+- `knowledge_lifecycle`: the ordered lifecycle from user intent to captured
+  reusable knowledge.
+
+These are definition content. They are never shown by the CLI's
+`show running-config` / `show configuration`, which only show the active
+selection and running-entry descriptions.
 
 A reference file follows the same loose shape (`name`, `description`, plus
 whatever guidance content makes sense for that reference):
 
 ```yaml
-name: sample
+name: network_lab_basics
 
 description: >
   Example reusable reference information used to validate
@@ -85,8 +127,8 @@ structured result:
 ```json
 {
   "principles": { "workspace_principles": [...], "general_operating_principles": [...], "prohibited_actions": [...] },
-  "scenario": { "name": "sample", "content": { "...": "..." } },
-  "references": [ { "name": "sample", "content": { "...": "..." } } ]
+  "scenario": { "name": "getting_started", "content": { "...": "..." } },
+  "references": [ { "name": "network_lab_basics", "content": { "...": "..." } } ]
 }
 ```
 

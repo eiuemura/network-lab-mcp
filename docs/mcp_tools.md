@@ -89,8 +89,8 @@ scenario, and the active references together.
 ```json
 {
   "principles": { "workspace_principles": [...], "general_operating_principles": [...], "prohibited_actions": [...] },
-  "scenario": { "name": "sample", "content": { "...": "..." } },
-  "references": [ { "name": "sample", "content": { "...": "..." } } ]
+  "scenario": { "name": "getting_started", "content": { "...": "..." } },
+  "references": [ { "name": "network_lab_basics", "content": { "...": "..." } } ]
 }
 ```
 

@@ -32,11 +32,11 @@ lab/access-info/*.yaml
 !lab/access-info/sample.yaml
 
 # Scenario/reference content can describe private task or customer
-# context. Only the fictional samples are tracked.
+# context. Only the default onboarding scenario/reference are tracked.
 lab/scenarios/*.yaml
-!lab/scenarios/sample.yaml
+!lab/scenarios/getting_started.yaml
 lab/references/*.yaml
-!lab/references/sample.yaml
+!lab/references/network_lab_basics.yaml
 
 # Persistent terminal session transcripts (logs/terminal/<device-id>/*.log)
 # are runtime artifacts, potentially containing full device output --

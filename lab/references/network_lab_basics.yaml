@@ -1,0 +1,28 @@
+# Reference: reusable, vendor-neutral knowledge about the Network Lab MCP
+# environment itself. See docs/scenario_format.md for the Scenario /
+# Reference boundary.
+
+name: network_lab_basics
+
+description: |
+  Basic concepts and usage guidance for Network Lab MCP.
+
+  Explains the roles of the four primary objects so they can be used
+  consistently. It is vendor-neutral; platform-specific knowledge belongs
+  in separate references.
+
+concepts:
+  access-info: How devices can be accessed (private; never exposed to the AI).
+  topology: What devices, interfaces, links, and relevant network structure exist.
+  scenario: What the AI is trying to accomplish (task intent, expected outcome).
+  reference: Reusable engineering knowledge that helps accomplish a scenario.
+
+guidance:
+  - Inspect the active running configuration before assuming context.
+  - Use access-info for connectivity and access context.
+  - Use topology for network structure.
+  - Use a scenario for task intent.
+  - Use references for reusable engineering knowledge.
+  - Prefer existing knowledge before creating duplicates (reuse, refine, then create).
+  - A reference may hold platform-specific knowledge; keep each topic in the reference that covers it.
+  - Distinguish observed facts from interpretation, and record validated findings only.

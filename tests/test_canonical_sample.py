@@ -28,23 +28,23 @@ def _load(path: Path) -> dict:
 def test_canonical_sample_files_exist():
     assert (LAB_ROOT / "access-info" / "sample.yaml").is_file()
     assert (LAB_ROOT / "topologies" / "sample.yaml").is_file()
-    assert (LAB_ROOT / "scenarios" / "sample.yaml").is_file()
-    assert (LAB_ROOT / "references" / "sample.yaml").is_file()
+    assert (LAB_ROOT / "scenarios" / "getting_started.yaml").is_file()
+    assert (LAB_ROOT / "references" / "network_lab_basics.yaml").is_file()
 
 
-def test_canonical_sample_definition_names_are_sample():
+def test_canonical_definition_names_match_files():
     assert _load(LAB_ROOT / "access-info" / "sample.yaml")["name"] == "sample"
     assert _load(LAB_ROOT / "topologies" / "sample.yaml")["name"] == "sample"
-    assert _load(LAB_ROOT / "scenarios" / "sample.yaml")["name"] == "sample"
-    assert _load(LAB_ROOT / "references" / "sample.yaml")["name"] == "sample"
+    assert _load(LAB_ROOT / "scenarios" / "getting_started.yaml")["name"] == "getting_started"
+    assert _load(LAB_ROOT / "references" / "network_lab_basics.yaml")["name"] == "network_lab_basics"
 
 
-def test_settings_example_selects_sample_for_every_definition_type():
+def test_settings_example_selects_defaults_for_every_definition_type():
     settings = _load(LAB_ROOT / "settings.example.yaml")
     assert settings["active_access_info"] == "sample"
     assert settings["active_topology"] == "sample"
-    assert settings["active_scenario"] == "sample"
-    assert settings["active_references"] == ["sample"]
+    assert settings["active_scenario"] == "getting_started"
+    assert settings["active_references"] == ["network_lab_basics"]
 
 
 def test_canonical_sample_r1_is_coherent_between_access_info_and_topology():

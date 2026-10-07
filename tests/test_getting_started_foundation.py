@@ -1,0 +1,241 @@
+"""Step 1 knowledge-sharing foundation: getting_started / network_lab_basics.
+
+Reads the real tracked files under lab/ (read-only) and copies them into an
+isolated tmp lab_root for CLI/MCP-path checks. Never touches
+lab/settings.yaml or any private file."""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import pytest
+import yaml
+
+from network_lab_mcp import lab
+from network_lab_mcp.cli import config as cfgmod
+from network_lab_mcp.cli import main as climain
+
+REPO_LAB = Path(__file__).resolve().parent.parent / "lab"
+
+GUIDANCE_FIELDS = ["workflow", "scenario_guidance", "reference_guidance", "decision_rules", "knowledge_lifecycle"]
+FRESH_RUNNING_CONFIG = """!
+ access-info
+  sample
+   description Placeholder access information for the initial sample configuration
+!
+ topology
+  sample
+   description Placeholder topology; it can also be generated automatically from access-info and LLDP neighbor information using the discovery command
+!
+ scenario
+  getting_started
+   description Default onboarding scenario for Network Lab MCP
+!
+ reference
+  network_lab_basics
+   description Basic concepts and usage guidance for Network Lab MCP
+!"""
+LEAK_TERMS = [
+    "Tell me what you want",
+    "message",
+    "workflow",
+    "understand_user_intent",
+    "scenario_guidance",
+    "reference_guidance",
+    "decision_rules",
+    "knowledge_lifecycle",
+    "How devices can be accessed",
+    "Inspect the active running configuration",
+]
+
+
+def _load(path):
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+@pytest.fixture()
+def fresh_root(tmp_path):
+    """Fresh initialization: copy the tracked template, as README instructs."""
+    root = tmp_path / "lab"
+    for sub in ("access-info", "topologies", "scenarios", "references"):
+        shutil.copytree(REPO_LAB / sub, root / sub, ignore=shutil.ignore_patterns("test_lab.yaml", "pagent*", "multi_flow*"))
+    shutil.copy(REPO_LAB / "principles.yaml", root / "principles.yaml")
+    shutil.copy(REPO_LAB / "settings.example.yaml", root / "settings.yaml")
+    return root
+
+
+# ---- structure / responsibility -------------------------------------------
+
+def test_getting_started_structure():
+    data = _load(REPO_LAB / "scenarios" / "getting_started.yaml")
+    assert data["name"] == "getting_started"
+    assert data["description"].strip()
+    assert data["message"].startswith("Tell me what you want to build, investigate, or validate.")
+    assert "YAML" in data["message"]
+    assert len(data["message"].splitlines()) <= 3  # short; not a second scenario body
+    for field in GUIDANCE_FIELDS:
+        assert data[field], field
+    assert data["workflow"][0] == "understand_user_intent"
+    assert {"purpose", "create_when", "refine_when", "include", "avoid"} <= set(data["scenario_guidance"])
+    assert {"purpose", "create_when", "refine_when", "include", "avoid"} <= set(data["reference_guidance"])
+
+
+def test_getting_started_is_scenario_and_basics_is_reference():
+    assert (REPO_LAB / "scenarios" / "getting_started.yaml").is_file()
+    assert not (REPO_LAB / "references" / "getting_started.yaml").exists()
+    assert (REPO_LAB / "references" / "network_lab_basics.yaml").is_file()
+    assert not (REPO_LAB / "scenarios" / "network_lab_basics.yaml").exists()
+    basics = _load(REPO_LAB / "references" / "network_lab_basics.yaml")
+    assert basics["name"] == "network_lab_basics"
+    assert {"access-info", "topology", "scenario", "reference"} <= set(basics["concepts"])
+    assert "message" not in basics and "workflow" not in basics
+
+
+def test_step2_and_sample_connectivity_not_introduced():
+    for sub in ("scenarios", "references"):
+        names = {p.stem for p in (REPO_LAB / sub).glob("*.yaml")}
+        assert "sample_connectivity" not in names
+        assert "cisco_platform_guidance" not in names
+    assert not (REPO_LAB / "scenarios" / "sample.yaml").exists()
+
+
+def test_basics_reference_is_vendor_neutral():
+    text = (REPO_LAB / "references" / "network_lab_basics.yaml").read_text(encoding="utf-8").lower()
+    for term in ("cisco", "ios xr", "iosxr", "nx-os"):
+        assert term not in text
+
+
+# ---- optional message ------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ({"name": "s", "objectives": ["x"]}, None),
+        ({"name": "s", "message": "hello"}, "hello"),
+        ({"name": "s", "message": "line1\nline2\n"}, "line1\nline2\n"),
+    ],
+)
+def test_scenario_message_optional_and_preserved(lab_root, body, expected):
+    lab.validate_scenario_data("s", body)
+    lab.write_scenario("s", body, lab_root)
+    loaded = lab.load_scenario("s", lab_root)
+    assert loaded.get("message") == expected
+    if expected is None:
+        assert "message" not in loaded and loaded == body
+
+
+def test_message_and_guidance_reach_mcp_consumption_path(fresh_root, monkeypatch):
+    monkeypatch.setattr(lab, "find_lab_root", lambda: fresh_root)
+    result = lab.get_execution_instructions()
+    assert result["scenario"]["name"] == "getting_started"
+    content = result["scenario"]["content"]
+    assert content["message"].startswith("Tell me what you want to build")
+    for field in GUIDANCE_FIELDS:
+        assert field in content
+    assert [r["name"] for r in result["references"]] == ["network_lab_basics"]
+
+
+# ---- fresh vs existing settings -------------------------------------------
+
+def _running_text(root):
+    return climain.render_committed_running_config(cfgmod.CliSession(root))
+
+
+def test_fresh_default_running_config(fresh_root):
+    assert _running_text(fresh_root) == FRESH_RUNNING_CONFIG
+
+
+def test_fresh_default_running_config_has_no_definition_leakage(fresh_root):
+    text = _running_text(fresh_root)
+    for term in LEAK_TERMS:
+        assert term not in text
+    for sub in ("scenarios", "references", "access-info", "topologies"):
+        for p in (fresh_root / sub).glob("*.yaml"):
+            assert "running_descriptions" not in p.read_text(encoding="utf-8")
+
+
+def test_show_configuration_has_no_definition_leakage(fresh_root, capsys):
+    session = cfgmod.CliSession(fresh_root)
+    session.enter_configure()
+    climain.execute_command_line(session, "running-config")
+    climain.execute_command_line(session, "scenario getting_started")
+    climain.execute_command_line(session, "description Edited scenario description")
+    climain.execute_command_line(session, "exit")
+    climain.execute_command_line(session, "reference network_lab_basics")
+    climain.execute_command_line(session, "description Edited reference description")
+    climain.execute_command_line(session, "exit")
+    capsys.readouterr()
+    climain.execute_command_line(session, "show configuration")
+    climain.execute_command_line(session, "show running-config")
+    out = capsys.readouterr().out
+    assert "Edited scenario description" in out and "Edited reference description" in out
+    for term in LEAK_TERMS:
+        assert term not in out
+
+
+EXISTING = {
+    "active_access_info": "real_lab",
+    "active_topology": "production_lab",
+    "active_scenario": "existing_scenario",
+    "active_references": ["pagent_pkts", "custom_reference"],
+    "running_descriptions": {"scenario": {"existing_scenario": "mine"}},
+}
+
+
+def test_existing_settings_not_redefaulted(tmp_path):
+    root = tmp_path / "lab"
+    root.mkdir()
+    (root / "settings.yaml").write_text(yaml.safe_dump(EXISTING, sort_keys=False), encoding="utf-8")
+    settings = lab.read_settings(root)
+    assert settings == EXISTING
+    assert lab.get_active_scenario_name(settings) == "existing_scenario"
+    assert lab.get_active_reference_names(settings) == ["pagent_pkts", "custom_reference"]
+    assert "getting_started" not in _running_text(root)
+    assert "network_lab_basics" not in _running_text(root)
+    assert " mine" in _running_text(root)
+
+
+def test_existing_settings_without_descriptions_and_empty_references(tmp_path):
+    root = tmp_path / "lab"
+    root.mkdir()
+    legacy = {"active_topology": "t", "active_scenario": "s", "active_references": []}
+    (root / "settings.yaml").write_text(yaml.safe_dump(legacy), encoding="utf-8")
+    settings = lab.read_settings(root)
+    assert settings == legacy
+    assert lab.get_active_reference_names(settings) == []
+    assert lab.get_active_access_info_name(settings) is None
+    text = _running_text(root)
+    assert "network_lab_basics" not in text and "getting_started" not in text and "description" not in text
+    assert cfgmod.normalized_settings(settings) == legacy
+
+
+# ---- CLI submodes for the new defaults ------------------------------------
+
+def test_submodes_for_new_defaults(fresh_root, capsys):
+    session = cfgmod.CliSession(fresh_root)
+    session.enter_configure()
+    climain.execute_command_line(session, "running-config")
+    climain.execute_command_line(session, "scenario getting_started")
+    assert session.mode == "running_scenario"
+    climain.execute_command_line(session, "no description")
+    climain.execute_command_line(session, "exit")
+    assert session.mode == "running"
+    climain.execute_command_line(session, "reference network_lab_basics")
+    assert session.mode == "running_reference"
+    climain.execute_command_line(session, "description Changed")
+    climain.execute_command_line(session, "exit")
+    capsys.readouterr()
+    climain.execute_command_line(session, "show configuration")
+    out = capsys.readouterr().out
+    assert "Changed" in out
+    for term in LEAK_TERMS:
+        assert term not in out
+    climain.execute_command_line(session, "commit")
+    desc = lab.read_settings(fresh_root)["running_descriptions"]
+    assert desc["reference"]["network_lab_basics"] == "Changed"
+    assert "scenario" not in desc
+    # definition files never receive running descriptions
+    assert "Changed" not in (fresh_root / "references" / "network_lab_basics.yaml").read_text(encoding="utf-8")
+    assert "getting_started" in lab.list_scenario_names(fresh_root)
+    assert "network_lab_basics" in lab.list_reference_names(fresh_root)

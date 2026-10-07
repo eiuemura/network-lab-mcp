@@ -14,7 +14,19 @@
 
 active_access_info: sample
 active_topology: sample
-active_scenario: sample
+active_scenario: getting_started
 
 active_references:
-  - sample
+  - network_lab_basics
+
+# Descriptions are running-entry metadata (shown by `show running-config`),
+# never part of a definition file.
+running_descriptions:
+  access_info:
+    sample: Placeholder access information for the initial sample configuration
+  topology:
+    sample: Placeholder topology; it can also be generated automatically from access-info and LLDP neighbor information using the discovery command
+  scenario:
+    getting_started: Default onboarding scenario for Network Lab MCP
+  reference:
+    network_lab_basics: Basic concepts and usage guidance for Network Lab MCP

@@ -1528,9 +1528,10 @@ lab tool, not a secret manager). A password is never offered as a Tab/`?`
 candidate or value, and never retained in the CLI's in-memory command
 history — see "Command history" and "Tab / Ctrl-I completion" above.
 Topology never contains `password` at all (rejected by
-`lab.validate_topology_data()`), and no MCP tool response, log line, or
-error message ever includes one — see "Password display policy" below for
-the one deliberate exception (explicit local CLI display).
+`lab.validate_topology_data()`), and Network Lab MCP does not intentionally
+put one in an MCP tool response, error message, or application-side log
+line — see "Password display policy" below for the one deliberate exception
+(explicit local CLI display).
 
 ### Password display policy
 
@@ -1552,11 +1553,17 @@ access-info test_lab
 ```
 
 This is the **only** place a password is ever shown in clear text by
-Network Lab MCP. It never appears in an MCP tool result, a log line, an
-exception, a `%`-prefixed error message (including the access-info-not-
-found/type-mismatch errors elsewhere in this document), `?` help, or Tab
-completion, and it is never retained in command history — those
-protections are unchanged and unweakened by this policy.
+Network Lab MCP. Network Lab MCP does not intentionally place it in an MCP
+tool result, an application-side log line, an exception, a `%`-prefixed error
+message (including the access-info-not-found/type-mismatch errors elsewhere
+in this document), `?` help, or Tab completion, and it is never retained in
+command history — those protections are unchanged and unweakened by this
+policy.
+
+This does not sanitize terminal content. Terminal logs are raw transcripts of
+the remote session: device output is not redacted, anything the remote side
+prints or echoes can appear in them, and they are not guaranteed to be free
+of secrets. See [SECURITY.md](../SECURITY.md).
 
 ## External YAML editor
 

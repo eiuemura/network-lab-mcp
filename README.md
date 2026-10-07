@@ -2,9 +2,21 @@
 
 **An AI Network Engineer Workspace for real network labs.**
 
-Network Lab MCP gives an MCP-capable AI client a safe, observable way to work with real network lab devices while keeping the engineer in control.
+Network Lab MCP gives an MCP-capable AI client a safe, observable way to investigate real network lab devices while keeping the engineer in control.
 
-It separates **lab knowledge**, **private access information**, **task instructions**, and **terminal access** so the AI can investigate a lab without ever receiving device credentials.
+The **AI client performs the reasoning**: it decides what to inspect, which MCP tool to call, how to interpret the evidence, and what to do next. Network Lab MCP provides the structured engineering context and controlled terminal access that make that investigation possible, without exposing device credentials to the AI.
+
+<p align="center">
+  <img src="docs/images/network-lab-mcp-concept.png"
+       alt="Network Lab MCP concept: Human Engineer to AI Clients to MCP Tools Interface to Network Lab MCP Workspace to Lab Environment"
+       width="100%">
+</p>
+
+**Human provides intent. AI investigates and proposes. Human reviews and commits.**
+
+The architecture is vendor-neutral. The included public sample and platform guidance are Cisco-oriented, with registered device types for Cisco IOS XR, IOS XE, classic IOS, and NX-OS.
+
+**Jump to:** [Demo](#demo) · [Use cases](#use-cases) · [Quick Start](#quick-start) · [Architecture](docs/architecture.md) · [MCP tools](docs/mcp_tools.md) · [CLI reference](docs/cli_reference.md)
 
 ## Demo
 
@@ -32,16 +44,40 @@ Network Lab MCP is the result.
 
 Network Lab MCP is **not** a fixed test-automation framework and it is **not** a network-engineering reasoning engine.
 
-It provides an MCP client with two things:
+The AI client performs the reasoning. Network Lab MCP provides two complementary capabilities:
 
-1. **Lab knowledge** — where the work happens, how to behave, what to accomplish, and what reusable knowledge is available.
-2. **Terminal access** — a real, general-purpose terminal interface to lab devices, without exposing private connection information to the AI.
+1. **Structured engineering context** — Principles, Topology, Scenario, and References give the AI the rules, environment, task intent, and reusable engineering knowledge needed for the current investigation.
+2. **Controlled execution** — managed terminal sessions provide real, general-purpose SSH/Telnet access to lab devices without exposing private connection information to the AI.
 
 The AI decides what command to run next, how to interpret the output, and when the investigation is complete.
 
 The repository also includes an independent IOS XR-style human CLI (`./run_cli.sh`) for selecting the active lab context, editing lab definitions, discovering topology, using candidate/commit configuration semantics, and monitoring AI terminal activity live.
 
-## Getting started
+## Use cases
+
+Network Lab MCP is designed for AI-assisted engineering tasks where the investigation path cannot be reduced to one fixed script.
+
+Typical use cases include:
+
+- **Topology discovery and validation** — discover LLDP/CDP relationships and review the candidate topology before committing it.
+- **Troubleshooting and evidence collection** — inspect multiple devices, compare state, follow symptoms, and gather supporting command output.
+- **Failure and resiliency validation** — observe network behavior before, during, and after a planned lab fault.
+- **Traffic and service validation** — combine device state with external test/measurement results and produce an engineering conclusion.
+- **Repeated lab investigation** — reuse Scenarios and References instead of rediscovering the same engineering knowledge for every task.
+- **Human-observable AI operations** — watch the exact terminal activity used by the AI while the investigation is in progress.
+
+The included sample configuration is Cisco-oriented. Topology discovery currently supports Cisco IOS XR, IOS XE, and classic IOS as described in [Supported device types](#supported-device-types).
+
+## What makes it different
+
+- **AI is the reasoning layer.** Network Lab MCP does not try to replace the AI client with a fixed reasoning engine.
+- **Exactly seven controlled MCP tools.** The interface stays deliberately small and auditable.
+- **Credentials never cross the MCP boundary.** The AI works with logical device names; private access information is resolved internally.
+- **Real terminals remain observable.** Engineers can monitor the same managed terminal sessions used by the AI.
+- **Engineering context is explicit.** Principles, Topology, Scenario, and References separate rules, environment, task intent, and reusable knowledge.
+- **Human authority is preserved.** Definition and selection changes use candidate/commit semantics; the AI proposes, while the engineer reviews and commits.
+
+## How Network Lab MCP organizes engineering context
 
 You do not need to author YAML first. Start with your intent:
 
@@ -102,69 +138,7 @@ never rewritten or migrated: your current selections and descriptions stay as
 they are. See [docs/scenario_format.md](docs/scenario_format.md) for the
 Scenario / Reference boundary.
 
-## Platform-aware knowledge
-
-Network Lab MCP can use reusable References to decide whether technical
-knowledge applies to the target device. Protocol concepts may be reusable
-across platforms, but configuration syntax, operational behavior, feature
-support, limitations, YANG models, telemetry paths, and release-specific
-behavior must be verified for the applicable platform.
-
-The included `cisco_platform_guidance` Reference is one concrete example. It
-provides reusable guidance for determining whether Cisco-specific knowledge
-applies to the target platform, software release, feature, and question type,
-for the Cisco device types registered in the `device.type` enum (`iosxr`,
-`iosxe`, `ios`, `nxos`). It is the default supporting Reference of the
-included Cisco-oriented sample configuration, selected by the sample settings
-only; it is not universal, system-wide, or mandatory. The AI can also discover
-and inspect it like any stored Reference. It is guidance only: nothing is
-searched, fetched, or detected automatically.
-
-```text
-User intent
-    ↓
-Target device
-    ↓
-Platform / operating system
-    ↓
-Software release when relevant
-    ↓
-Feature domain
-    ↓
-Question type
-    ↓
-Applicable knowledge / source
-    ↓
-Lab validation when appropriate
-```
-
-For YANG and model-driven telemetry, the guidance points to the
-[YangModels Cisco YANG repository](https://github.com/YangModels/yang/tree/main/vendor/cisco)
-(the repository Cisco documentation refers users to), says telemetry paths
-should be derived from the applicable model hierarchy rather than guessed,
-and notes that platform and release matter and that the models a device
-actually supports should be verified when practical.
-
 ## Core design
-
-```text
-Claude Code / Codex CLI                Human Operator
-          |                                  |
-          v                                  v
-   Network Lab MCP                      ./run_cli.sh
-          |                                  |
-          |                           candidate -> commit
-          |                                  |
-          +---------- committed lab data ----+
-          |
-          v
- dedicated tmux environment
-          |
-       ssh / telnet
-          |
-          v
-      Lab Devices
-```
 
 The configuration model deliberately separates five kinds of information:
 
@@ -227,7 +201,13 @@ pip install -e .
 
 Network Lab MCP currently supports a **local editable checkout**. A normal wheel or package-index installation is not supported because the repository-local `lab/` directory is part of the operational model.
 
-## Register Network Lab MCP with an AI client
+### Create your local running-config
+
+```bash
+cp lab/settings.example.yaml lab/settings.yaml
+```
+
+### Register Network Lab MCP with an AI client
 
 Network Lab MCP is a local stdio MCP server. Register the executable from this repository's virtual environment with the AI client you use.
 
@@ -235,7 +215,7 @@ Replace `/path/to/network-lab-mcp` in the examples below with the **absolute pat
 
 Using the absolute path to `.venv/bin/network-lab-mcp` ensures that the AI client uses the intended Network Lab MCP installation regardless of the directory from which the client is started.
 
-### Claude Code
+#### Claude Code
 
 Register Network Lab MCP at **user scope**:
 
@@ -256,7 +236,7 @@ You should see Network Lab MCP reported as connected:
 network-lab: /path/to/network-lab-mcp/.venv/bin/network-lab-mcp - ✔ Connected
 ```
 
-### Codex CLI
+#### Codex CLI
 
 Register the local stdio MCP server:
 
@@ -280,7 +260,7 @@ network-lab  /path/to/network-lab-mcp/.venv/bin/network-lab-mcp    -     -    - 
 
 `Auth: Unsupported` is expected for this local stdio MCP server. It refers to MCP-level authentication between Codex and the MCP server; device authentication is handled internally by Network Lab MCP through the private `access-info` configuration.
 
-#### Codex approval setting
+##### Codex approval setting
 
 In the tested Codex CLI setup, registering the server alone was not sufficient for the terminal workflow to proceed to lab-device access.
 
@@ -305,12 +285,6 @@ codex mcp list
 ```
 
 The `default_tools_approval_mode = "approve"` setting above reflects the configuration verified with Network Lab MCP in the tested Codex CLI environment.
-
-### Create your local running-config
-
-```bash
-cp lab/settings.example.yaml lab/settings.yaml
-```
 
 ### Start the human CLI
 
@@ -445,6 +419,49 @@ logs/terminal/<device-id>/*.log
 
 See [docs/cli_reference.md](docs/cli_reference.md#terminal-monitor).
 
+## Platform-aware knowledge
+
+Network Lab MCP can use reusable References to decide whether technical
+knowledge applies to the target device. Protocol concepts may be reusable
+across platforms, but configuration syntax, operational behavior, feature
+support, limitations, YANG models, telemetry paths, and release-specific
+behavior must be verified for the applicable platform.
+
+The included `cisco_platform_guidance` Reference is one concrete example. It
+provides reusable guidance for determining whether Cisco-specific knowledge
+applies to the target platform, software release, feature, and question type,
+for the Cisco device types registered in the `device.type` enum (`iosxr`,
+`iosxe`, `ios`, `nxos`). It is the default supporting Reference of the
+included Cisco-oriented sample configuration, selected by the sample settings
+only; it is not universal, system-wide, or mandatory. The AI can also discover
+and inspect it like any stored Reference. It is guidance only: nothing is
+searched, fetched, or detected automatically.
+
+```text
+User intent
+    ↓
+Target device
+    ↓
+Platform / operating system
+    ↓
+Software release when relevant
+    ↓
+Feature domain
+    ↓
+Question type
+    ↓
+Applicable knowledge / source
+    ↓
+Lab validation when appropriate
+```
+
+For YANG and model-driven telemetry, the guidance points to the
+[YangModels Cisco YANG repository](https://github.com/YangModels/yang/tree/main/vendor/cisco)
+(the repository Cisco documentation refers users to), says telemetry paths
+should be derived from the applicable model hierarchy rather than guessed,
+and notes that platform and release matter and that the models a device
+actually supports should be verified when practical.
+
 ## Security model
 
 ### Credentials stay private from the AI
@@ -533,6 +550,8 @@ network-lab-mcp/
 │   ├── scenarios/
 │   └── references/
 └── docs/
+    ├── images/
+    │   └── network-lab-mcp-concept.png
     ├── architecture.md
     ├── mcp_tools.md
     ├── cli_reference.md
@@ -565,6 +584,10 @@ This reduces the risk of accidentally committing real lab data, but it is **not*
 - [MCP tool contract](docs/mcp_tools.md)
 - [CLI reference](docs/cli_reference.md)
 - [Scenario / reference format](docs/scenario_format.md)
+
+## Issues and suggestions
+
+Issues, bug reports, and improvement suggestions are welcome through [GitHub Issues](https://github.com/eiuemura/network-lab-mcp/issues).
 
 ## Version and license
 

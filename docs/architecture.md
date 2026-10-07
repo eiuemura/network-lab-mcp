@@ -1445,8 +1445,9 @@ above; in one place, the properties that hold everywhere in this project:
 - access-info (credentials) is never returned by any MCP tool.
 - A credential is never placed in any process's command-line arguments —
   `_send_secret_text()` uses a tmux buffer over stdin, never `send-keys -l`.
-- A credential never appears in a log line, exception, or `%`-prefixed
-  error message, with one deliberate, narrow exception: the human CLI's own
+- Network Lab MCP does not intentionally place a credential in its own tool
+  results, exceptions, `%`-prefixed error messages, or application-side log
+  lines, with one deliberate, narrow exception: the human CLI's own
   explicit local `show`/`show configuration`/`show running-config` display
   of an access-info device/jump host shows `password` in clear text (this
   is a lab tool, not a secret manager) — never reachable through MCP, Tab/`?`
@@ -1455,6 +1456,11 @@ above; in one place, the properties that hold everywhere in this project:
   sessions share one credential-sending primitive and one password-prompt
   attribution function (see above), rather than two independently written
   paths that could drift apart.
+- None of this sanitizes terminal content. The persistent terminal logs are
+  raw transcripts of the remote session: Network Lab MCP does not redact device
+  output, and anything the remote side prints or echoes can appear there. Terminal
+  output and logs are potentially sensitive and are not guaranteed to be
+  free of secrets (see [SECURITY.md](../SECURITY.md)).
 
 ### Managed sessions vs. the active topology
 

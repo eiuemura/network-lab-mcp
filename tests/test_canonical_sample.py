@@ -29,7 +29,7 @@ def test_canonical_sample_files_exist():
     assert (LAB_ROOT / "access-info" / "sample_lab.yaml").is_file()
     assert (LAB_ROOT / "topologies" / "sample_lab.yaml").is_file()
     assert (LAB_ROOT / "scenarios" / "getting_started.yaml").is_file()
-    assert (LAB_ROOT / "references" / "network_lab_basics.yaml").is_file()
+    assert (LAB_ROOT / "references" / "cisco_platform_guidance.yaml").is_file()
 
 
 def test_old_generic_sample_definitions_are_absent():
@@ -46,7 +46,7 @@ def test_canonical_definition_names_match_files():
     assert _load(LAB_ROOT / "access-info" / "sample_lab.yaml")["name"] == "sample_lab"
     assert _load(LAB_ROOT / "topologies" / "sample_lab.yaml")["name"] == "sample_lab"
     assert _load(LAB_ROOT / "scenarios" / "getting_started.yaml")["name"] == "getting_started"
-    assert _load(LAB_ROOT / "references" / "network_lab_basics.yaml")["name"] == "network_lab_basics"
+    assert _load(LAB_ROOT / "references" / "cisco_platform_guidance.yaml")["name"] == "cisco_platform_guidance"
 
 
 def test_settings_example_selects_defaults_for_every_definition_type():
@@ -54,7 +54,7 @@ def test_settings_example_selects_defaults_for_every_definition_type():
     assert settings["active_access_info"] == "sample_lab"
     assert settings["active_topology"] == "sample_lab"
     assert settings["active_scenario"] == "getting_started"
-    assert settings["active_references"] == ["network_lab_basics"]
+    assert settings["active_references"] == ["cisco_platform_guidance"]
 
 
 def test_canonical_sample_r1_is_coherent_between_access_info_and_topology():

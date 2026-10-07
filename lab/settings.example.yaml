@@ -17,7 +17,7 @@ active_topology: sample_lab
 active_scenario: getting_started
 
 active_references:
-  - network_lab_basics
+  - cisco_platform_guidance
 
 # Descriptions are running-entry metadata (shown by `show running-config`),
 # never part of a definition file.
@@ -29,4 +29,4 @@ running_descriptions:
   scenario:
     getting_started: Default onboarding scenario for Network Lab MCP
   reference:
-    network_lab_basics: Basic concepts and usage guidance for Network Lab MCP
+    cisco_platform_guidance: Guidance for determining whether Cisco platform-specific engineering knowledge applies to a target device

@@ -56,6 +56,29 @@ Network Lab MCP organizes work with four running-config concepts:
 | `scenario` | what the AI should accomplish |
 | `reference` | reusable engineering knowledge |
 
+**Scenario** answers "what should be accomplished for the current task?"
+**Reference** answers "what reusable engineering knowledge can help accomplish
+it?" A Reference can support multiple investigations, validations,
+operations, or Scenarios. It is not a one-time task description, a
+replacement for the always-applied principles or for onboarding, and it is
+not active unless selected.
+
+For example, the Scenario "validate EVPN traffic forwarding while a link is
+disconnected" could be supported by References holding EVPN engineering
+knowledge, Cisco platform applicability guidance, and operating knowledge for
+the test/measurement equipment in use.
+
+Examples of reusable engineering knowledge:
+
+- SR-MPLS design and validation knowledge
+- EVPN behavior and troubleshooting knowledge
+- time synchronization and timing-network knowledge, such as PTP and SyncE
+- industrial or utility network engineering knowledge
+- operating procedures for test and measurement equipment
+
+These are illustrations of suitable content, not bundled files or
+implemented features.
+
 Scenario and reference knowledge evolves by **reuse → refine → create**: the
 AI discovers stored scenarios and references (a catalog is returned with the
 execution instructions, and relevant non-active ones can be inspected
@@ -68,7 +91,11 @@ A fresh installation (`cp lab/settings.example.yaml lab/settings.yaml`) starts w
 - access-info: `sample_lab` — how the system connects to the fictional public sample lab
 - topology: `sample_lab` — what network/environment that sample lab contains
 - scenario: `getting_started` — what the AI should accomplish; the default onboarding Scenario
-- reference: `network_lab_basics` — reusable engineering knowledge; the default supporting Reference
+- reference: `cisco_platform_guidance` — reusable engineering knowledge; the default supporting Reference
+
+The architecture is vendor-neutral; the included sample configuration is
+Cisco-oriented and ships with a Cisco supporting Reference. This is not a
+vendor requirement: other environments can select other References.
 
 These are fresh-install defaults only. Existing `lab/settings.yaml` files are
 never rewritten or migrated: your current selections and descriptions stay as
@@ -83,11 +110,15 @@ across platforms, but configuration syntax, operational behavior, feature
 support, limitations, YANG models, telemetry paths, and release-specific
 behavior must be verified for the applicable platform.
 
-`cisco_platform_guidance` provides this applicability guidance for the Cisco
-operating systems Network Lab MCP supports (`iosxr`, `iosxe`, `ios`,
-`nxos`). It is a stored Reference that the AI can discover and inspect; it is
-not active by default. It is guidance only: nothing is searched, fetched, or
-detected automatically.
+The included `cisco_platform_guidance` Reference is one concrete example. It
+provides reusable guidance for determining whether Cisco-specific knowledge
+applies to the target platform, software release, feature, and question type,
+for the Cisco device types registered in the `device.type` enum (`iosxr`,
+`iosxe`, `ios`, `nxos`). It is the default supporting Reference of the
+included Cisco-oriented sample configuration, selected by the sample settings
+only; it is not universal, system-wide, or mandatory. The AI can also discover
+and inspect it like any stored Reference. It is guidance only: nothing is
+searched, fetched, or detected automatically.
 
 ```text
 User intent

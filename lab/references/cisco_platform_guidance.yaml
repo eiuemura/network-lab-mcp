@@ -30,8 +30,8 @@ routing_inputs:
   feature_domain: Derived from the user's intent, the scenario, and the investigation context.
   question_type: Derived from the actual technical question (see source_selection).
 
-# Cisco device types currently supported by Network Lab MCP. Each key must be
-# a registered device type (the device.type enum).
+# Cisco device types registered in Network Lab MCP's device.type enum. Each
+# key must be a registered device type.
 cisco_device_types:
   iosxr: Cisco IOS XR
   iosxe: Cisco IOS XE

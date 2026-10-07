@@ -42,12 +42,12 @@ identity is the filename stem, as everywhere else.
 
 ### Platform guidance references
 
-`lab/references/cisco_platform_guidance.yaml` is a stored, inactive-by-default
-reference that helps decide whether Cisco platform-specific knowledge applies
+`lab/references/cisco_platform_guidance.yaml` is the stored reference that the
+included sample configuration activates by default. It helps decide whether Cisco platform-specific knowledge applies
 to a target device. It is discovered through `available_references` and read
 with `inspect_references=["cisco_platform_guidance"]` like any other
-reference; activate it with `running-config` if you want it returned on every
-call. It covers:
+reference. Activation comes only from the selection in `running-config`; no
+vendor detection happens. It covers:
 
 - the routing inputs (device type, operating system, product family, software
   release, feature domain, question type) and the principle that similar
@@ -75,9 +75,17 @@ into references.
 A **Reference** (`lab/references/`) is reusable engineering knowledge:
 operational procedures, measurement methods, interpretation rules,
 troubleshooting procedures, protocol/device/tool knowledge, and reusable
-safety guidance. Its shape is as loose as a scenario's. The default fresh
-reference is `network_lab_basics` (vendor-neutral concepts: access-info,
-topology, scenario, reference).
+safety guidance. It can support multiple investigations, validations,
+operations, or scenarios. It is not a one-time task description, a
+replacement for principles or onboarding, or automatically active. Suitable
+content includes protocol/domain engineering guidance, troubleshooting and
+validation knowledge, platform guidance, timing-network knowledge,
+industrial/utility networking knowledge, and test/measurement equipment
+procedures; none of these categories is required to exist as a file. Its
+shape is as loose as a scenario's. The default fresh
+reference is `cisco_platform_guidance`, the supporting Reference of the
+included Cisco-oriented sample configuration. The Reference mechanism itself
+is vendor-neutral.
 
 ## Validation
 
@@ -138,11 +146,10 @@ A reference file follows the same loose shape (`name`, `description`, plus
 whatever guidance content makes sense for that reference):
 
 ```yaml
-name: network_lab_basics
+name: example_timing_notes
 
 description: >
-  Example reusable reference information used to validate
-  Network Lab MCP reference loading.
+  Fictional example of reusable engineering knowledge.
 
 guidance:
   - This reference is intentionally simple; a real reference file can hold
@@ -166,7 +173,7 @@ structured result:
 {
   "principles": { "workspace_principles": [...], "general_operating_principles": [...], "prohibited_actions": [...] },
   "scenario": { "name": "getting_started", "content": { "...": "..." } },
-  "references": [ { "name": "network_lab_basics", "content": { "...": "..." } } ]
+  "references": [ { "name": "cisco_platform_guidance", "content": { "...": "..." } } ]
 }
 ```
 

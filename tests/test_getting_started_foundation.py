@@ -1,4 +1,4 @@
-"""Knowledge-sharing foundation: getting_started / network_lab_basics.
+"""Knowledge-sharing foundation: getting_started / cisco_platform_guidance defaults.
 
 Reads the real tracked files under lab/ (read-only) and copies them into an
 isolated tmp lab_root for CLI/MCP-path checks. Never touches
@@ -7,6 +7,7 @@ lab/settings.yaml or any private file."""
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -33,8 +34,8 @@ FRESH_RUNNING_CONFIG = """!
    description Default onboarding scenario for Network Lab MCP
 !
  reference
-  network_lab_basics
-   description Basic concepts and usage guidance for Network Lab MCP
+  cisco_platform_guidance
+   description Guidance for determining whether Cisco platform-specific engineering knowledge applies to a target device
 !"""
 LEAK_TERMS = [
     "Tell me what you want",
@@ -81,15 +82,46 @@ def test_getting_started_structure():
     assert {"purpose", "create_when", "refine_when", "include", "avoid"} <= set(data["reference_guidance"])
 
 
-def test_getting_started_is_scenario_and_basics_is_reference():
+def test_getting_started_is_scenario_and_cisco_guidance_is_reference():
     assert (REPO_LAB / "scenarios" / "getting_started.yaml").is_file()
     assert not (REPO_LAB / "references" / "getting_started.yaml").exists()
-    assert (REPO_LAB / "references" / "network_lab_basics.yaml").is_file()
-    assert not (REPO_LAB / "scenarios" / "network_lab_basics.yaml").exists()
-    basics = _load(REPO_LAB / "references" / "network_lab_basics.yaml")
-    assert basics["name"] == "network_lab_basics"
-    assert {"access-info", "topology", "scenario", "reference"} <= set(basics["concepts"])
-    assert "message" not in basics and "workflow" not in basics
+    assert (REPO_LAB / "references" / "cisco_platform_guidance.yaml").is_file()
+    assert not (REPO_LAB / "scenarios" / "cisco_platform_guidance.yaml").exists()
+    guidance = _load(REPO_LAB / "references" / "cisco_platform_guidance.yaml")
+    assert guidance["name"] == "cisco_platform_guidance"
+    assert "message" not in guidance and "workflow" not in guidance
+
+
+def test_network_lab_basics_is_removed_from_tracked_state():
+    tracked = subprocess.run(
+        ["git", "ls-files", "lab", ".gitignore", "README.md", "docs", "src"],
+        cwd=REPO_LAB.parent, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert "lab/references/network_lab_basics.yaml" not in tracked
+    for rel in tracked:
+        path = REPO_LAB.parent / rel
+        if path.is_file():
+            assert "network_lab_basics" not in path.read_text(encoding="utf-8"), rel
+    assert "network_lab_basics" not in _load(REPO_LAB / "settings.example.yaml")["active_references"]
+
+
+def test_network_lab_basics_not_discoverable(fresh_root, monkeypatch):
+    monkeypatch.setattr(lab, "find_lab_root", lambda: fresh_root)
+    names = [e["name"] for e in lab.get_execution_instructions()["available_references"]]
+    assert "cisco_platform_guidance" in names
+    assert "network_lab_basics" not in names
+
+
+def test_persisted_missing_reference_is_not_migrated(fresh_root, monkeypatch):
+    settings = lab.read_settings(fresh_root)
+    settings["active_references"] = ["network_lab_basics"]
+    (fresh_root / "settings.yaml").write_text(yaml.safe_dump(settings, sort_keys=False), encoding="utf-8")
+    before = (fresh_root / "settings.yaml").read_bytes()
+    monkeypatch.setattr(lab, "find_lab_root", lambda: fresh_root)
+    with pytest.raises(lab.LabConfigError, match="network_lab_basics"):
+        lab.get_execution_instructions()
+    assert (fresh_root / "settings.yaml").read_bytes() == before
+    assert lab.get_active_reference_names(lab.read_settings(fresh_root)) == ["network_lab_basics"]
 
 
 def test_no_sample_connectivity_scenario_or_generic_sample_scenario():
@@ -99,8 +131,8 @@ def test_no_sample_connectivity_scenario_or_generic_sample_scenario():
     assert not (REPO_LAB / "scenarios" / "sample.yaml").exists()
 
 
-def test_basics_reference_is_vendor_neutral():
-    text = (REPO_LAB / "references" / "network_lab_basics.yaml").read_text(encoding="utf-8").lower()
+def test_getting_started_is_vendor_neutral():
+    text = (REPO_LAB / "scenarios" / "getting_started.yaml").read_text(encoding="utf-8").lower()
     for term in ("cisco", "ios xr", "iosxr", "nx-os"):
         assert term not in text
 
@@ -132,7 +164,7 @@ def test_message_and_guidance_reach_mcp_consumption_path(fresh_root, monkeypatch
     assert content["message"].startswith("Tell me what you want to build")
     for field in GUIDANCE_FIELDS:
         assert field in content
-    assert [r["name"] for r in result["references"]] == ["network_lab_basics"]
+    assert [r["name"] for r in result["references"]] == ["cisco_platform_guidance"]
 
 
 # ---- fresh vs existing settings -------------------------------------------
@@ -161,7 +193,7 @@ def test_show_configuration_has_no_definition_leakage(fresh_root, capsys):
     climain.execute_command_line(session, "scenario getting_started")
     climain.execute_command_line(session, "description Edited scenario description")
     climain.execute_command_line(session, "exit")
-    climain.execute_command_line(session, "reference network_lab_basics")
+    climain.execute_command_line(session, "reference cisco_platform_guidance")
     climain.execute_command_line(session, "description Edited reference description")
     climain.execute_command_line(session, "exit")
     capsys.readouterr()
@@ -191,7 +223,7 @@ def test_existing_settings_not_redefaulted(tmp_path):
     assert lab.get_active_scenario_name(settings) == "existing_scenario"
     assert lab.get_active_reference_names(settings) == ["pagent_pkts", "custom_reference"]
     assert "getting_started" not in _running_text(root)
-    assert "network_lab_basics" not in _running_text(root)
+    assert "cisco_platform_guidance" not in _running_text(root)
     assert " mine" in _running_text(root)
 
 
@@ -205,7 +237,7 @@ def test_existing_settings_without_descriptions_and_empty_references(tmp_path):
     assert lab.get_active_reference_names(settings) == []
     assert lab.get_active_access_info_name(settings) is None
     text = _running_text(root)
-    assert "network_lab_basics" not in text and "getting_started" not in text and "description" not in text
+    assert "cisco_platform_guidance" not in text and "getting_started" not in text and "description" not in text
     assert cfgmod.normalized_settings(settings) == legacy
 
 
@@ -220,7 +252,7 @@ def test_submodes_for_new_defaults(fresh_root, capsys):
     climain.execute_command_line(session, "no description")
     climain.execute_command_line(session, "exit")
     assert session.mode == "running"
-    climain.execute_command_line(session, "reference network_lab_basics")
+    climain.execute_command_line(session, "reference cisco_platform_guidance")
     assert session.mode == "running_reference"
     climain.execute_command_line(session, "description Changed")
     climain.execute_command_line(session, "exit")
@@ -232,12 +264,12 @@ def test_submodes_for_new_defaults(fresh_root, capsys):
         assert term not in out
     climain.execute_command_line(session, "commit")
     desc = lab.read_settings(fresh_root)["running_descriptions"]
-    assert desc["reference"]["network_lab_basics"] == "Changed"
+    assert desc["reference"]["cisco_platform_guidance"] == "Changed"
     assert "scenario" not in desc
     # definition files never receive running descriptions
-    assert "Changed" not in (fresh_root / "references" / "network_lab_basics.yaml").read_text(encoding="utf-8")
+    assert "Changed" not in (fresh_root / "references" / "cisco_platform_guidance.yaml").read_text(encoding="utf-8")
     assert "getting_started" in lab.list_scenario_names(fresh_root)
-    assert "network_lab_basics" in lab.list_reference_names(fresh_root)
+    assert "cisco_platform_guidance" in lab.list_reference_names(fresh_root)
 
 
 # ---- knowledge discovery / read-only inspection ------------------
@@ -407,20 +439,19 @@ def test_cisco_guidance_policy_concepts_present():
     assert d["lab_evidence"] and d["reusable_knowledge"]
 
 
-def test_cisco_guidance_is_discoverable_inspectable_and_inactive(fresh_root, monkeypatch):
-    shutil.copy(CISCO_REF, fresh_root / "references" / "cisco_platform_guidance.yaml")
+def test_cisco_guidance_is_discoverable_inspectable_and_default_active(fresh_root, monkeypatch):
     monkeypatch.setattr(lab, "find_lab_root", lambda: fresh_root)
     before = (fresh_root / "settings.yaml").read_bytes()
     default = lab.get_execution_instructions()
     entry = {e["name"]: e for e in default["available_references"]}["cisco_platform_guidance"]
     assert entry["description"]
-    assert [r["name"] for r in default["references"]] == ["network_lab_basics"]
+    assert [r["name"] for r in default["references"]] == ["cisco_platform_guidance"]
     inspected = lab.get_execution_instructions(None, ["cisco_platform_guidance"])
     assert inspected["inspected_references"][0]["content"]["name"] == "cisco_platform_guidance"
-    assert [r["name"] for r in inspected["references"]] == ["network_lab_basics"]
+    assert [r["name"] for r in inspected["references"]] == ["cisco_platform_guidance"]
     assert (fresh_root / "settings.yaml").read_bytes() == before
 
 
-def test_example_settings_do_not_activate_cisco_guidance():
+def test_example_settings_activate_only_cisco_guidance():
     settings = _load(REPO_LAB / "settings.example.yaml")
-    assert settings["active_references"] == ["network_lab_basics"]
+    assert settings["active_references"] == ["cisco_platform_guidance"]

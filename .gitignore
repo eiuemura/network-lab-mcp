@@ -32,11 +32,10 @@ lab/access-info/*.yaml
 !lab/access-info/sample_lab.yaml
 
 # Scenario/reference content can describe private task or customer
-# context. Only the default onboarding scenario/reference are tracked.
+# context. Only explicitly approved public definitions are tracked.
 lab/scenarios/*.yaml
 !lab/scenarios/getting_started.yaml
 lab/references/*.yaml
-!lab/references/network_lab_basics.yaml
 !lab/references/cisco_platform_guidance.yaml
 
 # Persistent terminal session transcripts (logs/terminal/<device-id>/*.log)

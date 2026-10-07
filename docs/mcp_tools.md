@@ -97,9 +97,9 @@ read-only and never activates a definition.
 {
   "principles": { "workspace_principles": [...], "general_operating_principles": [...], "prohibited_actions": [...] },
   "scenario": { "name": "getting_started", "content": { "...": "..." } },
-  "references": [ { "name": "network_lab_basics", "content": { "...": "..." } } ],
+  "references": [ { "name": "cisco_platform_guidance", "content": { "...": "..." } } ],
   "available_scenarios": [ { "name": "getting_started", "description": "..." } ],
-  "available_references": [ { "name": "network_lab_basics", "description": "..." } ],
+  "available_references": [ { "name": "cisco_platform_guidance", "description": "..." } ],
   "inspected_scenarios": [],
   "inspected_references": []
 }

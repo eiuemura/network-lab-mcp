@@ -124,7 +124,7 @@ def test_terminal_close_can_still_close_a_stale_session_outside_the_active_topol
 
 def test_open_still_requires_active_topology_membership(lab_root):
     """terminal_open()'s own, pre-existing gate (lab.get_device()) --
-    confirmed unchanged by this step's send/read boundary addition."""
+    unchanged by the send/read boundary check."""
     _switch_active_topology_to_empty(lab_root)
 
     async def call():

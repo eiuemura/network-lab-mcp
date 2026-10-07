@@ -5,8 +5,7 @@ project's `conftest.py` narrowly reclassifies exactly that one sentinel
 exception as a skip (via a `pytest_runtest_makereport` hookwrapper) rather
 than letting every tmux-dependent test surface as a raw failure/error --
 confirmed by directly hiding `tmux` from PATH and running a mixed pure/
-tmux-dependent slice of the real suite during investigation (see
-docs/development_history.md).
+tmux-dependent slice of the real suite.
 
 This file proves the hook mechanism itself works, using pytest's own
 `pytester` plugin to run a tiny, fully isolated nested pytest session

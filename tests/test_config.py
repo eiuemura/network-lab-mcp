@@ -238,15 +238,13 @@ def test_access_info_device_mode_sets_full_field_set(lab_root):
 
 # ---- access-info object deletion (`no device` / `no jump-host`) ----
 #
-# Phase A investigation established that type/address/transport are NOT
+# Investigation established that type/address/transport are NOT
 # required at commit time by any existing validator -- see
 # validate_device_types()'s own docstring ("A missing/empty 'type' is not
 # itself an error here") and pre-existing regression tests such as
-# test_get_device_allows_type_missing_on_either_side. The original task
-# spec assumed these fields were (or should become) required at commit;
-# that assumption was incorrect, and no new required-field validation is
-# introduced here -- commit continues to follow the existing validators
-# exactly as before.
+# test_get_device_allows_type_missing_on_either_side. These fields are
+# not required at commit, and no required-field validation is added --
+# commit follows the existing validators.
 
 
 def test_remove_device_removes_from_candidate_only(lab_root):
@@ -400,8 +398,7 @@ def test_clear_address_restore_and_commit_succeeds(lab_root):
 
 def test_clearing_type_address_transport_still_commits_successfully(lab_root):
     """Pins down that no new required-field commit validation was
-    introduced: the original task spec assumed type/address/transport were
-    required at commit time, but Phase A investigation proved otherwise
+    introduced: type/address/transport are not required at commit time
     (see module docstring above and lab.validate_device_types()). Clearing
     all three from an already-valid candidate device must still commit."""
     session = cfgmod.CliSession(lab_root)

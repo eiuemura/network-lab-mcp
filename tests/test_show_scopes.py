@@ -11,7 +11,7 @@ only** -- a bounded, pragmatic delta, not a full candidate dump (see
 docs/cli_reference.md "show configuration"). Explicit local access-info
 rendering (both committed and candidate views) shows passwords in clear
 text; MCP/log/error/help/completion/history privacy is covered separately
-in test_lab_step1_regression.py and test_grammar.py."""
+in test_lab_loading_and_privacy.py and test_grammar.py."""
 
 from __future__ import annotations
 

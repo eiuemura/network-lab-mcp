@@ -157,7 +157,7 @@ class MaskingHistory(History):
             # still recall the non-sensitive pasted commands. A "!"
             # separator is not itself a recallable command (see
             # _apply_structural_bang()), so it is excluded here exactly
-            # like before this task's paste-round-trip fix.
+            # like any other non-recallable line.
             for line in _split_pasted_command_lines(string):
                 if line != "!" and not _is_password_command(line):
                     super().append_string(line)
@@ -2336,7 +2336,7 @@ def execute_input_block(session: cfgmod.CliSession, text: str) -> None:
     hands back pasted text as one string with embedded newlines). A
     single-line input is executed exactly as before, unchanged -- a single
     manually typed "!" is not special-cased here at all and reaches
-    execute_command_line()/grammar.parse() exactly as before this task. A
+    execute_command_line()/grammar.parse() exactly as it always has. A
     multi-line input is split into normalized physical command lines and
     executed sequentially, stopping at the first error -- lines already
     applied stay in the candidate (no rollback), and nothing here or in

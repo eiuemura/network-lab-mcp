@@ -3,7 +3,7 @@ topology definition, from global configuration mode.
 
 This is deliberately distinct from `config-running# no topology`, which
 (if it existed) would unset the *active topology selection* instead --
-investigation for this task found that command does not actually exist
+that command does not actually exist
 in the current codebase (`config-running` mode only has `no access-info`
 and `no reference <name>`; `active_topology` is a mandatory
 running-config field with no "unset" path), so there is no real

@@ -63,7 +63,7 @@ LOGIN_TIMEOUT_SECONDS = 30
 COMMAND_TIMEOUT_SECONDS = 25
 
 # Bounds how many devices' bootstrap collection runs concurrently.
-# Small and internal, not a public CLI/config knob (see task boundaries) --
+# Small and internal, not a public CLI/config knob --
 # 8 comfortably covers real lab scale (a handful to a dozen managed
 # devices) while keeping concurrent SSH/tmux session creation bounded
 # rather than launching one thread per arbitrary target count.

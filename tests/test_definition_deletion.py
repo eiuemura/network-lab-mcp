@@ -16,8 +16,7 @@ parametrized by kind. This file focuses on:
 - access-info's private-data safety (no credentials in diffs, errors, or
   restored candidates leaking anywhere unexpected);
 - running-config selector wording/dynamic-completion/candidate-aware
-  filtering for all four kinds (the "config-running# topology ?" UX gap
-  this task also fixes);
+  filtering for all four kinds (the "config-running# topology ?" UX gap);
 - filesystem safety (path traversal, symlinks) for the three newly
   deletable kinds.
 

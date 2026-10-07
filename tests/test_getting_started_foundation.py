@@ -1,4 +1,4 @@
-"""Step 1 knowledge-sharing foundation: getting_started / network_lab_basics.
+"""Knowledge-sharing foundation: getting_started / network_lab_basics.
 
 Reads the real tracked files under lab/ (read-only) and copies them into an
 isolated tmp lab_root for CLI/MCP-path checks. Never touches
@@ -241,7 +241,7 @@ def test_submodes_for_new_defaults(fresh_root, capsys):
     assert "network_lab_basics" in lab.list_reference_names(fresh_root)
 
 
-# ---- Step 1.1: knowledge discovery / read-only inspection ------------------
+# ---- knowledge discovery / read-only inspection ------------------
 
 import hashlib
 

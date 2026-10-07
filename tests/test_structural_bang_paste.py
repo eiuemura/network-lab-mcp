@@ -3,7 +3,7 @@
 Rendered access-info configuration (render_access_info_block()) closes
 every jump-host/device block, and the whole access-info block itself,
 with a standalone "!" line -- exactly the convention IOS XR-style show
-output uses. Before this task, a pasted standalone "!" was unconditionally
+output uses. Previously, a pasted standalone "!" was unconditionally
 dropped (see _split_pasted_command_lines()'s old docstring), so pasting
 that rendered output back failed: after "device R1"'s block, the CLI was
 still inside R1's own submode when the next "device R2" line arrived, and

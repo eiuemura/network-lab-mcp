@@ -53,13 +53,13 @@ def test_help_claude_mentions_seven_tools_and_privacy_boundary():
     assert "logical device id" in text.lower()
     # Reuses the exact, already-verified registration command from
     # README.md rather than inventing a new one.
-    assert "claude mcp add --scope user --transport stdio network-lab -- network-lab-mcp" in text
+    assert "claude mcp add network-lab -s user -- /path/to/network-lab-mcp/.venv/bin/network-lab-mcp" in text
 
 
 def test_help_claude_command_matches_readme():
     with open("README.md", encoding="utf-8") as handle:
         readme = handle.read()
-    assert "claude mcp add --scope user --transport stdio network-lab -- network-lab-mcp" in readme
+    assert "claude mcp add network-lab -s user -- \\\n  /path/to/network-lab-mcp/.venv/bin/network-lab-mcp" in readme
 
 
 def test_help_workflow_lists_ordered_steps_and_mentions_discovery():

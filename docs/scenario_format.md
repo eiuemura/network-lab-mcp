@@ -28,6 +28,18 @@ every future use case.
 - **Reference**: reusable engineering knowledge — *how* to operate, measure,
   interpret, or troubleshoot. A reference supports multiple scenarios.
 
+### Discovery, inspection, and proposals
+
+`get_execution_instructions()` returns the active scenario and references in
+full plus metadata-only catalogs (`available_scenarios`,
+`available_references`: name and description). Optional `inspect_scenarios` /
+`inspect_references` arguments return the full content of chosen stored
+definitions read-only, without activating them. The AI can therefore discover
+and reuse existing knowledge, and *propose* a refinement or a new
+scenario/reference when nothing suitable exists. It cannot persist
+definitions: a human reviews and commits them through the CLI. Definition
+identity is the filename stem, as everywhere else.
+
 A scenario may point at the references it needs but should not duplicate
 their content. Knowledge evolves **reuse → refine → create**: reuse an
 existing scenario/reference, refine it if incomplete, and create a new one

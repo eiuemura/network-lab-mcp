@@ -82,7 +82,14 @@ topology's device names cannot be safely mapped to terminal sessions.
 what reusable knowledge is available?" — return principles, the active
 scenario, and the active references together.
 
-**Arguments**: none.
+**Arguments** (all optional; with none, behavior is unchanged):
+
+- `inspect_scenarios` (list of strings): stored scenario names whose full content to return.
+- `inspect_references` (list of strings): stored reference names whose full content to return.
+
+Names must come from the catalogs below (exact stored definition names, never
+paths); duplicates are dropped and requested order is kept. Inspection is
+read-only and never activates a definition.
 
 **Return value**:
 
@@ -90,9 +97,19 @@ scenario, and the active references together.
 {
   "principles": { "workspace_principles": [...], "general_operating_principles": [...], "prohibited_actions": [...] },
   "scenario": { "name": "getting_started", "content": { "...": "..." } },
-  "references": [ { "name": "network_lab_basics", "content": { "...": "..." } } ]
+  "references": [ { "name": "network_lab_basics", "content": { "...": "..." } } ],
+  "available_scenarios": [ { "name": "getting_started", "description": "..." } ],
+  "available_references": [ { "name": "network_lab_basics", "description": "..." } ],
+  "inspected_scenarios": [],
+  "inspected_references": []
 }
 ```
+
+`available_*` are metadata-only catalogs of every stored definition, sorted
+by name (`description` is `null` when a definition has none); access-info is
+never included. `inspected_*` hold full content only for what was requested.
+Definition changes are not made through MCP: the AI proposes refined or new
+scenarios/references and a human reviews and commits them in the CLI.
 
 **Usage example**: call this alongside `get_active_topology()` at the start
 of a task to learn how to behave and what the task requires.
@@ -103,7 +120,8 @@ disk on every call.
 
 **Error behavior**: raises a tool error when `lab/settings.yaml` is missing,
 the active scenario or any active reference name is invalid, or the
-corresponding file does not exist or is not valid YAML.
+corresponding file does not exist or is not valid YAML, or when a requested
+`inspect_*` name is not an existing stored definition.
 
 ## terminal_open()
 

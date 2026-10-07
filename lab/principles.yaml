@@ -21,6 +21,7 @@ general_operating_principles:
   - Verify the result after making changes.
   - Preserve useful evidence that supports the final result.
   - Record unresolved issues and limitations.
+  - Propose new or refined scenario/reference content in your response instead of writing lab definitions directly; a human reviews and commits them through the CLI. Proposing is not modifying the implementation.
 
 prohibited_actions:
   - Do not operate on devices outside the active topology.

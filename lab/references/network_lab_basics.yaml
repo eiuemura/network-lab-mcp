@@ -12,17 +12,17 @@ description: |
   in separate references.
 
 concepts:
-  access-info: How devices can be accessed (private; never exposed to the AI).
+  access-info: How devices can be accessed (private; its contents are never exposed to the AI).
   topology: What devices, interfaces, links, and relevant network structure exist.
   scenario: What the AI is trying to accomplish (task intent, expected outcome).
   reference: Reusable engineering knowledge that helps accomplish a scenario.
 
 guidance:
-  - Inspect the active running configuration before assuming context.
-  - Use access-info for connectivity and access context.
-  - Use topology for network structure.
-  - Use a scenario for task intent.
-  - Use references for reusable engineering knowledge.
-  - Prefer existing knowledge before creating duplicates (reuse, refine, then create).
+  - Inspect the active topology, scenario, and references before making assumptions.
+  - Discover stored scenarios and references from the catalogs before proposing new knowledge, and inspect relevant ones read-only.
+  - Use a scenario for task intent and references for reusable engineering knowledge.
+  - Prefer reuse, then proposing a refinement, and propose new knowledge only when nothing suitable exists.
+  - Access-info is used by the system for connectivity; its private contents are not exposed to the AI.
+  - The AI proposes scenario/reference content; a human reviews and commits it through the CLI.
   - A reference may hold platform-specific knowledge; keep each topic in the reference that covers it.
   - Distinguish observed facts from interpretation, and record validated findings only.

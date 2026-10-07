@@ -57,8 +57,11 @@ Network Lab MCP organizes work with four running-config concepts:
 | `reference` | reusable engineering knowledge |
 
 Scenario and reference knowledge evolves by **reuse → refine → create**: the
-AI reuses existing knowledge, refines it when incomplete, and creates new
-knowledge only when nothing suitable exists.
+AI discovers stored scenarios and references (a catalog is returned with the
+execution instructions, and relevant non-active ones can be inspected
+read-only), reuses existing knowledge, and when it is incomplete or missing
+*proposes* a refined or new Scenario/Reference. Definition changes are
+reviewed and committed through the CLI; the AI never writes them directly.
 
 A fresh installation (copying `lab/settings.example.yaml`) starts with
 `getting_started` as the default onboarding Scenario and `network_lab_basics`

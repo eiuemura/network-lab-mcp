@@ -239,3 +239,107 @@ def test_submodes_for_new_defaults(fresh_root, capsys):
     assert "Changed" not in (fresh_root / "references" / "network_lab_basics.yaml").read_text(encoding="utf-8")
     assert "getting_started" in lab.list_scenario_names(fresh_root)
     assert "network_lab_basics" in lab.list_reference_names(fresh_root)
+
+
+# ---- Step 1.1: knowledge discovery / read-only inspection ------------------
+
+import hashlib
+
+from network_lab_mcp import mcp_server
+
+
+@pytest.fixture()
+def kroot(lab_root, monkeypatch):
+    lab.write_scenario("sc_b", {"name": "sc_b", "description": "Second scenario.", "objectives": ["b"]}, lab_root)
+    lab.write_scenario("sc_legacy", {"objectives": ["no description"]}, lab_root)
+    lab.write_reference("ref_b", {"name": "ref_b", "description": "Ref B.", "guidance": ["b"]}, lab_root)
+    monkeypatch.setattr(lab, "find_lab_root", lambda: lab_root)
+    return lab_root
+
+
+def _snapshot(root):
+    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_catalog_lists_stored_metadata_only_deterministically(kroot):
+    out = lab.get_execution_instructions()
+    names = [e["name"] for e in out["available_scenarios"]]
+    assert names == sorted(names) and {"sample", "sc_b", "sc_legacy"} <= set(names)
+    assert {e["name"]: e["description"] for e in out["available_scenarios"]}["sc_b"] == "Second scenario."
+    assert {e["name"]: e["description"] for e in out["available_scenarios"]}["sc_legacy"] is None
+    rnames = [e["name"] for e in out["available_references"]]
+    assert rnames == sorted(rnames) and {"ref_b", "sample"} <= set(rnames)
+    for e in out["available_scenarios"] + out["available_references"]:
+        assert set(e) == {"name", "description"}
+    assert out["inspected_scenarios"] == [] and out["inspected_references"] == []
+    assert "sample_lab" not in str(out["available_scenarios"] + out["available_references"])
+    assert out == lab.get_execution_instructions()
+
+
+def test_default_call_is_compatible_and_has_no_nonactive_bodies(kroot):
+    out = lab.get_execution_instructions()
+    assert out["scenario"]["name"] == "sample"
+    assert [r["name"] for r in out["references"]] == ["sample"]
+    assert out["principles"]
+    assert "Second scenario." not in str(out["scenario"]) + str(out["references"]) + str(out["inspected_scenarios"])
+    assert "objectives" not in str(out["available_scenarios"])
+
+
+def test_inspect_non_active_is_read_only(kroot):
+    before = _snapshot(kroot)
+    out = lab.get_execution_instructions(["sc_b", "sc_b", "sc_legacy"], ["ref_b", "sample"])
+    assert [e["name"] for e in out["inspected_scenarios"]] == ["sc_b", "sc_legacy"]
+    assert out["inspected_scenarios"][0]["content"]["objectives"] == ["b"]
+    assert [e["name"] for e in out["inspected_references"]] == ["ref_b", "sample"]
+    assert out["scenario"]["name"] == "sample"
+    assert [r["name"] for r in out["references"]] == ["sample"]
+    assert _snapshot(kroot) == before
+
+
+@pytest.mark.parametrize("bad", ["missing", "../settings", "/etc/passwd", "sc_b.yaml", "..", "sample_lab", ""])
+def test_inspect_rejects_unknown_and_paths(kroot, bad):
+    with pytest.raises(lab.LabConfigError):
+        lab.get_execution_instructions([bad])
+    with pytest.raises(lab.LabConfigError):
+        lab.get_execution_instructions(None, [bad])
+
+
+def test_inspect_rejects_malformed_and_symlink(kroot, tmp_path):
+    (kroot / "scenarios" / "broken.yaml").write_text("- not\n- mapping\n", encoding="utf-8")
+    with pytest.raises(lab.LabConfigError):
+        lab.get_execution_instructions(["broken"])
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("name: outside\ndescription: secret\n", encoding="utf-8")
+    (kroot / "references" / "link.yaml").symlink_to(outside)
+    with pytest.raises(lab.LabConfigError):
+        lab.get_execution_instructions(None, ["link"])
+    assert "link" not in [e["name"] for e in lab.get_execution_instructions()["available_references"]]
+
+
+def test_mcp_tool_schema_optional_args_and_error(kroot):
+    import anyio
+
+    tools = {t.name: t for t in anyio.run(mcp_server.mcp.list_tools)}
+    schema = tools["get_execution_instructions"].input_schema
+    assert not schema.get("required")
+    assert {"inspect_scenarios", "inspect_references"} <= set(schema["properties"])
+    assert len(tools) == 7
+    with pytest.raises(mcp_server.ToolError):
+        mcp_server.get_execution_instructions(["nope"])
+
+
+def test_catalog_not_in_running_config_views(fresh_root, capsys):
+    session = cfgmod.CliSession(fresh_root)
+    session.enter_configure()
+    climain.execute_command_line(session, "show running-config")
+    climain.execute_command_line(session, "show configuration")
+    out = capsys.readouterr().out
+    for term in ("available_scenarios", "available_references", "inspected_"):
+        assert term not in out
+
+
+def test_getting_started_expresses_proposal_and_human_commit_boundary():
+    data = _load(REPO_LAB / "scenarios" / "getting_started.yaml")
+    rules = " ".join(data["decision_rules"]).lower()
+    assert "reuse" in rules and "propose" in rules and "cli" in rules and "human" in rules
+    assert "persist" in rules  # explicitly: the AI does not persist

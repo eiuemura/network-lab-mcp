@@ -19,11 +19,11 @@ message: |
 workflow:
   - understand_user_intent
   - inspect_current_context
-  - reuse_existing_knowledge
+  - discover_and_inspect_existing_knowledge
   - determine_required_actions
   - perform_investigation_or_validation
   - evaluate_results
-  - organize_reusable_knowledge
+  - propose_reusable_knowledge
 
 scenario_guidance:
   purpose: |
@@ -33,7 +33,7 @@ scenario_guidance:
     and task-level workflow without duplicating reusable engineering
     knowledge that belongs in references.
 
-  create_when:
+  create_when:  # i.e. propose a new scenario
     - The user's goal represents a repeatable investigation or validation.
     - The task has a clear objective or expected outcome.
     - The workflow may be useful again in the future.
@@ -101,9 +101,10 @@ reference_guidance:
 decision_rules:
   - Start from the user's intent, not from the YAML structure.
   - Do not require the user to understand or edit YAML.
-  - Reuse existing scenarios and references before creating new ones.
-  - Prefer refining existing knowledge over creating duplicates.
-  - Create new knowledge only when no suitable existing knowledge exists.
+  - Reuse existing scenarios and references before proposing new ones.
+  - Prefer proposing a refinement of existing knowledge over proposing duplicates.
+  - Propose new knowledge only when no suitable existing knowledge exists.
+  - The AI proposes scenario and reference content; it does not persist it. Definition changes are reviewed and committed by the human through the Network Lab MCP CLI.
   - Keep task-specific intent, context, and expected outcome in the scenario.
   - Keep reusable engineering knowledge in references.
   - Keep "what and why" primarily in scenarios.
@@ -115,13 +116,15 @@ decision_rules:
 
 knowledge_lifecycle:
   - Start from the user's intent.
-  - Inspect the current lab, active definitions, available evidence, and existing knowledge.
+  - Inspect the active topology, scenario, and references returned by the execution instructions.
+  - Discover stored scenarios and references from the available catalogs, and inspect relevant candidates, including non-active ones, read-only.
   - Reuse existing scenarios and references whenever they are sufficient.
-  - Refine existing knowledge when it is incomplete or can be made more reusable.
-  - Create a new scenario when a repeatable task cannot be represented by an existing one.
-  - Create a new reference when reusable engineering knowledge cannot be represented by an existing one.
-  - Perform the investigation or validation using the best available knowledge.
-  - Evaluate the result against the objective and available evidence.
-  - Capture validated reusable knowledge discovered during the work.
+  - Propose a refinement when existing knowledge is incomplete or can be made more reusable.
+  - Propose a new scenario when a repeatable task cannot be represented by an existing one.
+  - Propose a new reference when reusable engineering knowledge cannot be represented by an existing one.
+  - Perform the investigation or validation using the best available knowledge and evidence gathered from the lab terminals.
+  - Evaluate the result against the objective and the evidence gathered.
+  - Propose validated reusable knowledge discovered during the work.
+  - A human reviews proposed definitions and commits them through the CLI.
   - Keep scenario and reference responsibilities separate.
   - Avoid duplicate or overlapping knowledge.

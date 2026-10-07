@@ -44,13 +44,23 @@ def get_active_topology() -> dict:
 
 
 @mcp.tool()
-def get_execution_instructions() -> dict:
+def get_execution_instructions(
+    inspect_scenarios: list[str] | None = None,
+    inspect_references: list[str] | None = None,
+) -> dict:
     """Return the operating principles, the active scenario, and the active
     reference knowledge for the current task: how to behave, what to
-    accomplish, and what reusable knowledge is available. Reloaded from disk
-    on every call."""
+    accomplish, and what reusable knowledge is available. Also returns
+    metadata-only catalogs (name + description) of every stored scenario
+    and reference, so existing knowledge can be discovered and reused.
+    Optional `inspect_scenarios` / `inspect_references` (lists of stored
+    definition names from those catalogs) additionally return the full
+    content of those definitions, read-only: inspecting never activates or
+    changes anything, and unknown names fail the call. Definition changes
+    are not made through MCP; propose them and a human reviews and commits
+    them in the CLI. Reloaded from disk on every call."""
     try:
-        return lab.get_execution_instructions()
+        return lab.get_execution_instructions(inspect_scenarios, inspect_references)
     except lab.LabConfigError as exc:
         raise ToolError(str(exc)) from exc
 

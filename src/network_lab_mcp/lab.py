@@ -682,8 +682,53 @@ def get_active_topology() -> dict:
     return {"active_topology": topology_name, "topology": topology}
 
 
-def get_execution_instructions() -> dict:
-    """Reload principles, the active scenario, and active references from disk."""
+def _catalog(directory: Path, names: list[str]) -> list[dict]:
+    """Metadata-only catalog ([{name, description}], sorted by name) of the
+    stored definitions in `directory`. Filename stem is the identity (same
+    SSOT as list_*_names()); `description` is the definition's own string
+    `description` field, or None when absent/unreadable -- a legacy or even
+    malformed file never breaks the catalog. Symlinked/path-unsafe entries
+    are left out. Never includes bodies."""
+    entries = []
+    for name in names:
+        if not _stored_definition_is_deletable(name, directory, names):
+            continue
+        description = None
+        try:
+            data = yaml.safe_load((directory / f"{name}.yaml").read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            data = None
+        if isinstance(data, dict) and isinstance(data.get("description"), str) and data["description"].strip():
+            description = data["description"].strip()
+        entries.append({"name": name, "description": description})
+    return entries
+
+
+def _inspect_definitions(requested: list[str] | None, directory: Path, names: list[str], load, kind_label: str) -> list[dict]:
+    """Read-only bodies of explicitly requested stored definitions: only
+    exact enumerated names (never paths) that are regular, non-symlink,
+    confined files; duplicates dropped, requested order kept; any
+    unknown/unsafe/malformed name fails the whole call closed."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for name in requested or []:
+        if name in seen:
+            continue
+        seen.add(name)
+        if not _stored_definition_is_deletable(name, directory, names):
+            raise LabConfigError(f"{kind_label} '{name}' does not exist.")
+        out.append({"name": name, "content": load(name)})
+    return out
+
+
+def get_execution_instructions(
+    inspect_scenarios: list[str] | None = None, inspect_references: list[str] | None = None
+) -> dict:
+    """Reload principles, the active scenario, and active references from
+    disk, plus metadata-only catalogs of every stored scenario/reference.
+    `inspect_scenarios`/`inspect_references` optionally request the full
+    content of specific stored (possibly non-active) definitions, read-only:
+    nothing is activated, written, or persisted."""
     lab_root = find_lab_root()
     settings = read_settings(lab_root)
     scenario_name = get_active_scenario_name(settings)
@@ -691,12 +736,22 @@ def get_execution_instructions() -> dict:
     principles = load_principles(lab_root)
     scenario = load_scenario(scenario_name, lab_root)
     references = load_references(reference_names, lab_root)
+    scenario_names = list_scenario_names(lab_root)
+    reference_list = list_reference_names(lab_root)
     return {
         "principles": principles,
         "scenario": {"name": scenario_name, "content": scenario},
         "references": [
             {"name": name, "content": content} for name, content in zip(reference_names, references)
         ],
+        "available_scenarios": _catalog(lab_root / "scenarios", scenario_names),
+        "available_references": _catalog(lab_root / "references", reference_list),
+        "inspected_scenarios": _inspect_definitions(
+            inspect_scenarios, lab_root / "scenarios", scenario_names, lambda n: load_scenario(n, lab_root), "Scenario"
+        ),
+        "inspected_references": _inspect_definitions(
+            inspect_references, lab_root / "references", reference_list, lambda n: load_reference(n, lab_root), "Reference"
+        ),
     }
 
 

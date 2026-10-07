@@ -92,11 +92,10 @@ def test_getting_started_is_scenario_and_basics_is_reference():
     assert "message" not in basics and "workflow" not in basics
 
 
-def test_step2_and_sample_connectivity_not_introduced():
+def test_no_sample_connectivity_scenario_or_generic_sample_scenario():
     for sub in ("scenarios", "references"):
         names = {p.stem for p in (REPO_LAB / sub).glob("*.yaml")}
         assert "sample_connectivity" not in names
-        assert "cisco_platform_guidance" not in names
     assert not (REPO_LAB / "scenarios" / "sample.yaml").exists()
 
 
@@ -367,3 +366,61 @@ def test_fresh_default_sample_lab_submodes_and_completion(fresh_root):
     assert "sample_lab" in lab.list_topology_names(fresh_root)
     assert "sample" not in lab.list_access_info_names(fresh_root)
     assert "sample" not in lab.list_topology_names(fresh_root)
+
+
+# ---- Cisco platform guidance reference -------------------------------------
+
+CISCO_REF = REPO_LAB / "references" / "cisco_platform_guidance.yaml"
+
+
+def _cisco():
+    return _load(CISCO_REF)
+
+
+def test_cisco_platform_guidance_loads_through_reference_path():
+    root_ref = lab.load_reference("cisco_platform_guidance", REPO_LAB)
+    assert root_ref["name"] == "cisco_platform_guidance"
+    assert "applies" in root_ref["description"] and len(root_ref["description"]) > 50
+
+
+def test_cisco_device_types_match_device_type_ssot():
+    declared = set(_cisco()["cisco_device_types"])
+    cisco_in_ssot = {k for k, v in lab.DEVICE_TYPES.items() if v.startswith("Cisco")}
+    assert declared == cisco_in_ssot
+    assert "host" not in declared
+    for key in declared:
+        assert lab.normalize_device_type(key) == key
+
+
+def test_cisco_guidance_policy_concepts_present():
+    d = _cisco()
+    assert {"device_type", "operating_system", "product_family", "software_release", "feature_domain", "question_type"} == set(d["routing_inputs"])
+    assert d["applicability_principles"] and d["cross_platform_safety"]
+    assert d["protocol_vs_implementation"]["broadly_reusable_concepts"]
+    assert "YANG module availability" in d["protocol_vs_implementation"]["verify_for_the_target_platform"]
+    assert d["documentation_classes"] == ["Configuration Guides", "Command References", "Release Notes"]
+    assert set(d["source_selection"]) == {"configuration", "command_syntax", "feature_support", "data_model", "hardware"}
+    assert d["yang"]["source"]["url"] == "https://github.com/YangModels/yang/tree/main/vendor/cisco"
+    telemetry = " ".join(d["telemetry"]["principles"]).lower()
+    assert "yang" in telemetry and "do not invent" in telemetry
+    assert any("distinct" in t for t in d["yang"]["lookup_guidance"])
+    assert d["lab_evidence"] and d["reusable_knowledge"]
+
+
+def test_cisco_guidance_is_discoverable_inspectable_and_inactive(fresh_root, monkeypatch):
+    shutil.copy(CISCO_REF, fresh_root / "references" / "cisco_platform_guidance.yaml")
+    monkeypatch.setattr(lab, "find_lab_root", lambda: fresh_root)
+    before = (fresh_root / "settings.yaml").read_bytes()
+    default = lab.get_execution_instructions()
+    entry = {e["name"]: e for e in default["available_references"]}["cisco_platform_guidance"]
+    assert entry["description"]
+    assert [r["name"] for r in default["references"]] == ["network_lab_basics"]
+    inspected = lab.get_execution_instructions(None, ["cisco_platform_guidance"])
+    assert inspected["inspected_references"][0]["content"]["name"] == "cisco_platform_guidance"
+    assert [r["name"] for r in inspected["references"]] == ["network_lab_basics"]
+    assert (fresh_root / "settings.yaml").read_bytes() == before
+
+
+def test_example_settings_do_not_activate_cisco_guidance():
+    settings = _load(REPO_LAB / "settings.example.yaml")
+    assert settings["active_references"] == ["network_lab_basics"]

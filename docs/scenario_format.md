@@ -40,6 +40,32 @@ scenario/reference when nothing suitable exists. It cannot persist
 definitions: a human reviews and commits them through the CLI. Definition
 identity is the filename stem, as everywhere else.
 
+### Platform guidance references
+
+`lab/references/cisco_platform_guidance.yaml` is a stored, inactive-by-default
+reference that helps decide whether Cisco platform-specific knowledge applies
+to a target device. It is discovered through `available_references` and read
+with `inspect_references=["cisco_platform_guidance"]` like any other
+reference; activate it with `running-config` if you want it returned on every
+call. It covers:
+
+- the routing inputs (device type, operating system, product family, software
+  release, feature domain, question type) and the principle that similar
+  knowledge is not automatically applicable knowledge;
+- the split between broadly reusable protocol concepts and
+  implementation details that must be verified per platform;
+- cross-platform safety rules, limited to device types in the `device.type`
+  enum;
+- documentation classes (Configuration Guides, Command References, Release
+  Notes) and which question types each suits;
+- YANG lookup (the YangModels Cisco repository, OS- and release-aware, with
+  device-reported support preferred) and the rule that telemetry sensor paths
+  are derived from YANG models, not guessed.
+
+It is reasoning guidance only: it performs no retrieval and does not detect
+the platform. The same pattern can host other vendors' guidance as separate
+references.
+
 A scenario may point at the references it needs but should not duplicate
 their content. Knowledge evolves **reuse → refine → create**: reuse an
 existing scenario/reference, refine it if incomplete, and create a new one

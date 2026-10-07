@@ -37,6 +37,7 @@ lab/scenarios/*.yaml
 !lab/scenarios/getting_started.yaml
 lab/references/*.yaml
 !lab/references/network_lab_basics.yaml
+!lab/references/cisco_platform_guidance.yaml
 
 # Persistent terminal session transcripts (logs/terminal/<device-id>/*.log)
 # are runtime artifacts, potentially containing full device output --

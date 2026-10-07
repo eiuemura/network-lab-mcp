@@ -75,6 +75,45 @@ never rewritten or migrated: your current selections and descriptions stay as
 they are. See [docs/scenario_format.md](docs/scenario_format.md) for the
 Scenario / Reference boundary.
 
+## Platform-aware knowledge
+
+Network Lab MCP can use reusable References to decide whether technical
+knowledge applies to the target device. Protocol concepts may be reusable
+across platforms, but configuration syntax, operational behavior, feature
+support, limitations, YANG models, telemetry paths, and release-specific
+behavior must be verified for the applicable platform.
+
+`cisco_platform_guidance` provides this applicability guidance for the Cisco
+operating systems Network Lab MCP supports (`iosxr`, `iosxe`, `ios`,
+`nxos`). It is a stored Reference that the AI can discover and inspect; it is
+not active by default. It is guidance only: nothing is searched, fetched, or
+detected automatically.
+
+```text
+User intent
+    ↓
+Target device
+    ↓
+Platform / operating system
+    ↓
+Software release when relevant
+    ↓
+Feature domain
+    ↓
+Question type
+    ↓
+Applicable knowledge / source
+    ↓
+Lab validation when appropriate
+```
+
+For YANG and model-driven telemetry, the guidance points to the
+[YangModels Cisco YANG repository](https://github.com/YangModels/yang/tree/main/vendor/cisco)
+(the repository Cisco documentation refers users to), says telemetry paths
+should be derived from the applicable model hierarchy rather than guessed,
+and notes that platform and release matter and that the models a device
+actually supports should be verified when practical.
+
 ## Core design
 
 ```text

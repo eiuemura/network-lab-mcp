@@ -1777,6 +1777,11 @@ def render_discovery_summary(result: "discovery.DiscoveryResult") -> str:
         f"{result.l3_interface_count} interfaces",
         f"  Topology candidate:   {result.default_topology_name}",
     ]
+    if result.protocol_warnings:
+        lines.append("")
+        lines.append(f"Neighbor discovery warnings ({len(result.protocol_warnings)}):")
+        for warning in result.protocol_warnings:
+            lines.append(f"  {warning}")
     if result.l3_warnings:
         lines.append("")
         lines.append(f"L3 enrichment warnings ({len(result.l3_warnings)}):")
@@ -1806,6 +1811,9 @@ def render_discovery_summary(result: "discovery.DiscoveryResult") -> str:
                 lines.append(
                     f"    {obs.local_device_id} {obs.local_interface} -> {obs.remote_port_id} ({capability})"
                 )
+    if result.protocol_warnings:
+        lines.append("")
+        lines.append("Topology discovery completed with warnings.")
     return "\n".join(lines)
 
 

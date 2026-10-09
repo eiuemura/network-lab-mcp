@@ -491,6 +491,45 @@ class LldpParseError(Exception):
     zero-neighbor response."""
 
 
+# IOS XR's two confirmed "protocol not enabled" responses. Deliberately an
+# exact, per-protocol allowlist (no substring search, no other wording): the
+# only thing recognized as "disabled" is output whose *entire* meaningful
+# content is the one expected line for that protocol. Anything else that
+# merely looks like a disabled message (wrong protocol, extra lines, mixed
+# with a table) is a DiscoveryError, never silently zero observations.
+_IOSXR_DISABLED_MESSAGES = {
+    "lldp": "% LLDP is not enabled",
+    "cdp": "% CDP is not enabled",
+}
+_DISABLED_LIKE_RE = re.compile(r"\b(?:lldp|cdp)\b.*\bnot enabled\b", re.IGNORECASE)
+_CLI_TIMESTAMP_RE = re.compile(r"^[A-Z][a-z]{2} [A-Z][a-z]{2} +\d{1,2} \d{2}:\d{2}:\d{2}(?:\.\d+)? \S+$")
+_IOSXR_PROMPT_OR_ECHO_RE = re.compile(r"^RP/\S+/CPU\d+:[^#\s]+#\s*(?:show (?:lldp|cdp) neighbors)?\s*$")
+
+
+def iosxr_protocol_disabled(raw_text: str, protocol: str, local_device_id: str) -> bool:
+    """True only if IOS XR's output for `protocol` ("lldp" or "cdp") is
+    exactly that protocol's known "not enabled" response (ignoring blank
+    lines, the CLI timestamp line, and a bare prompt/command-echo line).
+    False if no disabled-like text is present at all (caller parses
+    normally). Raises DiscoveryError if disabled-like text is present but
+    is not solely the exact expected message -- the wrong protocol's
+    message, additional content, or a mixed table -- since that is not a
+    state this code has evidence for."""
+    meaningful = [
+        line
+        for line in (raw.strip() for raw in raw_text.splitlines())
+        if line and not _CLI_TIMESTAMP_RE.match(line) and not _IOSXR_PROMPT_OR_ECHO_RE.match(line)
+    ]
+    if not any(_DISABLED_LIKE_RE.search(line) for line in meaningful):
+        return False
+    if meaningful == [_IOSXR_DISABLED_MESSAGES[protocol]]:
+        return True
+    raise DiscoveryError(
+        f"Device '{local_device_id}': 'show {protocol} neighbors' output contains a protocol-disabled "
+        "message that is not exactly the expected one for this command; refusing to interpret it."
+    )
+
+
 def parse_lldp_neighbors(raw_text: str, local_device_id: str) -> list[LldpObservation]:
     """Parse `show lldp neighbors` output into normalized observations.
 
@@ -1073,6 +1112,7 @@ class DiscoveryResult:
     unresolved: list[UnresolvedNeighbor] = field(default_factory=list)
     conflicts: list[LinkConflict] = field(default_factory=list)
     identity_map: dict[str, str] = field(default_factory=dict)
+    protocol_warnings: list[str] = field(default_factory=list)
 
 
 def _select_targets_by_type(access_data: dict, wanted_type: str) -> dict[str, dict]:
@@ -1112,6 +1152,12 @@ def _select_iosxe_targets(access_data: dict) -> dict[str, dict]:
 
 def _select_ios_targets(access_data: dict) -> dict[str, dict]:
     return _select_targets_by_type(access_data, "ios")
+
+
+def _disabled_warning(device_id: str, protocol: str) -> str:
+    """Fixed-text warning: logical device name + protocol only, never raw
+    device output."""
+    return f"Device '{device_id}': {protocol} is disabled; no {protocol} neighbor observations."
 
 
 def discover_topology(lab_root=None) -> DiscoveryResult:
@@ -1211,15 +1257,31 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
     unresolved: list[UnresolvedNeighbor] = []
     observation_count = 0
     cdp_observation_count = 0
+    protocol_warnings: list[str] = []
     for device_id, info in collected.items():
         observations: list[NeighborObservation] = []
         if device_id in iosxr_targets:
-            try:
-                lldp_observations = parse_lldp_neighbors(info["show_lldp_neighbors"], device_id)
-            except LldpParseError as exc:
-                raise DiscoveryError(str(exc)) from exc
-            observation_count += len(lldp_observations)
-            observations.extend(lldp_observations)
+            # Both protocols were already collected for this device, so a
+            # disabled LLDP never prevents the CDP output below from being
+            # used (and vice versa). "Disabled" is a known observation-less
+            # state, not evidence that no link exists.
+            lldp_text = info["show_lldp_neighbors"]
+            if iosxr_protocol_disabled(lldp_text, "lldp", device_id):
+                protocol_warnings.append(_disabled_warning(device_id, "LLDP"))
+            else:
+                try:
+                    lldp_observations = parse_lldp_neighbors(lldp_text, device_id)
+                except LldpParseError as exc:
+                    raise DiscoveryError(str(exc)) from exc
+                observation_count += len(lldp_observations)
+                observations.extend(lldp_observations)
+            cdp_text = info.get("show_cdp_neighbors", "")
+            if iosxr_protocol_disabled(cdp_text, "cdp", device_id):
+                protocol_warnings.append(_disabled_warning(device_id, "CDP"))
+                cdp_text = ""
+            cdp_observations = parse_cdp_neighbors(cdp_text, device_id)
+            cdp_observation_count += len(cdp_observations)
+            observations.extend(cdp_observations)
         elif device_id in iosxe_targets:
             # "% LLDP is not enabled" (or any other
             # unrecognized response) means zero LLDP observations, not a
@@ -1236,9 +1298,10 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
                     raise DiscoveryError(str(exc)) from exc
                 observation_count += len(lldp_observations)
                 observations.extend(lldp_observations)
-        cdp_observations = parse_cdp_neighbors(info.get("show_cdp_neighbors", ""), device_id)
-        cdp_observation_count += len(cdp_observations)
-        observations.extend(cdp_observations)
+        if device_id not in iosxr_targets:
+            cdp_observations = parse_cdp_neighbors(info.get("show_cdp_neighbors", ""), device_id)
+            cdp_observation_count += len(cdp_observations)
+            observations.extend(cdp_observations)
 
         for obs in observations:
             remote_id = resolve_remote_identity(obs.remote_device_id_raw, identity_map)
@@ -1256,6 +1319,10 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
                 )
 
     links, conflicts = reconcile_links(resolved)
+    if protocol_warnings and not links:
+        protocol_warnings.append(
+            "No physical links were discovered; the topology candidate will contain devices but no links."
+        )
 
     devices = {device_id: {"type": "iosxr"} for device_id in iosxr_targets}
     devices.update({device_id: {"type": "iosxe"} for device_id in iosxe_targets})
@@ -1302,6 +1369,7 @@ def discover_topology(lab_root=None) -> DiscoveryResult:
         unresolved=unresolved,
         conflicts=conflicts,
         identity_map=identity_map,
+        protocol_warnings=protocol_warnings,
     )
 
 

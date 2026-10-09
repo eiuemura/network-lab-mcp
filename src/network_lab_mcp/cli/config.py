@@ -22,6 +22,7 @@ safety check, which is not a validator replacement.
 from __future__ import annotations
 
 import copy
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -31,6 +32,21 @@ from network_lab_mcp import discovery, lab
 
 class ConfigError(Exception):
     """A clear, user-facing error raised while mutating candidate configuration."""
+
+
+@dataclass(frozen=True)
+class CommitReport:
+    """What a successful commit() actually did (input for CLI output).
+
+    definition: (kind, name, "saved" | "deleted") if a definition file was
+    actually written/removed, else None. settings_written: whether
+    settings.yaml was actually rewritten. warnings: pre-existing,
+    unrelated missing-definition references left untouched, as safe
+    "<kind> '<name>'" strings (sorted, deduplicated)."""
+
+    definition: Optional[tuple[str, str, str]]
+    settings_written: bool
+    warnings: tuple[str, ...]
 
 
 class CommitValidationError(Exception):
@@ -186,6 +202,12 @@ _RUNNING_DESCRIPTION_SINGLE_KEYS = {
     "topology": "active_topology",
     "scenario": "active_scenario",
 }
+_SELECTION_FIELDS = (
+    ("access_info", "active_access_info"),
+    ("topology", "active_topology"),
+    ("scenario", "active_scenario"),
+    ("reference", "active_references"),
+)
 RUNNING_DESCRIPTIONS_KEY = "running_descriptions"
 
 
@@ -235,6 +257,7 @@ class CliSession:
         self.definition_candidate: Optional[dict] = None
         self.current_device_name: Optional[str] = None
         self.current_jump_host_name: Optional[str] = None
+        self.last_commit_report: Optional[CommitReport] = None
 
     # ---- scoped dirty state ----
 
@@ -658,14 +681,48 @@ class CliSession:
 
     # ---- commit ----
 
+    def _running_config_findings(self, settings: Optional[dict], exists: Callable[[str, Optional[str]], bool]) -> Counter:
+        """Missing-definition findings for one running-config selection
+        mapping, as a multiset keyed by a semantically stable identity:
+        (source kind, source name, source field, target kind, target name).
+        Never keyed by list index, so reordering a selection does not look
+        like a new finding; the multiset count is the occurrence count.
+
+        `exists(kind, name)` decides whether a target will exist -- the
+        committed disk state for the baseline, the effective post-commit
+        state for the candidate."""
+        findings: Counter = Counter()
+        settings = settings or {}
+        for kind, field in _SELECTION_FIELDS:
+            raw = settings.get(field)
+            names = raw if isinstance(raw, list) else [raw]
+            for name in names:
+                if name and not exists(kind, name):
+                    findings[("running-config", "", field, kind, name)] += 1
+        return findings
+
     def commit(self) -> bool:
         """Validate and persist the candidate. Returns True if anything was
         written, False for a no-op ("No changes to commit."). Raises
         CommitValidationError (no disk writes at all) on validation failure.
 
+        Validation runs in two independent stages:
+
+        A. Changed-object strict validation: the definition being
+           created/edited is always run through its formal validator; a
+           pre-existing defect in it is never excused by stage B.
+        B. Baseline/candidate comparison of running-config reference
+           findings. A finding that is new, or whose occurrence count grew
+           (e.g. a deletion that breaks an active selection, or a newly
+           selected missing definition), fails the commit. A finding that
+           is unchanged from the committed baseline is unrelated to this
+           change: it is reported as a warning in `last_commit_report` and
+           never blocks the save or is repaired.
+
         Definition files are written before settings.yaml, since the
         running-config selection may point at a definition just created or
         edited in this same commit."""
+        self.last_commit_report = None
         if not self.overall_dirty():
             return False
 
@@ -679,63 +736,43 @@ class CliSession:
             except lab.LabConfigError as exc:
                 errors.append(str(exc))
 
-        def _will_exist(kind: str, exists_fn: Callable, name: Optional[str]) -> bool:
-            if not name:
-                return False
-            if definition_being_deleted and self.definition_kind == kind and self.definition_name == name:
-                # This exact commit is what removes it -- never treated
-                # as "will exist" even though the file is still on disk
-                # right now (deletion hasn't happened yet).
-                return False
-            if exists_fn(name, self.lab_root):
-                return True
-            return definition_being_written and self.definition_kind == kind and self.definition_name == name
+        def _baseline_exists(kind: str, name: str) -> bool:
+            return bool(_DEFINITION_LOADERS[kind][0](name, self.lab_root))
 
-        def _existence_error(kind: str, exists_fn: Callable, name: Optional[str]) -> Optional[str]:
-            """Shared by every active-reference check below: None if
-            `name` is empty (an optional selection left unset) or will
-            genuinely exist after this commit; otherwise a clear error --
-            distinguishing "does not exist at all" from "this exact
-            commit is what is deleting it" (never a silent cascade)."""
-            if not name or _will_exist(kind, exists_fn, name):
-                return None
-            label = _DEFINITION_KIND_LABELS[kind]
-            if definition_being_deleted and self.definition_kind == kind and self.definition_name == name:
-                return f"Cannot remove {label.lower()} '{name}' because it is active in running-config."
-            return f"{label} '{name}' does not exist."
+        def _effective_exists(kind: str, name: str) -> bool:
+            if self.definition_kind == kind and self.definition_name == name and definition_being_written:
+                return not definition_being_deleted
+            return _baseline_exists(kind, name)
 
         settings = self.settings_candidate
 
-        access_info_name = settings.get("active_access_info")
-        error = _existence_error("access_info", lab.access_info_exists, access_info_name)
-        if error:
-            errors.append(error)
-
-        target_topology = settings.get("active_topology")
-        if not target_topology:
+        # Existing fail-closed invariants: an unselected topology/scenario
+        # is still rejected (unchanged behavior).
+        if not settings.get("active_topology"):
             errors.append("Running configuration is missing a valid active topology.")
-        else:
-            error = _existence_error("topology", lab.topology_exists, target_topology)
-            if error:
-                errors.append(error)
-
-        scenario = settings.get("active_scenario")
-        if not scenario:
+        if not settings.get("active_scenario"):
             errors.append("Running configuration is missing a valid active scenario.")
-        else:
-            error = _existence_error("scenario", lab.scenario_exists, scenario)
-            if error:
-                errors.append(error)
 
-        for reference in settings.get("active_references") or []:
-            error = _existence_error("reference", lab.reference_exists, reference)
-            if error:
-                errors.append(error)
+        baseline = self._running_config_findings(self.committed_settings, _baseline_exists)
+        candidate = self._running_config_findings(settings, _effective_exists)
+
+        persistent: set[tuple] = set()
+        for identity, count in candidate.items():
+            if count <= baseline.get(identity, 0):
+                persistent.add(identity)
+                continue
+            kind, name = identity[3], identity[4]
+            label = _DEFINITION_KIND_LABELS[kind]
+            if definition_being_deleted and self.definition_kind == kind and self.definition_name == name:
+                errors.append(f"Cannot remove {label.lower()} '{name}' because it is active in running-config.")
+            else:
+                errors.append(f"{label} '{name}' does not exist.")
 
         if errors:
-            raise CommitValidationError(errors)
+            raise CommitValidationError(list(dict.fromkeys(errors)))
 
         if definition_being_written:
+            written_target = (self.definition_kind, self.definition_name, "deleted" if definition_being_deleted else "saved")
             if definition_being_deleted:
                 _DEFINITION_DELETERS[self.definition_kind](self.definition_name, self.lab_root)
                 self.definition_kind = None
@@ -745,10 +782,23 @@ class CliSession:
             else:
                 _DEFINITION_WRITERS[self.definition_kind](self.definition_name, self.definition_candidate, self.lab_root)
                 self.definition_original = copy.deepcopy(self.definition_candidate)
+        else:
+            written_target = None
 
+        settings_written = False
         if self.settings_dirty():
             self.settings_candidate = normalized_settings(self.settings_candidate)
             lab.write_settings(self.settings_candidate, self.lab_root)
             self.committed_settings = copy.deepcopy(self.settings_candidate)
+            settings_written = True
 
+        # Sorted + deduplicated (identity is unique per source/field/target),
+        # so warnings are deterministic. Target type and name only: no
+        # definition content is ever echoed.
+        warning_targets = sorted({(identity[3], identity[4]) for identity in persistent})
+        self.last_commit_report = CommitReport(
+            definition=written_target,
+            settings_written=settings_written,
+            warnings=tuple(f"{kind.replace('_', '-')} '{name}'" for kind, name in warning_targets),
+        )
         return True

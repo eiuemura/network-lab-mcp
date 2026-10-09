@@ -875,7 +875,31 @@ def _do_commit(session: cfgmod.CliSession) -> None:
         for error in exc.errors:
             print(f"% {error}")
         return
-    print("Commit complete." if changed else "No changes to commit.")
+    if not changed:
+        print("No changes to commit.")
+        return
+    print("Commit complete.")
+    _print_commit_warnings(session.last_commit_report)
+
+
+def _print_commit_warnings(report: Optional[cfgmod.CommitReport]) -> None:
+    """Warn about pre-existing, unrelated missing running-config references
+    that this commit deliberately left untouched. Built only from the
+    actual commit result (what was really written), and shows definition
+    kinds/names only -- never definition content."""
+    if report is None or not report.warnings:
+        return
+    noun = "definition" if len(report.warnings) == 1 else "definitions"
+    print(f"\n% Warning: Running-config references missing {noun}:")
+    for item in report.warnings:
+        print(f"  {item}")
+    print()
+    if report.definition is not None:
+        kind, name, action = report.definition
+        verb = "removed" if action == "deleted" else "committed"
+        print(f"  The {kind.replace('_', '-')} '{name}' was {verb} successfully.")
+    if not report.settings_written:
+        print("  The existing running-config was not modified.")
 
 
 def _guarded_leave_configure(session: cfgmod.CliSession) -> None:

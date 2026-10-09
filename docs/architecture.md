@@ -1212,6 +1212,53 @@ selection*, never operates on network devices itself, and never decides
 what Claude Code should do with a topology once committed. See
 [cli_reference.md](cli_reference.md) for the full command reference.
 
+### Commit validation scope
+
+`commit` separates *what is being saved* from *the health of the rest of
+the environment*, in two independent stages:
+
+- **Stage A -- changed-object strict validation.** The definition being
+  created/edited always goes through its formal validator (schema, device
+  types, jump-host references, ...). A defect in the changed definition is
+  never excused because it already existed. A pending deletion is not
+  content-validated; its effect is checked in stage B.
+- **Stage B -- baseline/candidate comparison.** Running-config selection
+  findings ("selected X does not exist") are computed for the committed
+  baseline (settings on disk vs. definitions on disk) and for the effective
+  candidate (candidate settings vs. definitions after this commit applies,
+  including a pending deletion or a definition created in the same commit).
+  A finding's identity is `(source kind, source name, source field, target
+  kind, target name)` with an occurrence count; list position is not part
+  of it. A finding that is **new or whose count grew** fails the commit; an
+  **unchanged** one is a warning; a **resolved** one simply disappears.
+
+A warning never blocks the save, never rewrites unrelated files, and never
+repairs the existing defect. The existing fail-closed invariant that
+running-config must select an active topology and scenario is unchanged.
+Dependencies are limited to the current data model: running-config
+selections (and a definition's own internal references, covered by stage A).
+
+```mermaid
+flowchart TD
+    A[commit requested] --> B{candidate dirty?}
+    B -- no --> N[No changes to commit.]
+    B -- yes --> C[Stage A: strictly validate changed definition]
+    C --> D[Stage B: compare baseline vs effective candidate findings]
+    D --> E{stage A error, or new / worsened finding?}
+    E -- yes --> F[FAILED: nothing written, candidate kept]
+    E -- no --> G[Write definition, then settings if changed]
+    G -- I/O error --> F2[exception: candidate kept]
+    G --> H{persistent findings?}
+    H -- no --> S[SUCCESS]
+    H -- yes --> W[SUCCESS_WITH_WARNING]
+```
+
+Persistence: each file is written with temp-file + `os.replace` (atomic per
+file). A commit touching both a definition and `settings.yaml` is **not**
+atomic across the two files (definition first); this limitation predates
+this change. No external-modification conflict detection exists (no hash,
+mtime, or lock).
+
 ### Two independent candidate scopes
 
 - **Running-config candidate** (`settings_candidate`): a snapshot of

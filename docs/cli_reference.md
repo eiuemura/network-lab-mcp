@@ -47,6 +47,30 @@ completion, `?` help, and error reporting all walk the same trie.
 | `end` | Return to EXEC from anywhere in configuration mode. Blocked (with a warning) while any candidate scope is dirty. Never an implicit commit or clear. |
 | `clear` | Discard the entire uncommitted configure-session state (running-config candidate and any open definition candidate). Stays in the current mode, or the nearest still-valid parent if the current submode's target no longer exists. Never writes disk, never returns to EXEC. |
 
+### `commit` results
+
+`commit` strictly validates the definition you changed, and rejects any
+*new or worsened* running-config reference problem (for example selecting
+a definition that does not exist, or deleting one that is active). A
+reference problem that already existed and is unrelated to your change is
+only a warning; the commit still succeeds and nothing else is modified or
+repaired:
+
+```
+network-lab(config-access-info-sr-mpls)# commit
+Commit complete.
+
+% Warning: Running-config references missing definition:
+  reference 'sample'
+
+  The access-info 'sr-mpls' was committed successfully.
+  The existing running-config was not modified.
+```
+
+On failure (one `% <reason>` line per error) nothing is written and the
+candidate is kept. A no-op commit prints `No changes to commit.`. The "not
+modified" line appears only when `settings.yaml` was really not rewritten.
+
 None of `root`/`exit`/`end`/`clear` ever commits, and `commit` never
 navigates — the two concerns are fully independent.
 

@@ -875,6 +875,11 @@ def _do_commit(session: cfgmod.CliSession) -> None:
         for error in exc.errors:
             print(f"% {error}")
         return
+    except OSError as exc:
+        # Persistence failure: never claim success, keep the session (and
+        # its candidate) alive. Class name only -- no raw exception text.
+        print(f"% Commit failed: could not write configuration ({type(exc).__name__}). Candidate kept; retry 'commit'.")
+        return
     if not changed:
         print("No changes to commit.")
         return

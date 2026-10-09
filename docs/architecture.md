@@ -1253,11 +1253,27 @@ flowchart TD
     H -- yes --> W[SUCCESS_WITH_WARNING]
 ```
 
-Persistence: each file is written with temp-file + `os.replace` (atomic per
-file). A commit touching both a definition and `settings.yaml` is **not**
-atomic across the two files (definition first); this limitation predates
-this change. No external-modification conflict detection exists (no hash,
-mtime, or lock).
+**Persistence -- guaranteed.** Each file is written with temp file +
+`os.replace` (atomic per file); validation failure writes nothing and keeps
+the candidate; an I/O failure during `commit` prints `% Commit failed: could
+not write configuration (<ErrorClass>)` (no raw exception text), never
+`Commit complete.`, and keeps the session and candidate.
+
+**Persistence -- observed (fault-injection tests).** The definition file is
+written before `settings.yaml`. If the definition write fails, nothing
+changed. If `settings.yaml` then fails (function-level or `os.replace`
+failure), the definition stays saved, `settings.yaml` keeps its old
+content (the new definition is simply not yet selected, so no new broken
+reference is created), and the candidate keeps only the pending selection.
+Retrying `commit` rewrites only `settings.yaml` (the saved definition is
+not rewritten) and reports `settings_written` without claiming the
+definition was committed again. A failed `os.replace` may leave a stray
+`<name>.yaml.tmp` that is not read as a definition and is replaced on the
+next successful write of the same file.
+
+**Known limitations.** The two writes are not one transaction (the
+intermediate state above is consistent but not rolled back). No
+external-modification conflict detection exists (no hash, mtime, or lock).
 
 ### Two independent candidate scopes
 

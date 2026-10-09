@@ -1247,7 +1247,7 @@ flowchart TD
     D --> E{stage A error, or new / worsened finding?}
     E -- yes --> F[FAILED: nothing written, candidate kept]
     E -- no --> G[Write definition, then settings if changed]
-    G -- I/O error --> F2[exception: candidate kept]
+    G -- I/O error --> F2[Commit failed message: candidate kept]
     G --> H{persistent findings?}
     H -- no --> S[SUCCESS]
     H -- yes --> W[SUCCESS_WITH_WARNING]

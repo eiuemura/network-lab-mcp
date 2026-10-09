@@ -68,7 +68,7 @@ Commit complete.
 ```
 
 On failure (one `% <reason>` line per error) nothing is written and the
-candidate is kept. A no-op commit prints `No changes to commit.`. The "not
+candidate is kept. If writing to disk fails, `% Commit failed: could not write configuration (<ErrorClass>)` is printed instead of `Commit complete.`, the candidate is kept, and `commit` can be retried; the definition file is written before `settings.yaml`, so a failure between the two can leave the definition saved but not yet selected (see [architecture.md](architecture.md#commit-validation-scope)). A no-op commit prints `No changes to commit.`. The "not
 modified" line appears only when `settings.yaml` was really not rewritten.
 
 None of `root`/`exit`/`end`/`clear` ever commits, and `commit` never
